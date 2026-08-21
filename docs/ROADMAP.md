@@ -17,6 +17,55 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
+## Progress (kept current — last updated 2026-08-21, commit `77736a5`)
+
+**Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
+correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
+BFEXTU), and synthesizes/fits cleanly on the real Cyclone V (2,788/41,910 ALMs). See
+`rtl/cpu/tg68k/PROVENANCE.md` for the debugging notes (two false-alarm "core bugs" that were
+actually testbench mistakes, documented so they aren't re-investigated).
+
+**Phase 1 — SH201B/KA302C hardware: in progress**, on branch `phase1-sh201b-ka302c`.
+
+- Memory map documented (`docs/phase1_memory_map.md`) — shared `psikyo_map`, sprite/palette/
+  tilemap VRAM layout, sound CPU maps including gunbird's non-power-of-two bank window.
+- Video engine design documented (`docs/phase1_video_engine.md`), iteratively extended as each
+  piece gets built — this is the working spec the RTL below is implemented against.
+- **Tilemap engine**: combinational stages (`tilemap_addrgen`, `tile_row_decode`,
+  `tilemap_coord`, `tile_cell_decode`) and the sequential scanline sequencer
+  (`tilemap_line_engine.sv`, one instance per layer) all built and verified. This is the first
+  complete vertical slice of the video pipeline (VRAM → pixel stream).
+- **Sprite engine: RTL complete.** Architecture documented (`docs/phase1_video_engine.md`,
+  "Sprite frame renderer: architecture") — unlike the tilemap engine's just-in-time per-scanline
+  approach, sprites render into a full double-buffered 320×224 frame buffer once per frame,
+  decoupled from pixel-clock timing, because inter-sprite overlap resolution and the display
+  list's size make a real-time per-scanline walk impractical. Every module built and verified:
+  `sprite_zoom_lut`, `sprite_record_decode`, `sprite_pos_transform`, `sprite_subtile_step`,
+  `sprite_zoom_src_index` (combinational front end); `sprite_display_list_walker`
+  (flow-controlled display-list walk, mod-768 index folding, 0xFFFF termination) and
+  `sprite_record_fetch` (per-sprite attribute fetch); `sprite_render_engine`
+  (`docs/phase1_video_engine.md`, "Sprite render engine: pipeline design") — the top-level FSM
+  chaining all of the above into the full per-sprite pipeline (display-list walk → attribute
+  fetch → per-subtile position → spritelut ROM → per-row gfx ROM fetch → per-column pixel
+  write), with screen clipping and live transparent-pen handling, integration-tested against 4
+  cases (basic placement, flip_x pixel mirroring, multi-tile flip grid ordering, transparent
+  pen) with independently-latencied ROM models to rule out timing-dependent bugs; and
+  `sprite_frame_buffer` — the double-buffered 320×224 memory behind the render engine's write
+  port, with a combined swap+clear action (`frame_swap`) so a caller can't forget to clear the
+  newly-selected render bank before writing into it, and a read port for the compositor.
+  End-to-end tested (swap/clear → write → swap → readback, confirming untouched pixels correctly
+  read as absent). Nothing structural left to build in the sprite pipeline itself — remaining
+  work is wiring it into the rest of the core.
+- Not yet started: the tilemap-vs-sprite compositor (priority logic is designed in
+  `docs/phase1_video_engine.md` but not implemented — this is what will actually read
+  `sprite_frame_buffer`'s output), sound subsystem (T80+jt10), SDRAM tile/sprite ROM banking,
+  top-level integration, `.mra` files.
+
+Every RTL module so far has been verified in ModelSim against an independently-computed
+reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
+input domain — see individual module headers and commit messages for verification counts and
+any bugs (real or false-alarm) found along the way.
+
 ## Hardware reality (from the driver, not assumption)
 
 `psikyo.cpp` is **not one uniform board** — even excluding the bootlegs, it's two meaningfully
@@ -122,12 +171,25 @@ already are.
 - **YMF278B de-risking spike** should probably happen early (maybe alongside Phase 0) rather than
   right before Phase 2, given it's the other component with no existing shortcut — worth deciding
   scheduling once Phase 1 is underway and its actual cost is clearer.
+- **Sprite frame-renderer throughput is still unbudgeted, now that `sprite_render_engine` exists
+  and its actual per-stage cycle costs are known.** Rough math from the RTL as built: one
+  sub-tile costs roughly (LUT round-trip) + `dst_size_y` × (gfx ROM round-trip + `dst_size_x`
+  column cycles) — at full zoom (16×16) with, say, a 4-cycle ROM round-trip, that's on the order
+  of ~330 cycles/sub-tile. Worst case (1023 display-list entries, each an 8×8-tile sprite = 64
+  sub-tiles) would be ~21M cycles — far beyond one frame period at any realistic clock. Real
+  games are extremely unlikely to hit that theoretical worst case, but this still hasn't been
+  checked against actual per-game sprite/sub-tile counts (no MAME frame trace pulled yet).
+  Revisit once real per-game numbers are known — may need a per-sub-tile cycle budget/drop-excess
+  bound, a faster render clock, or reduced ROM latency (e.g. wider on-chip gfx ROM bursts).
 
 ## Next steps
 
-1. Create `D:\Mister-Psikyo`, `git init` it, and seed it from **MiSTer-devel/Template_MiSTer**;
-   configure the Quartus 17.x project for the DE10-nano, cross-checking arcade-specific wiring
-   (MRA/ROM loader, DIP/status bits, video pipeline shape) against Raiden_MiSTer/Toaplan2.
-2. Run the Phase 0 TG68K.C spike.
-3. Begin Phase 1 RTL: memory map (`psikyo_map` in `psikyo.h`/`psikyo.cpp`) → SDRAM layout → video
-   engine → sound subsystem, in that order.
+See "Progress" above for current status. Immediate next items, in order:
+
+1. Compositor: combine tilemap layer 0/1 live output (`tilemap_line_engine`) with sprite output
+   (`sprite_frame_buffer`'s read port) per the 2-tier priority scheme already derived in
+   `docs/phase1_video_engine.md`, plus palette RAM lookup to turn pixel/color indices into real
+   RGB.
+2. Sound subsystem: T80 + jt10 (YM2610), sound CPU memory map from `docs/phase1_memory_map.md`.
+3. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer.
+4. `.mra` files for sngkace/gunbird/btlkroad region variants; DE10-nano black-box bring-up.

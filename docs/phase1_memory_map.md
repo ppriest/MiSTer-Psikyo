@@ -128,10 +128,14 @@ From `psikyo_v.cpp` (`get_sprites()`, `draw_sprites()`):
     code high bit (bit 0)
   - Word 3 (`+0x6`): code low bits — full code then indexes into a **ROM lookup table**
     (`spritelut` region) to get the real tile code, not used directly
-- **Display list**: `0x401800-0x401FFD`, up to 1024 (`0x400`) 16-bit sprite-table indices,
-  terminated early by a `0xFFFF` sentinel. Sprite index is taken mod `0x300`.
-- **Control word**: the very last word, `0x401FFE`, doubles as flags rather than a display-list
-  entry: bit 0 = sprites-disable, bits 2-3 = transparent-pen select (`0xF` vs `0x0`).
+- **Display list**: word offsets `0xC00-0xFFE` within the 4096-word (8KB/2) spriteram region
+  (byte `0x401800-0x401FFD`) — **1023** 16-bit sprite-table indices max (re-verified against the
+  current source's loop bound `(0x800-2)/2 == 1023`, not the rounder "1024" an earlier pass
+  through this doc estimated from byte-range arithmetic alone), terminated early by a `0xFFFF`
+  sentinel. Sprite index is taken mod `0x300` (`sprite %= 0x300`).
+- **Control word**: the very last word, word offset `0xFFF` (byte `0x401FFE`), doubles as flags
+  rather than a display-list entry: bit 0 = sprites-disable (`if (ctrl & 1) return` — no sprites
+  drawn this frame at all), bits 2-3 = transparent-pen select (bit 2 → pen 0, bit 3 → pen 15).
 - **Hardware double-buffering**: MAME models this with `buffered_spriteram32_device`, copied on
   the vblank *rising* edge (`screen_vblank()`, psikyo_v.cpp:667-675) — i.e. the CPU-visible
   spriteram and the copy the sprite engine actually renders from are two separate buffers, swept

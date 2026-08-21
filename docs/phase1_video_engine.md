@@ -91,29 +91,106 @@ pixel generation starts — a small lookahead, not a full line of latency.
 +0x4 (word): color/flags/code-hi        f--- ---- ---- ----   flip Y
                                          -e-- ---- ---- ----   flip X
                                          --d- ---- ---- ----   ? (used, meaning unknown)
-                                         ---c ba98 ---- ----   color (4 bits)
+                                         ---c ba98 ---- ----   color (5 bits, bits 12-8)
                                          ---- ---- 76-- ----   priority (2 bits) -- see below
                                          ---- ---- ---- ---0   code, high bit
 +0x6 (word): code low bits              full 17-bit raw code = (bit0 of +0x4) << 16 | (+0x6)
 ```
 
-Position sign convention (verified against the C++, not a standard two's-complement 9-bit
-field — this is easy to get subtly wrong): raw 9-bit field `0-511`; **values `0x180-0x1FF`
-(384-511) are reinterpreted as `-128..-1`**, everything else (`0-383`) stays positive as-is.
-This is an asymmetric range (positive extent 383px, negative extent only 128px) sized exactly
-to let a sprite be scrolled 128px off the left/top edge without needing full two's-complement
-range. Do not implement this as a naive sign-bit check on bit 8 — that would flip at 256, not
-384, and would be wrong.
+**Color field is 5 bits (`attr[12:8]`), not 4** — the ASCII-art bit comment above (transcribed accurately from psikyo_v.cpp) marks 5 positions (`c b a 9 8`), but an earlier pass through this doc mislabeled it "(4 bits)" and the first RTL draft used `attr[11:8]`, dropping bit 12. Confirmed the width by tracing where the C++'s `color = attr>>8` value (all 8 upper bits, unmasked) actually gets used: `gfx_element::prio_zoom_transmask` computes the real palette base as `colorbase() + granularity()*(color % colors())` (`drawgfx.cpp:1392`), and the sprite `GFXDECODE_ENTRY` declares 32 color groups (`0x20`) — so only `color % 32` (the low 5 bits of `attr>>8`, i.e. `attr[12:8]`) ever matters; bit 13 (`?used`) is excluded from color and genuinely unused as far as this trace goes.
+
+**Position sign convention — X and Y are genuinely different, not the same field twice.** Easy
+to get subtly wrong by assuming symmetry; re-verified directly against psikyo_v.cpp:214-233
+line by line rather than trusted from an earlier pass over this file:
+
+- **X**: raw 9-bit field masked to `0-511` (`x & 0x1FF`), then **conditionally** `-= 0x200` only
+  if `x >= 0x180` (384). Asymmetric range: `0-383` positive, `384-511` reinterpreted as
+  `-128..-1`. Do not implement this as a sign-bit check on bit 8 — that flips at 256, not 384,
+  and would be wrong.
+- **Y**: `(y & 0xFF) - (y & 0x100)` — this *is* plain 9-bit two's-complement sign extension
+  (flips at bit 8, symmetric-ish range `-256..255`), unlike X.
+
+Both are computed from the *raw, unmasked* 16-bit word — the zoom/size fields living in the
+upper 7 bits (`zoom` bits 15-12, tile-count bits 11-9) are extracted from the word *before* this
+masking, not after.
 
 Zoom: raw 4-bit field `0-15` (0 = full size). Effective scale = `(32 - raw) / 32`, i.e. raw 0 →
 100%, raw 15 → 17/32 ≈ 53% (matches the driver's "shrinks to ~50%" comment). Both X and Y zoom
 independently.
+
+### The actual per-tile scaling algorithm
+
+The design doc originally described this qualitatively ("nearest-neighbor, no bilinear") without
+having traced the exact formula. Found it: everything funnels through
+`gfx_element::drawgfxzoom_core` (`src/emu/drawgfxt.ipp:738`), which is worth recording precisely
+since a hand-wavy "roughly nearest-neighbor" description isn't enough to build pixel-exact RTL
+from:
+
+```
+dstwidth  = (scale * 16 + 0x8000) >> 16      // scale = zoom_transformed << 11, tile is 16x16
+dx        = (16 << 16) / dstwidth             // 16.16 fixed-point source-step per dest pixel
+// then for each dest column: src_col = (accum >> 16); accum += dx  (accum starts at 0)
+```
+
+Working through this for `zoom_transformed` (the `32 - raw` value, range 17-32) against the tile's
+fixed 16px width/height reduces to something much simpler than the general formula suggests:
+
+- **`dstwidth = 16 - (raw >> 1)`** — verified by expanding the `(scale*16+0x8000)>>16` formula
+  algebraically for `scale = zoom_transformed << 11`: `dstwidth = (zoom_transformed + 1) >> 1`
+  exactly, and substituting `zoom_transformed = 32 - raw` gives `(33 - raw) >> 1 = 16 -
+  (raw>>1)`(pattern is `raw>>1`, e.g., raw=0,1→16; raw=2,3→15; ...; raw=14,15→9) — a plain
+  subtract-and-shift, no multiply or divide needed in hardware at all for this part.
+- **`dx`** doesn't reduce to anything similarly clean (it's a real `1048576/dstwidth`), but since
+  `dstwidth` only ever takes 8 distinct values (9-16, each hit by two adjacent `raw` values),
+  it's exactly representable as a small 16-entry lookup table (indexed directly by the 4-bit raw
+  zoom value, one table shared by X and Y since both use the same 16px tile dimension), computed
+  once and verified against Python's exact integer arithmetic rather than re-derived by hand in
+  RTL:
+
+  | raw | 0,1 | 2,3 | 4,5 | 6,7 | 8,9 | 10,11 | 12,13 | 14,15 |
+  |---|---|---|---|---|---|---|---|---|
+  | dstwidth | 16 | 15 | 14 | 13 | 12 | 11 | 10 | 9 |
+  | dx (16.16 hex) | 0x10000 | 0x11111 | 0x12492 | 0x13b13 | 0x15555 | 0x1745D | 0x19999 | 0x1C71C |
+
+- This is a genuinely important detail for adjacent-tile seam behavior: the *step* between
+  adjacent sub-tile origins (`zoom_transformed/2` from the position math, i.e. `(32-raw)>>1`
+  truncating) and the *rendered width* of each individual sub-tile (`dstwidth`, rounding instead
+  of truncating) are **not the same value** whenever `raw` is odd — the rendered tile is one
+  pixel wider than the step, so adjacent shrunk sub-tiles deliberately overlap by one pixel
+  rather than leaving a gap. Worth being deliberate about reproducing this rather than
+  "simplifying" it away, since it's presumably there to avoid visible seams on shrunk sprites.
+- Source pixel selection is confirmed nearest-neighbor (a fixed-point accumulator incrementing by
+  `dx`/`dy`, `>>16` to get the integer source index each step) — no bilinear filtering anywhere
+  in this pipeline.
+- Flip reverses the accumulator's start point and direction (`drawgfxt.ipp:794-805`): start at
+  `(dst_size-1)*d + 0` and step by `-d` instead of starting at 0 and stepping by `+d`.
+- **The accumulator collapses to a closed form, no running state needed**: since `dx` is constant
+  across one sub-tile row, the accumulator value before destination column `col` (0-indexed) is
+  just `col*dx` (no-flip) or `(dst_size-1-col)*dx` (flip) — an arithmetic progression, not
+  genuinely dependent on the previous column's value. So `src_index = (effective_col * dx) >> 16`
+  can be computed directly per destination column without maintaining accumulator state across
+  cycles, which is what `sprite_zoom_src_index.sv` does. Verified in Python across the full valid
+  domain (all 16 raw values x both flip directions x every valid `col` for that raw's `dst_size`)
+  that `src_index` always lands in 0-15 as expected (a source pixel index into one already-decoded
+  16-pixel tile row) — never overflows the tile despite the `col*dx` product needing ~21 bits
+  before the `>>16`.
 
 **Code → gfx ROM tile number is indirected through a ROM lookup table** (`spritelut` region,
 loaded from its own ROM), not used directly. This is a real extra pipeline stage the RTL sprite
 engine needs: raw 17-bit code → LUT read → actual gfx ROM tile address. The LUT lookup happens
 **per 16×16 sub-tile**, not once per logical sprite (see next section) — the raw code
 increments once per sub-tile, and each incremented value is independently looked up.
+
+**LUT ROM format** (`ROM_REGION16_LE("spritelut", 0x040000)`, confirmed identical across
+sngkace/gunbird/btlkroad): 256 KB, 16-bit little-endian entries → exactly `0x20000` = 131072
+entries, i.e. `2^17`. The pre-LUT `code` field is exactly 17 bits (`{word_attr[0],
+word_code_lo}`, max `0x1FFFF` = 131071) — so the hardware's `code & (lutlen-1)` masking is a
+**no-op for all three Phase 1 games** (the mask is all-ones at this exact ROM size). Still worth
+implementing the AND explicitly rather than assuming it away, in case a later phase's game uses a
+differently-sized LUT ROM. The looked-up **16-bit** value is used completely unmodified as the
+real gfx-ROM tile index (`draw_sprites()` passes it straight to `prio_zoom_transmask`/
+`prio_transmask` as the tile code) — no further shift/offset/bank logic downstream, confirmed by
+tracing every use of `sprite_ptr->code` in `psikyo_v.cpp`.
 
 ## Multi-tile sprite composition (the actual zoom algorithm)
 
@@ -134,12 +211,14 @@ factor (psikyo_v.cpp:249-283):
   step.
 
 **This is good news for the RTL design**: it means the sprite engine can be built as a per-tile
-pipeline (fetch one 16×16 tile, zoom-scale it, blend it into the line buffer at its computed
+pipeline (fetch one 16×16 tile, zoom-scale it, blend it into a destination buffer at its computed
 position) iterated up to 64 times per sprite, rather than needing an arbitrary-size 2D scaling
 engine. The zoom scaling itself (16×16 source → variable-size destination) is the one genuinely
 hard, novel piece of hardware here — no existing MiSTer core's zoom-sprite implementation can be
 directly reused (CAVE's is conceptually the closest analog per docs/ROADMAP.md, but Chisel/
-different toolchain, so it's design inspiration only).
+different toolchain, so it's design inspiration only). (Note: that "destination buffer" is a
+full frame buffer, not a scanline line buffer like the tilemap engine uses — see "Sprite frame
+renderer: architecture" below for why.)
 
 ## Sprite double-buffering
 
@@ -149,6 +228,76 @@ two independently-addressable 8 KB BRAM banks with a bank-select flip-flop toggl
 frame, not a single buffer — the CPU can be actively writing next frame's list into one bank
 while the sprite engine is still reading the other bank's contents for the frame currently being
 scanned out.
+
+## Sprite frame renderer: architecture
+
+**This is a real design decision, not something the C++ dictates directly** — worth stating
+explicitly since it's a deliberate departure from the tilemap engine's approach, not an
+oversight. Recording the reasoning so it isn't re-litigated later.
+
+MAME's `draw_sprites()` blits sprites into a full-frame `bitmap`/priority-bitmap pair that
+already holds the complete tilemap raster for the whole frame (tilemaps are drawn first, in
+their entirety, before any sprite is drawn). The tilemap engine here works the opposite way —
+`tilemap_line_engine` generates each layer's pixels **just-in-time**, one scanline ahead of
+scanout, with no full-frame storage at all. Two questions decide whether sprites can work the
+same just-in-time way:
+
+1. **Inter-sprite overlap.** Where two sprites' pixels land on the same screen position, the
+   *later* entry in the display list wins (drawn on top, in list order — plain sequential
+   overwrite, like MAME's blit loop). This is fine for a real-time approach too, in principle:
+   process the display list once for a given scanline in list order, and let later sprites
+   overwrite earlier ones in that scanline's line buffer. **But** a sprite can be up to 128px
+   tall (8 tiles × 16px) and cover multiple scanlines, and the display list can hold up to 1023
+   entries — so "which sprites touch scanline N" is not a cheap lookup, it requires walking the
+   *entire* display list for every single scanline (worst case 1023 entries × 224 lines ≈ 229K
+   entry-checks) to correctly preserve list-order overwrite semantics per line, since a sprite's
+   list position (draw priority) is independent of its Y position, so entries can't just be
+   sorted by Y up front and still preserve tie-breaking against sprites that don't overlap in Y.
+2. **Time budget.** One scanline is only `htotal` = 456 pixel-clocks (≈ 63.7 cycles/MHz of
+   internal clock beyond the 7.16MHz pixel clock, depending on the render engine's actual clock).
+   Walking even a fraction of a 1023-entry display list, per sub-tile (up to 64 sub-tiles/sprite,
+   each needing a spritelut ROM read + gfx ROM read + a 16×16 zoom-blit), inside one scanline's
+   budget is not realistic at any plausible on-FPGA clock — this is fundamentally a "render ahead
+   of time" problem, not a "keep up with the beam" one.
+
+**Decision: sprites render into a full 320×224 frame buffer, once per frame, decoupled from
+pixel-clock timing** (a free-running render engine clocked by the system clock, not the pixel
+clock) — this is the standard approach for zoom-sprite MiSTer cores of this class (matches
+CAVE_MiSTer's structure per `docs/ROADMAP.md`'s survey, though not its Chisel implementation).
+Concretely:
+
+- **Two full frame buffers** (ping-pong, same `fb_render_sel` toggle idea as the spriteram
+  double-buffer, switched together since they're driven by the same vblank event): one being
+  rendered into for the *next* frame while the *other* is read out during the *current* frame's
+  scanout.
+- Per pixel stored: sprite's palette-lookup fields (color/pixel-index, not yet resolved through
+  the palette RAM — palette lookup stays in the compositor, matching every other layer) + a
+  1-bit "sprite pixel present" flag + the 2-bit `primask` value (`{0x00, 0xFC, 0xFF, 0xFF}` from
+  the sprite's priority field — see "Priority / compositing" below). Whatever the sprite that
+  currently owns that pixel is, later sprites overwrite it during the render pass exactly like
+  MAME's sequential blit — **this fully resolves inter-sprite overlap by the time rendering
+  finishes**, before scanout ever reads the buffer.
+- Sizing: on-chip BRAM is large enough for this on the DE10-nano's Cyclone V (5CSEBA6) — 320×224
+  = 71,680 pixels; even a generous per-pixel width (color index + present flag + primask) is
+  comfortably inside the ~5.6Mbit of embedded M10K memory, so no SDRAM frame buffer is needed
+  purely for sprites (SDRAM is still needed for the tile/sprite/sound ROMs themselves).
+- **The final tilemap-vs-sprite priority decision is still resolved live, at scanout, not during
+  sprite rendering** — this is the key point that makes decoupled rendering correct despite
+  sprites being rendered "blind" to what the tilemaps will eventually draw: `(tilemap_priority &
+  primask) == 0` (see below) only depends on the *current pixel's* live tilemap-layer priority
+  value and the *already-resolved* sprite `primask` at that pixel, both available simultaneously
+  when the compositor combines `tilemap_line_engine`'s live output with the pre-rendered sprite
+  frame buffer's stored output for the scanline currently being scanned out. Sprite rendering
+  never needs to know what the tilemaps drew.
+
+**Open risk, not yet resolved**: whether the render engine can actually finish worst-case-sized
+display lists (1023 entries, theoretically up to 65536 sub-tile blits if every entry pointed at
+an 8×8-tile sprite) within one frame period at a realistic clock. Real games are extremely
+unlikely to hit that theoretical worst case, but this hasn't been budgeted against actual game
+sprite counts yet (no frame-by-frame sprite-count trace pulled from MAME so far) — flagging this
+now rather than discovering it late; may need a "spend at most N cycles per sub-tile, drop
+excess" bound or a faster render clock once real numbers are available. Tracked in
+`docs/ROADMAP.md`'s open items.
 
 ## Priority / compositing
 
@@ -250,3 +399,88 @@ of `hcnt` reaching 0 — ~136 pixel-clocks of headroom per docs/phase1_memory_ma
 fetch the row-scroll table entry, compute `eff_y`/`eff_x_start`, then prefetch the line's first
 one or two tiles before active display begins. From there, every 16 pixel-clocks (or fewer, for
 the line's first partial tile) triggers a buffer swap and the next fetch.
+
+## Sprite render engine: pipeline design (`sprite_render_engine`)
+
+Every combinational piece needed by this module already exists and is independently verified —
+this section is about how they chain together, plus a few interface details/gotchas that only
+show up at integration time and wouldn't be visible from any single module's own spec.
+
+**Component inventory** (all in `rtl/video/`, all already built+verified except the top-level
+FSM itself):
+
+| Stage | Module | Role |
+|---|---|---|
+| 1 | `sprite_display_list_walker` | emits sprite indices (0-767), flow-controlled via `advance` |
+| 2 | `sprite_record_fetch` | fetches the 4-word attribute record for one sprite index |
+| 3 | `sprite_record_decode` | (combinational) record → position/zoom/flip/color/code fields |
+| 4 | `sprite_pos_transform` | (combinational) offset-correction + zoom transform |
+| 5 | `sprite_zoom_lut` | (combinational) raw zoom → `dst_size`/`dx` — needed **twice** (X and Y independently zoom) |
+| 6 | `sprite_subtile_step` | (combinational) per-sub-tile position + LUT-index code |
+| 7 | *(new, trivial, inline — no separate module)* | spritelut ROM address = `sub_code` directly (§ "LUT ROM format" above — masking is a no-op for Phase 1's ROM size, still applied) |
+| 8 | `sprite_zoom_src_index` | (combinational) per-destination-pixel source index — needed **twice** (X and Y independently), see the flip gotcha below |
+| 9 | *(new, trivial, inline)* | gfx ROM row address = `{tile_code, src_row, 3'b000}` (byte address, 23 bits — sprite gfx ROMs run up to 0x700000-0x800000, one bit wider than the tilemap engine's 22-bit `gfxrom_addr`) |
+| 10 | `tile_row_decode` | (combinational, **reused from the tilemap engine unmodified** — its header already documents it as shared) — decodes one fetched row into 16 pixel values |
+
+**Gotcha: flip must not be applied twice.** `tile_row_decode` has its own `flip_x` port (built
+for the tilemap engine's simpler non-zoomed case, where flip is just "reverse the 16 pixels").
+`sprite_zoom_src_index` *also* fully accounts for flip internally — per `drawgfxzoom_core`, flip
+changes which *source* index a given *destination* column reads from (`(dst_size-1-col)*dx`
+instead of `col*dx`), reading directly from the tile's natural, unflipped pixel order. Since
+`sprite_zoom_src_index`'s output already IS the correct (flip-aware) source index into the
+natural row, **`tile_row_decode` must always be instantiated with `flip_x` tied to `1'b0`** in
+this pipeline — passing the sprite's real `flip_x` there too would flip twice and cancel out,
+producing unflipped output for flipped sprites. (Y-axis flip has no equivalent second module to
+confuse it with: `sprite_zoom_src_index`'s Y instance, fed `flip_y`, directly produces the
+correct source *row* index for the gfx ROM address — there's nothing downstream that could
+double-apply it.)
+
+**Transparent pen handling** (re-verified against current `draw_sprites()` source, not
+previously documented): the spriteram control word's bits 2/3 independently make pixel value 0
+and/or pixel value 15 transparent — `transmask = (ctrl&4 ? 1<<0 : 0) | (ctrl&8 ? 1<<15 : 0)`.
+Both, either, or neither can be transparent depending on the live control word — this is a
+per-frame runtime setting, not fixed at synthesis time, so the render engine needs `trans_pen0`/
+`trans_pen15` as inputs (the caller reads the control word once per frame and derives them, same
+"caller's responsibility, not this module's" split already used for the sprites-disable bit).
+Per pixel: `opaque = !((pixel==4'd0 && trans_pen0) || (pixel==4'd15 && trans_pen15))`.
+
+**Screen-space clipping.** A sub-tile's per-pixel screen position (`sub_x + dst_col`,
+`sub_y + dst_row`) can land outside the visible 320×224 area — `sub_x`/`sub_y` alone range up to
+[-128,495]/[-256,367] (per `sprite_subtile_step`'s header), and `dst_col`/`dst_row` add up to 15
+more. Out-of-range pixels are simply discarded (no frame-buffer write), not wrapped or clamped —
+matches MAME's `cliprect`-bounded blit.
+
+**Nested loop / FSM structure**, in signal-flow order (state names indicative, not final):
+
+```
+S_IDLE
+  -> frame_start: pulse walker's `start`
+S_WALK_WAIT           -- wait for walker's entry_valid or done
+  entry_valid -> latch sprite_index, pulse record_fetch's `start`
+  done         -> frame_done, back to S_IDLE
+S_RECORD_WAIT         -- wait for record_fetch's record_valid
+  record_valid -> sprite_record_decode + sprite_pos_transform + both sprite_zoom_lut instances
+                  all resolve combinationally in the same cycle (no wait needed);
+                  reset ix=0, iy=0, subtile_ordinal=0
+S_SUBTILE             -- sprite_subtile_step resolves combinationally (sub_x/sub_y/sub_code)
+  -> issue spritelut ROM read at sub_code
+S_LUT_WAIT            -- wait for lut_valid -> tile_code latched; reset dst_row=0
+S_ROW                 -- sprite_zoom_src_index (Y instance) resolves src_row combinationally
+  -> issue gfx ROM read at {tile_code, src_row, 3'b000}
+S_ROW_WAIT            -- wait for gfxrom_valid -> tile_row_decode (flip_x=0) resolves combinationally;
+                         reset dst_col=0
+S_COL                 -- sprite_zoom_src_index (X instance) resolves src_col combinationally;
+                         pixel = natural[src_col]; clip-and-write to frame buffer if opaque+onscreen
+                  -> dst_col++; if dst_col == dst_size_x: dst_row++, back to S_ROW (or S_SUBTILE
+                     if dst_row == dst_size_y: ix/iy/subtile_ordinal++ per the flip-aware nested
+                     loop sprite_subtile_step expects (dy outer, dx inner, "Multi-tile sprite
+                     composition" above), or back to S_WALK_WAIT with `advance` pulsed if the
+                     sprite's whole nx*ny grid is done)
+```
+
+Every `_WAIT` state is a real multi-cycle round trip (BRAM/ROM latency); every other state is one
+cycle of combinational resolution feeding the next request. `advance` to the display-list walker
+is only pulsed once a sprite's *entire* sub-tile grid (all `nx*ny` sub-tiles, each with up to
+`dst_size_x*dst_size_y` pixels) has been fully written to the frame buffer — this is the
+"consumer is done with the held entry" signal the walker's flow control (see
+`sprite_display_list_walker.sv`'s history) was built for.
