@@ -1,4 +1,4 @@
-# Psikyo (PS3/PS4/PS5/PS6) MiSTer Core — Roadmap
+# Psikyo (PS1/PS2) MiSTer Core — Roadmap
 
 ## Context
 
@@ -65,11 +65,15 @@ actually testbench mistakes, documented so they aren't re-investigated).
   driver itself). Entirely combinational, no clock. 12-case testbench PASS, including the subtle
   priority-mask edge case where a "behind"-priority sprite still shows through when neither
   tilemap layer drew anything.
-- Real Psikyo MAME ROM zips (`roms/`, gitignored — never commit ROM dumps) are now available
-  locally for samuraia/gunbird/btlkroad/s1945/tengai — fully-merged MAME romsets (all game code,
-  sound, and gfx ROMs in one zip per game, not split parent/clone sets). Useful both for
-  eventual `.mra`/ROM-loader work and, sooner, for pulling real gfx ROM content into simulation
-  testbenches instead of synthetic test patterns.
+- Real Psikyo MAME ROM zips (`roms/`, gitignored — never commit ROM dumps, see the legal note
+  below) are now available locally for samuraia/gunbird/btlkroad/s1945/tengai — fully-merged
+  MAME romsets (all game code, sound, and gfx ROMs in one zip per game, not split parent/clone
+  sets). Useful both for eventual `.mra`/ROM-loader work and, sooner, for pulling real gfx ROM
+  content into simulation testbenches instead of synthetic test patterns.
+  **Legal note**: these ROMs are not, and never will be, committed to this repo, and are not
+  distributed by this project in any form. Anyone running this core is responsible for either
+  dumping ROMs from hardware they own or otherwise holding appropriate legal rights to them —
+  documented in [`Readme.md`](../Readme.md) as the low-risk default for this project.
 - Not yet started: sound subsystem (T80+jt10), SDRAM tile/sprite/sound ROM banking, top-level
   integration against Template_MiSTer, `.mra` files.
 
@@ -120,6 +124,9 @@ above and is entirely custom — this is the real engineering content of the pro
 | LZ8420M | Treat as T80-compatible (it's a Z80 core variant); confirm no divergent behavior is actually exercised before assuming full compatibility | — |
 | PS2001B/PS3103/PS3204/PS3305 (tilemap+sprite video) | **Custom RTL, no shortcut.** No FPGA implementation of these exists anywhere (checked). CAVE's zoom-sprite engine (Arcade-Cave_MiSTer) is the closest conceptual analog — 68K-era arcade hardware with double-buffered zoom sprites — but it's Chisel/Scala on a different build pipeline, so it's a *design reference only*, not code to port into a Quartus/Verilog project | `psikyo_v.cpp` (full file read) |
 | Top-level framework (HPS, SDRAM ctrl, OSD, raw video timing, MRA/ROM loader glue) | **MiSTer-devel/Template_MiSTer** — the official generic starting point for new cores (per your direction). It's not arcade-specific out of the box, so the arcade-side wiring (MRA-driven ROM loader, per-game DIP/status-bit layout, dual-tilemap+sprite video pipeline shape) should be cross-checked against an existing arcade core built the same way, e.g. rmonic79/Arcade-Raiden_MiSTer or atrac17/Toaplan2 — same era, same "shmup with zoom sprites + banked tile ROMs" shape | github.com/MiSTer-devel/Template_MiSTer (base), github.com/rmonic79/Arcade-Raiden_MiSTer, github.com/atrac17/Toaplan2 (arcade-wiring reference) |
+| CRT geometry adjustment | **CRT_Offset module** — standard MiSTer-devel video-timing helper letting users nudge H/V position and porch timing from the OSD, present in most arcade cores of this class | `sys/`-adjacent, wired at the raw video timing generator stage; confirm exact module name/path against a reference core (e.g. Raiden_MiSTer/Toaplan2) when the top-level timing generator is built |
+| DIP switches / controls | **Framework-standard status-bit/DIP mapping** — per-game DIP layout comes from each driver's `INPUT_PORTS_START`/DIP tables (already flagged in "Verification strategy" below as needing individual attention per game/region), exposed via the OSD status bits the same way every MiSTer arcade core does; controls mapped through the standard MiSTer input framework (`joystick`/`player_1`/`player_2` conventions), not a custom scheme | `psikyo.cpp` per-game `INPUT_PORTS_START` blocks; `sys/` input framework |
+| High score persistence | **hiscore.v** — standard MiSTer-devel high-score save/load module. Needs each game's high-score RAM region/format identified from the driver (or from MAME's own hiscore.dat entries if present for these games) before it can be wired up | github.com/MiSTer-devel (hiscore.v is a common, mostly-generic module across many arcade cores) — Phase 2/polish-stage item, not needed for initial bring-up |
 
 ## Phased roadmap
 
@@ -202,5 +209,7 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 See "Progress" above for current status. Immediate next items, in order:
 
 1. Sound subsystem: T80 + jt10 (YM2610), sound CPU memory map from `docs/phase1_memory_map.md`.
-2. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer.
+2. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer,
+   including the CRT_Offset module, DIP/status-bit + control mapping, and (later-stage/polish,
+   not needed for initial bring-up) hiscore.v — see "Component reuse map" above.
 3. `.mra` files for sngkace/gunbird/btlkroad region variants; DE10-nano black-box bring-up.
