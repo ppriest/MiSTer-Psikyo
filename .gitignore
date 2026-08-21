@@ -52,3 +52,7 @@ modelsim.ini
 tools/vasm/
 sim/**/*.bin
 sim/**/*.lst
+
+# Copyrighted MAME ROM dumps used for local bring-up/verification -- never
+# committed, regardless of subdirectory.
+roms/

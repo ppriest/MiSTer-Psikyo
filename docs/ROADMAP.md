@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-21, commit `77736a5`)
+## Progress (kept current — last updated 2026-08-21, commit `4b2b4d0`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -56,10 +56,22 @@ actually testbench mistakes, documented so they aren't re-investigated).
   End-to-end tested (swap/clear → write → swap → readback, confirming untouched pixels correctly
   read as absent). Nothing structural left to build in the sprite pipeline itself — remaining
   work is wiring it into the rest of the core.
-- Not yet started: the tilemap-vs-sprite compositor (priority logic is designed in
-  `docs/phase1_video_engine.md` but not implemented — this is what will actually read
-  `sprite_frame_buffer`'s output), sound subsystem (T80+jt10), SDRAM tile/sprite ROM banking,
-  top-level integration, `.mra` files.
+- **Compositor: built and verified** (`compositor.sv`) — combines the two live tilemap-layer
+  pixel streams with `sprite_frame_buffer`'s output into a resolved palette index and xRGB_555
+  RGB, per the priority-mask table and per-layer transparent-pen logic derived in
+  `docs/phase1_video_engine.md` ("Compositor: backdrop, transparent-pen, and palette lookup") —
+  including reproducing a real MAME quirk where the backdrop color always follows layer 0's
+  transparent-pen bit regardless of which layer is actually enabled (dead fallback code in the
+  driver itself). Entirely combinational, no clock. 12-case testbench PASS, including the subtle
+  priority-mask edge case where a "behind"-priority sprite still shows through when neither
+  tilemap layer drew anything.
+- Real Psikyo MAME ROM zips (`roms/`, gitignored — never commit ROM dumps) are now available
+  locally for samuraia/gunbird/btlkroad/s1945/tengai — fully-merged MAME romsets (all game code,
+  sound, and gfx ROMs in one zip per game, not split parent/clone sets). Useful both for
+  eventual `.mra`/ROM-loader work and, sooner, for pulling real gfx ROM content into simulation
+  testbenches instead of synthetic test patterns.
+- Not yet started: sound subsystem (T80+jt10), SDRAM tile/sprite/sound ROM banking, top-level
+  integration against Template_MiSTer, `.mra` files.
 
 Every RTL module so far has been verified in ModelSim against an independently-computed
 reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
@@ -153,8 +165,11 @@ Dev repo lives at **`D:\Mister-Psikyo`**, a new local git repository (`git init`
 required) seeded from **MiSTer-devel/Template_MiSTer**. This is separate from the current working
 directory (`_Arcade` inside `meatcores-main`), which is your personal MiSTer *distribution* folder
 for prebuilt `.rbf`/`.mra` deployment, not a source tree — only the finished `.rbf`/`.mra` outputs
-get copied over to `_Arcade/cores` and `_Meathax` once builds are ready, the way your other cores
-already are.
+get copied over to `_Arcade/cores` once builds are ready, the way your other cores already are.
+
+**Release artifacts** (once builds exist — not yet, still deep in RTL): the generated per-game
+`.mra` files plus the compiled `.rbf`, named `Arcade-Psikyo_{date}.rbf`, get committed into a
+`releases/` folder in this repo.
 
 ## Open items / assumptions to revisit
 
@@ -186,10 +201,6 @@ already are.
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Compositor: combine tilemap layer 0/1 live output (`tilemap_line_engine`) with sprite output
-   (`sprite_frame_buffer`'s read port) per the 2-tier priority scheme already derived in
-   `docs/phase1_video_engine.md`, plus palette RAM lookup to turn pixel/color indices into real
-   RGB.
-2. Sound subsystem: T80 + jt10 (YM2610), sound CPU memory map from `docs/phase1_memory_map.md`.
-3. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer.
-4. `.mra` files for sngkace/gunbird/btlkroad region variants; DE10-nano black-box bring-up.
+1. Sound subsystem: T80 + jt10 (YM2610), sound CPU memory map from `docs/phase1_memory_map.md`.
+2. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer.
+3. `.mra` files for sngkace/gunbird/btlkroad region variants; DE10-nano black-box bring-up.

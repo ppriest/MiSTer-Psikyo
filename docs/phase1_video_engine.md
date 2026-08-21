@@ -327,6 +327,77 @@ layer 1" option. Simpler than the raw 2-bit field might suggest; good to know be
 the compositor's priority logic (a single front/back select per sprite, not a 4-way priority
 mux).
 
+## Compositor: backdrop, transparent-pen, and palette lookup
+
+Traced `screen_update()` directly (not re-derived from the earlier write-up above) for the parts
+the compositor needs that aren't covered by the priority-mask table: how each layer decides
+per-pixel opacity, and what shows through when nothing draws at a pixel at all.
+
+**Per-tilemap-layer opacity**, from `layer_ctrl[N]` (both layers, same bit encoding, per
+`docs/phase1_memory_map.md`'s table):
+
+```
+transparent_pen = (layer_ctrl[N] & 8) ? 0 : 15
+layer_draws_here = layer_enabled && (opaque_mode || pixel != transparent_pen)
+```
+
+`opaque_mode` is bit 1 (`TILEMAP_DRAW_OPAQUE` — draws every pixel regardless of pen, "used in
+Gunbird's attract mode" per the memory-map doc). `layer_enabled` is bit 0, applied via MAME's
+`tilemap->enable()` rather than a direct guard around the `draw()` call itself — functionally
+equivalent to ANDing it into the opacity decision, which is how this folds into RTL: an entirely
+disabled layer just never draws, same as if every pixel were its transparent pen.
+
+**Sprites need no equivalent per-pixel check here** — `sprite_render_engine` already applied
+`trans_pen0`/`trans_pen15` before ever writing to the frame buffer, so `sprite_frame_buffer`'s
+`rd_present` already means "this sprite pixel is opaque," full stop.
+
+**Backdrop (nothing drawn anywhere)** — genuinely surprising once traced, worth recording
+precisely rather than assuming symmetry between the two layers:
+
+```c
+int layers_ctrl = -1;   // hardcoded, never actually written elsewhere
+if (layers_ctrl & 1)
+    bgpen = palette[(layer_ctrl[0] & 8) ? 0x800 : 0x80f];
+else if (layers_ctrl & 2)
+    bgpen = palette[(layer_ctrl[1] & 8) ? 0xc00 : 0xc0f];
+else
+    bgpen = palette.black_pen();
+```
+
+`layers_ctrl` is a local hardcoded to `-1` (MAME's own source flags this with a `// TODO: is
+this correct?` / Coverity-suppression comment) — so `layers_ctrl & 1` is **always true**, and
+the `else if`/`else` branches are **dead code**, never reached in the current driver. The
+backdrop is therefore **always** derived from **layer 0's** transparent-pen-select bit alone
+(`0x800` = layer 0's colorbase + pen 0, or `0x80f` = pen 15), regardless of which layer is
+actually enabled or what layer 1's own control bits say. This looks like an unfinished
+reverse-engineering effort on MAME's part (the intent was probably "pick whichever layer is
+enabled, or black if neither"), but per this project's standing rule — MAME's actual behavior is
+the accuracy target, not a guess at more-correct hardware — the RTL should reproduce this exact
+quirk: `bgpen = palette[(layer0_ctrl & 8) ? 0x800 : 0x80f]`, unconditionally.
+
+**Palette addressing**: `xRGB_555`, 4096 entries, 8KB (`docs/phase1_memory_map.md`). Combining
+with `tile_cell_decode`'s `color` output (already includes layer 1's `+64` offset) and the
+GFXDECODE colorbase/granularity values (`gfx_psikyo`, psikyo.cpp: sprites colorbase `0x000`,
+tiles colorbase `0x800`, both granularity 16 since both are 4bpp):
+
+```
+tilemap palette index = 0x800 + color*16 + pixel     (color already includes +64 for layer 1)
+sprite  palette index = 0       + color*16 + pixel     (color is the raw 5-bit sprite color field)
+```
+
+**Draw-order resolution** (layer 0 → layer 1 → sprite, each overwriting where it draws,
+`primask` gating sprites per the table above): implemented as a plain priority mux rather than
+an actual bitmap, since the compositor only ever needs *this pixel's* final winner, not a
+persisted priority buffer — `tilemap_line_engine` already regenerates layer pixels live every
+frame, so there's nothing to accumulate across pixels the way MAME's `bitmap`/`priority` buffers
+do:
+
+```
+priority_val = l1_draws ? 2 : (l0_draws ? 1 : 0)
+sprite_wins  = sp_present && ((priority_val & primask[sp_priority]) == 0)
+winner       = sprite_wins ? sprite : (l1_draws ? layer1 : (l0_draws ? layer0 : backdrop))
+```
+
 ## RTL module breakdown (proposed, not yet implemented beyond the address-generation math above)
 
 1. **Tilemap engine** (×2 instances, one per layer) — address generator (trivial per above) +
