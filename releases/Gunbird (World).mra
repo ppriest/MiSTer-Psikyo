@@ -1,0 +1,96 @@
+<!--
+    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
+    This project does not include, distribute, or link to any ROM files. Run this only
+    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
+    rights to. See ../Readme.md.
+
+    ROM layout derived from MAME's psikyo.cpp ROM_START(gunbird) block, same design
+    approach as "Samurai Aces (World).mra" (see that file's header for the full
+    caveat about this being this project's own SDRAM-blob layout choice, not yet
+    consumed by any RTL, and about DIP status-bit positions being provisional).
+
+    Gunbird's "sprites" region has FOUR ROM_LOAD16_WORD_SWAP entries (0x700000 total,
+    confirmed by summing offsets/lengths against the declared ROM_REGION size)  - 
+    larger than Samurai Aces/Sengoku Ace's single-ROM sprites region, and gunbird also
+    has a real ymsnd:adpcmb (DELTA-T) region that samuraia/sngkace don't (confirmed
+    directly from ROM_START, not assumed just because both are YM2610 boards).
+-->
+<misterromdescription>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<name>Gunbird (World)</name>
+	<setname>gunbird</setname>
+	<year>1994</year>
+	<manufacturer>Psikyo</manufacturer>
+	<category>Shoot 'Em Up</category>
+	<rbf>Arcade-Psikyo</rbf>
+	<rotation>vertical</rotation>
+	<players>2</players>
+	<joystick>8-way</joystick>
+	<region>World</region>
+
+	<rom index="0" zip="gunbird.zip" md5="none">
+		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, same
+		     word-swap interleave scheme as the sngkace family (offset 0 = high
+		     word, offset 2 = low word) -->
+		<interleave output="16">
+			<part name="4.u46" crc="b78ec99d" map="01"/>
+			<part name="5.u39" crc="925f095d" map="10"/>
+		</interleave>
+
+		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - LZ8420M (Z80-compatible)
+		     sound program ROM -->
+		<part name="3.u71" crc="2168e4ba"/>
+
+		<!-- sprites: 0x0A0000-0x79FFFF (0x700000) - zoom sprite tile graphics,
+		     four ROMs concatenated in ROM_START's own order (not interleaved with
+		     each other - each occupies its own contiguous span) -->
+		<part name="u14.bin" crc="7d7e8a00"/>
+		<part name="u24.bin" crc="5e3ffc9d"/>
+		<part name="u15.bin" crc="a827bfb5"/>
+		<part name="u25.bin" crc="ef652e0c"/>
+
+		<!-- tiles: 0x7A0000-0x99FFFF (0x200000) - tilemap layer 0+1 graphics -->
+		<part name="u33.bin" crc="54494e6b"/>
+
+		<!-- ymsnd:adpcma: 0x9A0000-0xA9FFFF (0x100000) - YM2610 ADPCM-A samples -->
+		<part name="u56.bin" crc="9e07104d"/>
+
+		<!-- ymsnd:adpcmb: 0xAA0000-0xB1FFFF (0x080000) - YM2610 ADPCM-B (delta-t)
+		     samples - gunbird has this, samuraia/sngkace don't -->
+		<part name="u64.bin" crc="e187ed4f"/>
+
+		<!-- spritelut: 0xB20000-0xB5FFFF (0x40000) - sprite code lookup table ROM -->
+		<part name="u3.bin" crc="0905aeb2"/>
+
+		<!-- total: 0xB60000 bytes -->
+	</rom>
+
+	<!-- 3 buttons/player (shot/bomb/special), 8-way joystick - see
+	     INPUT_PORTS_START(gunbird)'s "P1_P2" port. -->
+	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
+
+	<switches default="FF,FF,FD,FF,0F">
+		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
+
+		<!-- DSW field is byte-for-byte identical to samuraia/sngkace's (same
+		     masks, same defaults, confirmed directly from source) except for the
+		     Region field's encoding below. -->
+		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
+		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+		<dip name="Lives" bits="20,21" ids="4,2,1,3"/>
+		<dip name="Bonus Life" bits="22" ids="600K,400K"/>
+		<dip name="Service Mode" bits="23" ids="On,Off"/>
+		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+
+		<!-- Region: real PORT_CONFNAME, same one-bit-cleared-per-region scheme as
+		     Samurai Aces but only 4 bits wide and a different value set  - 
+		     confirmed from source, not assumed to match samuraia's encoding. -->
+		<dip name="Region" bits="32,33,34,35" ids="Taiwan,Hong Kong,Korea,USA,World" values="0x7,0xb,0xd,0xe,0xf"/>
+	</switches>
+
+	<mratimestamp>20260822000000</mratimestamp>
+</misterromdescription>

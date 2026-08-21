@@ -1,0 +1,90 @@
+<!--
+    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
+    This project does not include, distribute, or link to any ROM files. Run this only
+    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
+    rights to. See ../../Readme.md.
+
+    MAME clone set btlkroadk (parent: btlkroad) - confirmed via the GAME() driver
+    table. Uses its own INPUT_PORTS_START(btlkroadk) block, which PORT_INCLUDEs
+    btlkroad's base ports and overrides only the Region PORT_CONFNAME (same option
+    set as btlkroad's own, but a different default: Korea here vs. Japan on the
+    parent - confirmed from source). Same ROM sizes/region layout as btlkroad
+    (including only three sprites ROMs, not gunbird's four) - only maincpu and
+    audiocpu content differ. See "Battle K-Road.mra" for the general layout/DIP-
+    status-bit-position caveats and the DSW bit-repurposing note, which apply
+    identically here.
+-->
+<misterromdescription>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<name>Battle K-Road (Korea)</name>
+	<setname>btlkroadk</setname>
+	<year>1994</year>
+	<manufacturer>Psikyo</manufacturer>
+	<category>Fight</category>
+	<rbf>Arcade-Psikyo</rbf>
+	<rotation>horizontal</rotation>
+	<players>2</players>
+	<joystick>8-way</joystick>
+	<region>Korea</region>
+
+	<rom index="0" zip="btlkroadk.zip" md5="none">
+		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, this set's own
+		     revision (different CRCs than btlkroad's) -->
+		<interleave output="16">
+			<part name="4,dot.u46" crc="e724d429" map="01"/>
+			<part name="5,dot.u39" crc="c0d65765" map="10"/>
+		</interleave>
+
+		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - this set's own sound ROM revision
+		     (different CRC than btlkroad's) -->
+		<part name="3,k.u71" crc="e0f0c597"/>
+
+		<!-- sprites: 0x0A0000-0x69FFFF (0x600000) - identical to btlkroad's (only
+		     three ROMs, matching the parent - not gunbird's four) -->
+		<part name="u14.bin" crc="282d89c3"/>
+		<part name="u24.bin" crc="bbe9d3d1"/>
+		<part name="u15.bin" crc="d4d1b07c"/>
+
+		<!-- tiles: 0x6A0000-0x89FFFF (0x200000) - identical to btlkroad's -->
+		<part name="u33.bin" crc="4c8577f1"/>
+
+		<!-- ymsnd:adpcma: 0x8A0000-0x99FFFF (0x100000) - identical to btlkroad's -->
+		<part name="u56.bin" crc="51d73682"/>
+
+		<!-- ymsnd:adpcmb: 0x9A0000-0xA1FFFF (0x080000) - identical to btlkroad's -->
+		<part name="u64.bin" crc="0f33049f"/>
+
+		<!-- spritelut: 0xA20000-0xA5FFFF (0x40000) - identical to btlkroad's -->
+		<part name="u3.bin" crc="30d541ed"/>
+
+		<!-- total: 0xA60000 bytes -->
+	</rom>
+
+	<buttons names="Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause" default="Y,B,A,X,L,R,Start,Select" count="6"/>
+
+	<switches default="FF,FF,FD,FF,0C">
+		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
+
+		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
+		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+
+		<!-- bits 20-22 repurposed vs. gunbird's Lives/Bonus Life, same as btlkroad -->
+		<dip name="Blood Effects" bits="20" ids="Off,On"/>
+		<dip name="Handicap Mode" bits="21" ids="On,Off"/>
+		<dip name="Use DSW 3 (Debug)" bits="22" ids="On,Off"/>
+
+		<dip name="Service Mode" bits="23" ids="On,Off"/>
+		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+
+		<!-- Region: same value set as btlkroad's, but default = Korea (0x0C) here
+		     instead of Japan (0x0F) - confirmed from source, not assumed to mirror
+		     the parent's default. -->
+		<dip name="Region" bits="32,33,34,35" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
+	</switches>
+
+	<mratimestamp>20260822000000</mratimestamp>
+</misterromdescription>

@@ -1,0 +1,83 @@
+<!--
+    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
+    This project does not include, distribute, or link to any ROM files. Run this only
+    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
+    rights to. See ../../Readme.md.
+
+    MAME clone set samuraiak (parent: samuraia) - confirmed via the GAME() driver
+    table, hence living under _alternatives/ rather than at the top level (see
+    "Samurai Aces (World).mra" for the parent-vs-clone convention and the general
+    ROM-layout/DIP-status-bit-position caveats, which apply identically here). MAME's
+    own title for this set is "Samurai Aces (Korea?)" - the question mark is in the
+    driver source itself (region attribution uncertain), kept in the <name> below;
+    dropped from this file's name only because "?" isn't a valid filename character.
+
+    Same input ports/DIP layout as the parent samuraia set (ipt="samuraia" in the
+    GAME() line) - but a genuinely different, LARGER maincpu ROM: two 0x80000 ROMs
+    (0x100000 total) vs. the parent's two 0x40000 ROMs (0x80000 total), confirmed from
+    ROM_START(samuraiak) directly, not assumed to match. Every other region (audiocpu,
+    sprites, tiles, adpcm-a, spritelut) is byte-for-byte identical to samuraia's.
+-->
+<misterromdescription>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<name>Samurai Aces (Korea?)</name>
+	<setname>samuraiak</setname>
+	<year>1993</year>
+	<manufacturer>Psikyo (Banpresto license)</manufacturer>
+	<category>Shoot 'Em Up</category>
+	<rbf>Arcade-Psikyo</rbf>
+	<rotation>vertical</rotation>
+	<players>2</players>
+	<joystick>8-way</joystick>
+	<region>Korea</region>
+
+	<rom index="0" zip="samuraiak.zip" md5="none">
+		<!-- maincpu: 0x000000-0x0FFFFF (0x100000) - 68EC020 program ROM, two 0x80000
+		     ROMs (twice the size of the parent samuraia's) word-swap-interleaved -->
+		<interleave output="16">
+			<part name="u127.bin" crc="ed4a3626" map="01"/>
+			<part name="u126.bin" crc="21803147" map="10"/>
+		</interleave>
+
+		<!-- audiocpu: 0x100000-0x11FFFF (0x20000) - Z80 sound program ROM, identical
+		     to samuraia's -->
+		<part name="3-u58.bin" crc="310f5c76"/>
+
+		<!-- sprites: 0x120000-0x31FFFF (0x200000) - identical to samuraia's -->
+		<part name="u14.bin" crc="00a546cb"/>
+
+		<!-- tiles: 0x320000-0x51FFFF (0x200000) - identical to samuraia's -->
+		<part name="u34.bin" crc="e6a75bd8"/>
+		<part name="u35.bin" crc="c4ca0164"/>
+
+		<!-- ymsnd:adpcma: 0x520000-0x61FFFF (0x100000) - identical to samuraia's -->
+		<part name="u68.bin" crc="9a7f6c34"/>
+
+		<!-- spritelut: 0x620000-0x65FFFF (0x40000) - identical to samuraia's -->
+		<part name="u11.bin" crc="11a04d91"/>
+
+		<!-- total: 0x660000 bytes -->
+	</rom>
+
+	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
+
+	<switches default="FF,FF,FD,FF,FF">
+		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
+
+		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
+		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+		<dip name="Lives" bits="20,21" ids="4,2,1,3"/>
+		<dip name="Bonus Life" bits="22" ids="600K,400K"/>
+		<dip name="Service Mode" bits="23" ids="On,Off"/>
+		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+
+		<!-- Region: same real PORT_CONFNAME/encoding as samuraia's -->
+		<dip name="Region" bits="32,33,34,35,36,37,38,39" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7f,0xbf,0xdf,0xef,0xff"/>
+	</switches>
+
+	<mratimestamp>20260822000000</mratimestamp>
+</misterromdescription>

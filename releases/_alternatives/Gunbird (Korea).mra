@@ -1,0 +1,81 @@
+<!--
+    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
+    This project does not include, distribute, or link to any ROM files. Run this only
+    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
+    rights to. See ../../Readme.md.
+
+    MAME clone set gunbirdk (parent: gunbird) - confirmed via the GAME() driver table.
+    Uses the same INPUT_PORTS_START(gunbirdj) block as sibling clone gunbirdj (no
+    functioning Region dip). Genuinely LARGER maincpu ROM than the parent: two 0x80000
+    ROMs (0x100000 total) vs. gunbird's two 0x40000 ROMs (0x80000 total) - confirmed
+    from ROM_START(gunbirdk) directly, not assumed. Also has its own distinct audiocpu
+    ROM content. Every other region (sprites, tiles, adpcm-a, adpcm-b, spritelut) is
+    byte-for-byte identical to gunbird's. See "Gunbird (World).mra" for the general
+    layout/DIP-status-bit-position caveats, which apply identically here.
+-->
+<misterromdescription>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<name>Gunbird (Korea)</name>
+	<setname>gunbirdk</setname>
+	<year>1994</year>
+	<manufacturer>Psikyo</manufacturer>
+	<category>Shoot 'Em Up</category>
+	<rbf>Arcade-Psikyo</rbf>
+	<rotation>vertical</rotation>
+	<players>2</players>
+	<joystick>8-way</joystick>
+	<region>Korea</region>
+
+	<rom index="0" zip="gunbirdk.zip" md5="none">
+		<!-- maincpu: 0x000000-0x0FFFFF (0x100000) - 68EC020 program ROM, two 0x80000
+		     ROMs (twice the size of the parent gunbird's) word-swap-interleaved -->
+		<interleave output="16">
+			<part name="1k.u46" crc="745cee52" map="01"/>
+			<part name="2k.u39" crc="669632fb" map="10"/>
+		</interleave>
+
+		<!-- audiocpu: 0x100000-0x11FFFF (0x20000) - this set's own sound ROM revision
+		     (different CRC than gunbird's) -->
+		<part name="k3.u71" crc="11994055"/>
+
+		<!-- sprites: 0x120000-0x81FFFF (0x700000) - identical to gunbird's -->
+		<part name="u14.bin" crc="7d7e8a00"/>
+		<part name="u24.bin" crc="5e3ffc9d"/>
+		<part name="u15.bin" crc="a827bfb5"/>
+		<part name="u25.bin" crc="ef652e0c"/>
+
+		<!-- tiles: 0x820000-0xA1FFFF (0x200000) - identical to gunbird's -->
+		<part name="u33.bin" crc="54494e6b"/>
+
+		<!-- ymsnd:adpcma: 0xA20000-0xB1FFFF (0x100000) - identical to gunbird's -->
+		<part name="u56.bin" crc="9e07104d"/>
+
+		<!-- ymsnd:adpcmb: 0xB20000-0xB9FFFF (0x080000) - identical to gunbird's -->
+		<part name="u64.bin" crc="e187ed4f"/>
+
+		<!-- spritelut: 0xBA0000-0xBDFFFF (0x40000) - identical to gunbird's -->
+		<part name="u3.bin" crc="0905aeb2"/>
+
+		<!-- total: 0xBE0000 bytes -->
+	</rom>
+
+	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
+
+	<switches default="FF,FF,FD,FF">
+		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra). No Region byte  - 
+		     gunbirdk shares gunbirdj's ports, whose Region field is IPT_UNKNOWN. -->
+
+		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
+		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+		<dip name="Lives" bits="20,21" ids="4,2,1,3"/>
+		<dip name="Bonus Life" bits="22" ids="600K,400K"/>
+		<dip name="Service Mode" bits="23" ids="On,Off"/>
+		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+	</switches>
+
+	<mratimestamp>20260822000000</mratimestamp>
+</misterromdescription>

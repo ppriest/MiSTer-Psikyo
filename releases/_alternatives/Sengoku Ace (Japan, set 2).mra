@@ -1,0 +1,74 @@
+<!--
+    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
+    This project does not include, distribute, or link to any ROM files. Run this only
+    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
+    rights to. See ../../Readme.md.
+
+    MAME clone set sngkacea (parent: samuraia, alongside sibling clone sngkace - "set 2"
+    of the same Japan release) - confirmed via the GAME() driver table. Same input
+    ports/DIP layout as sngkace (ipt="sngkace", no functioning Region dip). Same ROM
+    sizes/layout as sngkace's own set (0x40000-per-half maincpu, matching the parent
+    samuraia's size, unlike samuraiak's larger ROMs) - only the maincpu content
+    (program revision) differs; every other region is byte-for-byte identical to
+    samuraia/sngkace. See "Samurai Aces (World).mra" for the general layout/DIP-
+    status-bit-position caveats, which apply identically here.
+-->
+<misterromdescription>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<name>Sengoku Ace (Japan, set 2)</name>
+	<setname>sngkacea</setname>
+	<year>1993</year>
+	<manufacturer>Psikyo (Banpresto license)</manufacturer>
+	<category>Shoot 'Em Up</category>
+	<rbf>Arcade-Psikyo</rbf>
+	<rotation>vertical</rotation>
+	<players>2</players>
+	<joystick>8-way</joystick>
+	<region>Japan</region>
+
+	<rom index="0" zip="sngkacea.zip" md5="none">
+		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, this set's own
+		     revision (different CRCs than both samuraia's and sngkace's) -->
+		<interleave output="16">
+			<part name="1.-u127.bin" crc="3a43708d" map="01"/>
+			<part name="2.-u126.bin" crc="7aa50c46" map="10"/>
+		</interleave>
+
+		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - identical to samuraia's -->
+		<part name="3-u58.bin" crc="310f5c76"/>
+
+		<!-- sprites: 0x0A0000-0x29FFFF (0x200000) - identical to samuraia's -->
+		<part name="u14.bin" crc="00a546cb"/>
+
+		<!-- tiles: 0x2A0000-0x49FFFF (0x200000) - identical to samuraia's -->
+		<part name="u34.bin" crc="e6a75bd8"/>
+		<part name="u35.bin" crc="c4ca0164"/>
+
+		<!-- ymsnd:adpcma: 0x4A0000-0x59FFFF (0x100000) - identical to samuraia's -->
+		<part name="u68.bin" crc="9a7f6c34"/>
+
+		<!-- spritelut: 0x5A0000-0x5DFFFF (0x40000) - identical to samuraia's -->
+		<part name="u11.bin" crc="11a04d91"/>
+
+		<!-- total: 0x5E0000 bytes -->
+	</rom>
+
+	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
+
+	<switches default="FF,FF,FD,FF">
+		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
+
+		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
+		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+		<dip name="Lives" bits="20,21" ids="4,2,1,3"/>
+		<dip name="Bonus Life" bits="22" ids="600K,400K"/>
+		<dip name="Service Mode" bits="23" ids="On,Off"/>
+		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+	</switches>
+
+	<mratimestamp>20260822000000</mratimestamp>
+</misterromdescription>

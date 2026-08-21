@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `e0bf109`)
+## Progress (kept current — last updated 2026-08-22, commit `89882a0`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -106,9 +106,40 @@ actually testbench mistakes, documented so they aren't re-investigated).
   documented in the module header. Same two-scenario testbench structure as sngkace's, with the
   banked read deliberately targeting the window's first address (0x8200) to confirm the
   boundary math holds exactly at the edge; both scenarios PASS.
+- **`.mra` files: done for all four Phase 1 parent games plus every MAME clone set**
+  (`releases/`, clones under `releases/_alternatives/`) — built directly from each game's
+  `ROM_START`/`INPUT_PORTS_START` blocks in `psikyo.cpp` (region names, file sizes, offsets,
+  CRC32s, and real per-game DIP differences — e.g. btlkroad repurposes gunbird's Lives/Bonus
+  Life DSW bits for Blood Effects/Handicap/Debug instead, confirmed from source rather than
+  assumed additive). Built out of roadmap order at your direction (skipped ahead of the sound
+  subsystem/SDRAM items below).
+
+  **Parent sets** (top level of `releases/`, one per MAME `GAME()` parent — confirmed against
+  the driver table, not assumed from title similarity): Samurai Aces (World) `samuraia`,
+  Gunbird (World) `gunbird`, Battle K-Road `btlkroad`.
+
+  **Clone sets** (`releases/_alternatives/`, matching the convention seen in other MiSTer
+  arcade release repos e.g. rmonic79/Arcade-Raiden_MiSTer): Sengoku Ace (Japan, set 1)
+  `sngkace`, Sengoku Ace (Japan, set 2) `sngkacea`, Samurai Aces (Korea?) `samuraiak` — all
+  three clones of `samuraia`, confirmed via the `GAME()` table (sngkace was initially placed
+  at the top level by mistake, since it's a genuinely different program ROM rather than a
+  region-DIP variant — caught on review and moved); Gunbird (Japan) `gunbirdj`, Gunbird
+  (Korea) `gunbirdk` — clones of `gunbird`, sharing a Region-less input port block distinct
+  from the parent's; Battle K-Road (Korea) `btlkroadk` — clone of `btlkroad`, same DIP layout
+  but a different Region default (Korea vs. the parent's Japan). Several clones have real ROM
+  differences beyond just program content worth remembering: samuraiak and gunbirdk both have
+  double-size maincpu ROMs (0x100000 vs. 0x80000) vs. their parents.
+
+  Two things are explicitly provisional and flagged as such in every file: the ROM region
+  concatenation order is this project's own SDRAM-blob layout choice (not yet consumed by any
+  RTL, since SDRAM integration doesn't exist yet — may change once it does), and the DIP
+  `<dip bits="...">` status-bit positions are a placeholder scheme (game DIPs starting at
+  status bit 16) not yet verified against real core `.sv` `status[]` wiring, for the same
+  reason.
 - Not yet started: SDRAM tile/sprite/sound ROM banking, top-level integration against
   Template_MiSTer (CRT_Offset, DIP/control mapping, hiscore.v — see "Component reuse map"
-  above), `.mra` files.
+  above) — this is also where the `.mra` files' provisional ROM layout and DIP status-bit
+  positions above get finalized/verified against real RTL for the first time.
 
 Every RTL module so far has been verified in ModelSim against an independently-computed
 reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
@@ -251,5 +282,7 @@ See "Progress" above for current status. Immediate next items, in order:
    trusted.
 2. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer,
    including the CRT_Offset module, DIP/status-bit + control mapping, and (later-stage/polish,
-   not needed for initial bring-up) hiscore.v — see "Component reuse map" above.
-3. `.mra` files for sngkace/gunbird/btlkroad region variants; DE10-nano black-box bring-up.
+   not needed for initial bring-up) hiscore.v — see "Component reuse map" above. This is also
+   where the `.mra` files' provisional ROM-blob layout and DIP status-bit positions (see
+   "Progress" above) get checked against real RTL for the first time and corrected if needed.
+3. DE10-nano black-box bring-up once a build exists.

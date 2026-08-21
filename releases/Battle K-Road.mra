@@ -1,0 +1,104 @@
+<!--
+    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
+    This project does not include, distribute, or link to any ROM files. Run this only
+    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
+    rights to. See ../Readme.md.
+
+    ROM layout derived from MAME's psikyo.cpp ROM_START(btlkroad) block, same design
+    approach as "Samurai Aces (World).mra" (see that file's header for the full caveat
+    about SDRAM-blob layout and provisional DIP status-bit positions).
+
+    Battle K-Road shares gunbird's exact machine config and sound/CPU memory map
+    (confirmed via the GAME() driver table, not assumed) - but it's a 6-button fighting
+    game, not a shooter: its "sprites" region has only THREE ROM_LOAD16_WORD_SWAP entries
+    (0x600000 total, confirmed by summing offsets/lengths - the declared ROM_REGION size
+    of 0x700000 is oversized for this set, matching gunbird's region size ceiling rather
+    than this game's actual ROM count) and it has its own repurposed DSW bits (Blood
+    Effects / Handicap Mode / debug switch in place of gunbird's Lives/Bonus Life at the
+    same bit positions - confirmed from source, not assumed to just be additive on top
+    of gunbird's DSW layout). Cabinet is ROT0 (horizontal), unlike the other three
+    Phase 1 titles which are all ROT270 (vertical).
+-->
+<misterromdescription>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<name>Battle K-Road</name>
+	<setname>btlkroad</setname>
+	<year>1994</year>
+	<manufacturer>Psikyo</manufacturer>
+	<category>Fight</category>
+	<rbf>Arcade-Psikyo</rbf>
+	<rotation>horizontal</rotation>
+	<players>2</players>
+	<joystick>8-way</joystick>
+	<region>Japan</region>
+
+	<rom index="0" zip="btlkroad.zip" md5="none">
+		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, same
+		     word-swap interleave scheme as gunbird -->
+		<interleave output="16">
+			<part name="4-u46.bin" crc="8a7a28b4" map="01"/>
+			<part name="5-u39.bin" crc="933561fa" map="10"/>
+		</interleave>
+
+		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - LZ8420M (Z80-compatible)
+		     sound program ROM -->
+		<part name="3-u71.bin" crc="22411fab"/>
+
+		<!-- sprites: 0x0A0000-0x69FFFF (0x600000) - zoom sprite tile graphics,
+		     only THREE ROMs (see header note - one fewer than gunbird's four) -->
+		<part name="u14.bin" crc="282d89c3"/>
+		<part name="u24.bin" crc="bbe9d3d1"/>
+		<part name="u15.bin" crc="d4d1b07c"/>
+
+		<!-- tiles: 0x6A0000-0x89FFFF (0x200000) - tilemap layer 0+1 graphics -->
+		<part name="u33.bin" crc="4c8577f1"/>
+
+		<!-- ymsnd:adpcma: 0x8A0000-0x99FFFF (0x100000) - YM2610 ADPCM-A samples -->
+		<part name="u56.bin" crc="51d73682"/>
+
+		<!-- ymsnd:adpcmb: 0x9A0000-0xA1FFFF (0x080000) - YM2610 ADPCM-B (delta-t)
+		     samples -->
+		<part name="u64.bin" crc="0f33049f"/>
+
+		<!-- spritelut: 0xA20000-0xA5FFFF (0x40000) - sprite code lookup table ROM -->
+		<part name="u3.bin" crc="30d541ed"/>
+
+		<!-- total: 0xA60000 bytes -->
+	</rom>
+
+	<!-- 6 buttons/player (fighting game - 3-punch/3-kick-style layout is typical
+	     for this era, but psikyo.cpp only labels them BUTTON1-6, no function names
+	     given in the driver itself, so generic labels are used here rather than
+	     asserting an unverified button-function mapping). -->
+	<buttons names="Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause" default="Y,B,A,X,L,R,Start,Select" count="6"/>
+
+	<switches default="FF,FF,FD,FF,00">
+		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
+
+		<!-- Flip Screen / Demo Sounds / Difficulty at the same bit positions as
+		     gunbird's DSW, unchanged (no PORT_MODIFY override for these fields,
+		     confirmed from source). -->
+		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
+		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+
+		<!-- bits 20-22 are REPURPOSED here vs. gunbird's Lives/Bonus Life  - 
+		     confirmed from source, not additive on top of the shooter's fields. -->
+		<dip name="Blood Effects" bits="20" ids="Off,On"/>
+		<dip name="Handicap Mode" bits="21" ids="On,Off"/>
+		<dip name="Use DSW 3 (Debug)" bits="22" ids="On,Off"/>
+
+		<dip name="Service Mode" bits="23" ids="On,Off"/>
+		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+
+		<!-- Region: btlkroad's own encoding/default (Japan=0x0, World=0xf - the
+		     OPPOSITE polarity of gunbird's World=0xf/Japan-not-present scheme  - 
+		     confirmed from source, not assumed to mirror gunbird's. -->
+		<dip name="Region" bits="32,33,34,35" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
+	</switches>
+
+	<mratimestamp>20260822000000</mratimestamp>
+</misterromdescription>
