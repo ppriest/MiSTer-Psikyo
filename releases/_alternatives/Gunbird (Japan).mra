@@ -13,6 +13,9 @@
     sprites, tiles, adpcm-a, adpcm-b, spritelut) is byte-for-byte identical to
     gunbird's. See "Gunbird (World).mra" for the general layout/DIP-status-bit-position
     caveats, which apply identically here.
+
+    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
+    map (same padding scheme as the parent gunbird).
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -28,35 +31,36 @@
 	<region>Japan</region>
 
 	<rom index="0" zip="gunbirdj.zip" md5="none">
-		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, this set's own
-		     revision (different CRCs than gunbird's or gunbirdk's) -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
+		     (different CRCs than gunbird's or gunbirdk's). Actual 0x80000. -->
 		<interleave output="16">
 			<part name="1.u46" crc="474abd69" map="01"/>
 			<part name="2.u39" crc="3e3e661f" map="10"/>
 		</interleave>
+		<part repeat="0x180000"> FF</part>
 
-		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - identical to gunbird's -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to gunbird's. -->
 		<part name="3.u71" crc="2168e4ba"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x0A0000-0x79FFFF (0x700000) - identical to gunbird's -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - identical to gunbird's. -->
 		<part name="u14.bin" crc="7d7e8a00"/>
 		<part name="u24.bin" crc="5e3ffc9d"/>
 		<part name="u15.bin" crc="a827bfb5"/>
 		<part name="u25.bin" crc="ef652e0c"/>
+		<part repeat="0x100000"> FF</part>
 
-		<!-- tiles: 0x7A0000-0x99FFFF (0x200000) - identical to gunbird's -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to gunbird's. -->
 		<part name="u33.bin" crc="54494e6b"/>
 
-		<!-- ymsnd:adpcma: 0x9A0000-0xA9FFFF (0x100000) - identical to gunbird's -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to gunbird's. -->
 		<part name="u56.bin" crc="9e07104d"/>
 
-		<!-- ymsnd:adpcmb: 0xAA0000-0xB1FFFF (0x080000) - identical to gunbird's -->
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - identical to gunbird's. -->
 		<part name="u64.bin" crc="e187ed4f"/>
 
-		<!-- spritelut: 0xB20000-0xB5FFFF (0x40000) - identical to gunbird's -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to gunbird's. -->
 		<part name="u3.bin" crc="0905aeb2"/>
-
-		<!-- total: 0xB60000 bytes -->
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>

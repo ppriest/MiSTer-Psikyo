@@ -17,6 +17,11 @@
     (0x100000 total) vs. the parent's two 0x40000 ROMs (0x80000 total), confirmed from
     ROM_START(samuraiak) directly, not assumed to match. Every other region (audiocpu,
     sprites, tiles, adpcm-a, spritelut) is byte-for-byte identical to samuraia's.
+
+    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
+    map. The maincpu region's reservation (0x200000, sized off this exact set alongside
+    gunbirdk) needs only half its usual padding here since this set's own maincpu
+    content is already double the norm.
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -32,31 +37,34 @@
 	<region>Korea</region>
 
 	<rom index="0" zip="samuraiak.zip" md5="none">
-		<!-- maincpu: 0x000000-0x0FFFFF (0x100000) - 68EC020 program ROM, two 0x80000
-		     ROMs (twice the size of the parent samuraia's) word-swap-interleaved -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - two 0x80000 ROMs (twice the
+		     size of the parent samuraia's) word-swap-interleaved. Actual 0x100000. -->
 		<interleave output="16">
 			<part name="u127.bin" crc="ed4a3626" map="01"/>
 			<part name="u126.bin" crc="21803147" map="10"/>
 		</interleave>
+		<part repeat="0x100000"> FF</part>
 
-		<!-- audiocpu: 0x100000-0x11FFFF (0x20000) - Z80 sound program ROM, identical
-		     to samuraia's -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x120000-0x31FFFF (0x200000) - identical to samuraia's -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
 		<part name="u14.bin" crc="00a546cb"/>
+		<part repeat="0x600000"> FF</part>
 
-		<!-- tiles: 0x320000-0x51FFFF (0x200000) - identical to samuraia's -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
 		<part name="u35.bin" crc="c4ca0164"/>
 
-		<!-- ymsnd:adpcma: 0x520000-0x61FFFF (0x100000) - identical to samuraia's -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to samuraia's. -->
 		<part name="u68.bin" crc="9a7f6c34"/>
 
-		<!-- spritelut: 0x620000-0x65FFFF (0x40000) - identical to samuraia's -->
-		<part name="u11.bin" crc="11a04d91"/>
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - not present, all padding. -->
+		<part repeat="0x80000"> FF</part>
 
-		<!-- total: 0x660000 bytes -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to samuraia's. -->
+		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>

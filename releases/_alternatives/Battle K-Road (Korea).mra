@@ -13,6 +13,9 @@
     audiocpu content differ. See "Battle K-Road.mra" for the general layout/DIP-
     status-bit-position caveats and the DSW bit-repurposing note, which apply
     identically here.
+
+    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
+    map (same padding scheme as the parent btlkroad).
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -28,36 +31,38 @@
 	<region>Korea</region>
 
 	<rom index="0" zip="btlkroadk.zip" md5="none">
-		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, this set's own
-		     revision (different CRCs than btlkroad's) -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
+		     (different CRCs than btlkroad's). Actual 0x80000. -->
 		<interleave output="16">
 			<part name="4,dot.u46" crc="e724d429" map="01"/>
 			<part name="5,dot.u39" crc="c0d65765" map="10"/>
 		</interleave>
+		<part repeat="0x180000"> FF</part>
 
-		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - this set's own sound ROM revision
-		     (different CRC than btlkroad's) -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - this set's own sound ROM
+		     revision (different CRC than btlkroad's). Actual 0x20000. -->
 		<part name="3,k.u71" crc="e0f0c597"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x0A0000-0x69FFFF (0x600000) - identical to btlkroad's (only
-		     three ROMs, matching the parent - not gunbird's four) -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - identical to btlkroad's
+		     (only three ROMs, matching the parent - not gunbird's four). Actual
+		     0x600000. -->
 		<part name="u14.bin" crc="282d89c3"/>
 		<part name="u24.bin" crc="bbe9d3d1"/>
 		<part name="u15.bin" crc="d4d1b07c"/>
+		<part repeat="0x200000"> FF</part>
 
-		<!-- tiles: 0x6A0000-0x89FFFF (0x200000) - identical to btlkroad's -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to btlkroad's. -->
 		<part name="u33.bin" crc="4c8577f1"/>
 
-		<!-- ymsnd:adpcma: 0x8A0000-0x99FFFF (0x100000) - identical to btlkroad's -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to btlkroad's. -->
 		<part name="u56.bin" crc="51d73682"/>
 
-		<!-- ymsnd:adpcmb: 0x9A0000-0xA1FFFF (0x080000) - identical to btlkroad's -->
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - identical to btlkroad's. -->
 		<part name="u64.bin" crc="0f33049f"/>
 
-		<!-- spritelut: 0xA20000-0xA5FFFF (0x40000) - identical to btlkroad's -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to btlkroad's. -->
 		<part name="u3.bin" crc="30d541ed"/>
-
-		<!-- total: 0xA60000 bytes -->
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause" default="Y,B,A,X,L,R,Start,Select" count="6"/>

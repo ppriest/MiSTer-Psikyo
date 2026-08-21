@@ -4,21 +4,21 @@
     with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
     rights to. See ../Readme.md.
 
-    ROM layout below is built directly from MAME's psikyo.cpp ROM_START(samuraia) block
-    (region names, file sizes, load offsets, CRC32s) - see docs/ROADMAP.md and
-    docs/phase1_memory_map.md for the source-level derivation. The concatenated-region
-    layout chosen here (maincpu, audiocpu, sprites, tiles, adpcm-a, spritelut, in
-    ROM_START's own order) is this project's OWN design choice for the SDRAM download
-    blob, since top-level SDRAM/ROM-banking integration hasn't been built yet (see
-    ROADMAP.md "Next steps") - it is not yet consumed by any RTL, and may still change
-    once that integration work actually starts.
+    ROM layout below matches docs/phase1_ddram_map.md's finalized DDRAM address map: one
+    flat, fixed-region layout shared by every Phase 1 game (region base offsets/sizes
+    sized off the largest real content across ALL parent AND clone sets, not just this
+    game), padded with filler bytes wherever this specific game's actual content is
+    smaller than its region's reservation. This replaced an earlier tightly-packed
+    per-game concatenation once the DDRAM transport RTL (ddram_phy/ddram_arbiter/
+    ddram_download, all built and verified) settled on the real address map - see
+    docs/ROADMAP.md's DDRAM integration notes for the history.
 
     DIP switch VALUES/OPTIONS below are taken directly from psikyo.cpp's
     INPUT_PORTS_START(samuraia) PORT_DIPNAME/PORT_DIPSETTING declarations. The STATUS-BIT
-    POSITIONS they're assigned to (the <dip bits="..."> values) are a provisional
-    placeholder scheme (bit 16 upward, reserving 0-15 for standard OSD options), NOT yet
-    verified against any actual core .sv status[] wiring - because that top-level DIP/
-    status-bit mapping doesn't exist yet either. Revisit once it does.
+    POSITIONS they're assigned to (the <dip bits="..."> values) are STILL a provisional
+    placeholder scheme (bit 16 upward, reserving 0-15 for standard OSD options) - that
+    part hasn't been settled yet, unlike the ROM layout above; it depends on the actual
+    core .sv status[] wiring, which doesn't exist yet.
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -34,32 +34,47 @@
 	<region>World</region>
 
 	<rom index="0" zip="samuraia.zip" md5="none">
-		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, two 16-bit-wide
-		     ROMs word-swap-interleaved to reconstruct MAME's ROM_LOAD32_WORD_SWAP pairing
-		     (offset 0 = high word, offset 2 = low word) -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, two
+		     16-bit-wide ROMs word-swap-interleaved to reconstruct MAME's
+		     ROM_LOAD32_WORD_SWAP pairing (offset 0 = high word, offset 2 = low word).
+		     Actual content 0x80000; padded to the full reservation. -->
 		<interleave output="16">
 			<part name="4-u127.bin" crc="8c9911ca" map="01"/>
 			<part name="5-u126.bin" crc="d20c3ef0" map="10"/>
 		</interleave>
+		<part repeat="0x180000"> FF</part>
 
-		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - Z80 sound program ROM -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - Z80 sound program ROM.
+		     Actual content 0x20000; padded to the full reservation. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x0A0000-0x29FFFF (0x200000) - zoom sprite tile graphics -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics.
+		     Actual content 0x200000 (this family's sprites region is the smallest of
+		     any Phase 1 game - gunbird's needs the full 0x700000); padded to the
+		     full reservation. -->
 		<part name="u14.bin" crc="00a546cb"/>
+		<part repeat="0x600000"> FF</part>
 
-		<!-- tiles: 0x2A0000-0x49FFFF (0x200000) - tilemap layer 0+1 graphics, 2 ROMs
-		     concatenated in ROM_START's own order (not interleaved with each other) -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - tilemap layer 0+1 graphics, 2
+		     ROMs concatenated (not interleaved with each other). Exact fit, no
+		     padding needed. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
 		<part name="u35.bin" crc="c4ca0164"/>
 
-		<!-- ymsnd:adpcma: 0x4A0000-0x59FFFF (0x100000) - YM2610 ADPCM-A sample ROM -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - YM2610 ADPCM-A sample
+		     ROM. Exact fit, no padding needed. -->
 		<part name="u68.bin" crc="9a7f6c34"/>
 
-		<!-- spritelut: 0x5A0000-0x5DFFFF (0x40000) - sprite code lookup table ROM -->
-		<part name="u11.bin" crc="11a04d91"/>
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - samuraia/sngkace have
+		     NO ADPCM-B region at all (confirmed from ROM_START - only the gunbird
+		     family does), so this entire reservation is padding. -->
+		<part repeat="0x80000"> FF</part>
 
-		<!-- total: 0x5E0000 bytes -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - sprite code lookup table
+		     ROM. Exact fit, no padding needed (also the last region - nothing
+		     follows). -->
+		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
 
 	<!-- Player controls / coin / start are handled through the standard MiSTer

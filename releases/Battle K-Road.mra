@@ -4,20 +4,22 @@
     with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
     rights to. See ../Readme.md.
 
-    ROM layout derived from MAME's psikyo.cpp ROM_START(btlkroad) block, same design
-    approach as "Samurai Aces (World).mra" (see that file's header for the full caveat
-    about SDRAM-blob layout and provisional DIP status-bit positions).
+    ROM layout derived from MAME's psikyo.cpp ROM_START(btlkroad) block, matching
+    docs/phase1_ddram_map.md's finalized fixed-region DDRAM address map (same scheme as
+    "Samurai Aces (World).mra" - region base offsets/sizes sized off the largest real
+    content across ALL Phase 1 parent AND clone sets, padded with filler wherever this
+    game's actual content is smaller than its region's reservation).
 
     Battle K-Road shares gunbird's exact machine config and sound/CPU memory map
     (confirmed via the GAME() driver table, not assumed) - but it's a 6-button fighting
     game, not a shooter: its "sprites" region has only THREE ROM_LOAD16_WORD_SWAP entries
-    (0x600000 total, confirmed by summing offsets/lengths - the declared ROM_REGION size
-    of 0x700000 is oversized for this set, matching gunbird's region size ceiling rather
-    than this game's actual ROM count) and it has its own repurposed DSW bits (Blood
-    Effects / Handicap Mode / debug switch in place of gunbird's Lives/Bonus Life at the
-    same bit positions - confirmed from source, not assumed to just be additive on top
-    of gunbird's DSW layout). Cabinet is ROT0 (horizontal), unlike the other three
-    Phase 1 titles which are all ROT270 (vertical).
+    (0x600000 total, confirmed by summing offsets/lengths - smaller than gunbird's four,
+    which is why the sprites region needs 0x200000 of padding here vs. gunbird's
+    0x100000) and it has its own repurposed DSW bits (Blood Effects / Handicap Mode /
+    debug switch in place of gunbird's Lives/Bonus Life at the same bit positions -
+    confirmed from source, not assumed to just be additive on top of gunbird's DSW
+    layout). Cabinet is ROT0 (horizontal), unlike the other three Phase 1 titles which
+    are all ROT270 (vertical).
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -33,37 +35,39 @@
 	<region>Japan</region>
 
 	<rom index="0" zip="btlkroad.zip" md5="none">
-		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, same
-		     word-swap interleave scheme as gunbird -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
+		     word-swap interleave scheme as gunbird. Actual 0x80000. -->
 		<interleave output="16">
 			<part name="4-u46.bin" crc="8a7a28b4" map="01"/>
 			<part name="5-u39.bin" crc="933561fa" map="10"/>
 		</interleave>
+		<part repeat="0x180000"> FF</part>
 
-		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - LZ8420M (Z80-compatible)
-		     sound program ROM -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - LZ8420M (Z80-compatible)
+		     sound program ROM. Actual 0x20000. -->
 		<part name="3-u71.bin" crc="22411fab"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x0A0000-0x69FFFF (0x600000) - zoom sprite tile graphics,
-		     only THREE ROMs (see header note - one fewer than gunbird's four) -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
+		     only THREE ROMs (see header note - one fewer than gunbird's four).
+		     Actual 0x600000. -->
 		<part name="u14.bin" crc="282d89c3"/>
 		<part name="u24.bin" crc="bbe9d3d1"/>
 		<part name="u15.bin" crc="d4d1b07c"/>
+		<part repeat="0x200000"> FF</part>
 
-		<!-- tiles: 0x6A0000-0x89FFFF (0x200000) - tilemap layer 0+1 graphics -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
 		<part name="u33.bin" crc="4c8577f1"/>
 
-		<!-- ymsnd:adpcma: 0x8A0000-0x99FFFF (0x100000) - YM2610 ADPCM-A samples -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="51d73682"/>
 
-		<!-- ymsnd:adpcmb: 0x9A0000-0xA1FFFF (0x080000) - YM2610 ADPCM-B (delta-t)
-		     samples -->
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - exact fit. -->
 		<part name="u64.bin" crc="0f33049f"/>
 
-		<!-- spritelut: 0xA20000-0xA5FFFF (0x40000) - sprite code lookup table ROM -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - exact fit (also the last
+		     region - nothing follows). -->
 		<part name="u3.bin" crc="30d541ed"/>
-
-		<!-- total: 0xA60000 bytes -->
 	</rom>
 
 	<!-- 6 buttons/player (fighting game - 3-punch/3-kick-style layout is typical

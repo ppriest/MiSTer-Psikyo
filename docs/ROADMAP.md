@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `89882a0`)
+## Progress (kept current — last updated 2026-08-22, commit `2f2004e`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -136,10 +136,288 @@ actually testbench mistakes, documented so they aren't re-investigated).
   `<dip bits="...">` status-bit positions are a placeholder scheme (game DIPs starting at
   status bit 16) not yet verified against real core `.sv` `status[]` wiring, for the same
   reason.
-- Not yet started: SDRAM tile/sprite/sound ROM banking, top-level integration against
-  Template_MiSTer (CRT_Offset, DIP/control mapping, hiscore.v — see "Component reuse map"
-  above) — this is also where the `.mra` files' provisional ROM layout and DIP status-bit
-  positions above get finalized/verified against real RTL for the first time.
+- **DDRAM integration: started.** Design doc `docs/phase1_ddram_map.md` covers the real
+  MiSTer `DDRAM_*` protocol (verified against a working reference core,
+  MiSTer-devel/TSConf_MiSTer's `ddram.sv`, not derived from memory) and this project's fixed
+  address map (one flat layout shared by every Phase 1 game, sized off the largest real
+  content across all parent *and* clone sets — differs from, and will eventually replace, the
+  tightly-packed per-game layout the `.mra` files currently use, which every one of them
+  already flags as provisional). Confirms directly against the built RTL that
+  `tilemap_line_engine`/`sprite_render_engine`'s gfxrom/spritelut ports are already req/valid
+  latency-agnostic (no redesign needed), while `sound_cpu_sngkace`/`gunbird`'s ROM ports are
+  NOT yet (still fixed 1-cycle, flagged as an open item, not converted in this pass).
+  `rtl/memory/ddram_phy.sv` — the single-port req/valid wrapper around the real `DDRAM_*`
+  handshake — is built and verified (`sim/ddram_phy_tb/`, two independently-parameterized
+  read-latency models, 6 and 13 cycles, to rule out latency-dependent bugs). Two real bugs
+  found and fixed: an RTL gating bug (`DDRAM_RD`/`DDRAM_WE` not gated by `!DDRAM_BUSY` in the
+  combinational assign, caught via review before simulating) and a genuine testbench race
+  (`while (busy) @(posedge clk)` checked on the same simulation time step as the edge that
+  might update `busy`, an NBA race that manifested as an apparent total deadlock rather than
+  an obvious mismatch — documented in the testbench header as a lesson for future testbenches
+  in this project).
+  `rtl/memory/ddram_arbiter.sv` routes the four already-req/valid ports (tilemap layer 0/1
+  gfxrom, sprite gfxrom, sprite spritelut) plus an HPS download-write port onto that one
+  `ddram_phy` port — rotating-pointer round robin among the four read consumers (fairness:
+  whoever's served rotates to the back), download always wins immediately (only active
+  pre-gameplay). Verified as a real integration test (actual `ddram_phy`+`ddram_model`, not
+  stand-ins) across 4 cases including a real round-robin-fairness check (not just "does it
+  work with one consumer"). Real bug found via the testbench: an early version treated every
+  request port as a one-shot pulse, but checking directly against `sprite_render_engine.sv`
+  showed `gfxrom_req`/`lut_req` are actually HELD until their `valid` pulse — a one-shot
+  request arriving while the arbiter is busy elsewhere is silently lost. Fixed by making every
+  request port (including the download path) a hold-until-acknowledged contract, documented
+  explicitly in the module header, including what it implies for the not-yet-built HPS
+  `ioctl_download` wrapper (likely needs `ioctl_wait` backpressure to translate hps_io's real
+  one-shot `ioctl_wr` into this convention). Not yet built: the HPS-facing wrapper itself, and
+  converting the sound CPU wrappers' ROM ports to req/valid so they can join this arbiter too.
+
+  **Attempted and reverted**: converting `sound_cpu_sngkace`'s `rom_addr`/`rom_data` to
+  req/valid (variable-length `WAIT_n` held until `rom_valid`, mirroring the scheme above) hit a
+  real, reproducible bug — simulated against a req/valid ROM model with deliberately
+  non-trivial latency (5 cycles), the CPU corrupted its own accumulator partway through
+  Scenario 1's test program, traced (via cycle-by-cycle signal dumps) to specifically the `LD
+  A,(0x8000)` instruction — a 3-byte opcode with its own memory-read M-cycle following two
+  operand-fetch M-cycles, unlike every simpler 1-2-byte instruction earlier in the same program
+  which worked correctly with the identical new WAIT_n scheme. Symptom: the address bus itself
+  went X during a later I/O cycle (`OUT (n),A` puts the accumulator on the address bus's upper
+  byte on real Z80/T80 hardware — an X there means A was never correctly loaded), with no
+  memory access to `0x8000` visible anywhere in the trace between the operand fetch and the
+  next opcode fetch. Root cause not conclusively identified — leading suspicion is a race in
+  the `rom_pending` edge-detection logic specifically for back-to-back ROM-read M-cycles within
+  a single multi-byte instruction (the module's own header already flags Z80 bus timing as
+  "easy to get subtly wrong," confirmed correct by simulation rather than derivation for
+  exactly this reason) — but this needs a proper T80-internal T-state waveform trace to pin
+  down, not more blind top-level signal-log reading. Reverted cleanly to the last verified
+  commit rather than land a change with a known, unresolved correctness bug — both files are
+  back to their pre-attempt state, `sound_cpu_sngkace_tb` still PASSes as before. Revisit with
+  more time/a waveform viewer, not another blind attempt.
+
+  `rtl/memory/ddram_download.sv` bridges hps_io's real ROM-download interface (checked
+  directly against `sys/hps_io.sv`'s port list — `ioctl_download`/`ioctl_index`/`ioctl_wr`/
+  `ioctl_addr`/`ioctl_dout`/`ioctl_wait`) into `ddram_arbiter`'s hold-until-acknowledged
+  `dl_req` contract, closing the gap flagged when the arbiter was built. Confirmed from source
+  that hps_io itself doesn't interpret `ioctl_wait` at all — it's wired straight to `HPS_BUS`
+  and enforced on the HPS/Linux side with real round-trip latency, so this module holds
+  `ioctl_wait` continuously (not a same-cycle handshake) from accepting a byte until ready for
+  the next, the standard safe pattern. Only `ioctl_index==0` is accepted (the only rom index
+  any of the nine `.mra` files use). Verified as a real integration test (chained through the
+  actual arbiter/phy/model, with a test-side sender that genuinely respects `ioctl_wait`
+  pacing) across 3 cases. **This closes out the DDRAM transport-layer work** (`ddram_phy` →
+  `ddram_arbiter` → `ddram_download`, all built and verified) — what's left is instantiating
+  this stack in the actual top-level `emu.sv`/core module alongside the video/sound engines
+  and TG68K.C, which is top-level integration work, not more transport-layer RTL.
+- **DDRAM → SDRAM pivot.** After confirming the DDRAM throughput failure below with
+  `tb_video_pipeline_ddram.sv`, researched the right fix rather than immediately patching the
+  arbiter, and found the DDRAM transport itself was the wrong backend for this traffic — not
+  something to patch, something to replace. Full evidence trail and the active design now live in
+  `docs/phase1_sdram_map.md`; short version: MiSTer's own developer docs describe `DDRAM_*` as for
+  "non-critical time purposes" with latency that "can be way longer" than the typical ~20
+  cycles (unbounded worst case, not just high average case — a real problem for a hard per-tile
+  fetch budget no matter how the average-case cycle math comes out), recommend `SDRAM_*` for
+  lower, bounded latency, and cite real graphics cores doing exactly that; a real reference
+  controller (Sorgelig's `sdram.sv`, vendored into dozens of MiSTer-devel arcade cores including
+  `Arcade-Jackal_MiSTer`, fetched and read directly) gives 3 independent ports at a fixed ~6-7
+  cycles; and this project's own original roadmap ("Component reuse map", written before any RTL
+  existed) already specified `SDRAM ctrl` and "SDRAM tile/sprite ROM banking" for Phase 1 — this
+  session's DDRAM stack was itself the deviation, now being corrected back, not a new direction.
+  Also found and recorded honestly (not hidden to make the DDRAM number look worse than it is):
+  the failing test's specific "26 cycles > 16-cycle budget" number is partly a testbench-fidelity
+  artifact (`ce_pix` tied to `1'b1`, i.e. system clock == pixel clock 1:1, unlike a real
+  Template_MiSTer-style core that runs `clk_sys` far faster and gates pixel-domain logic with a
+  real `ce_pix` divider) — doesn't change the pivot decision (the unbounded-worst-case argument
+  above is independent of that number), but is tracked as a real testbench gap to fix regardless
+  (see "Next steps").
+  `ddram_phy`/`ddram_arbiter`/`ddram_download` are not deleted — the request/ack round-robin
+  arbiter design they proved out is reused directly for the new SDRAM arbiters — but they're off
+  the Phase 1 critical path; `docs/phase1_ddram_map.md` carries a header note to that effect.
+  Genuine new RTL still needed, not a copy-paste: `docs/phase1_sdram_map.md`'s "The 64-bit granule
+  problem" — Sorgelig's reference controller has no burst support (single 16-bit word per
+  transaction, confirmed by reading the read-side FSM directly, not assumed), so fetching a
+  64-bit tile-row granule needs a real burst-4-read extension to the controller, verified against
+  a behavioral SDR chip model that actually decodes `nRAS`/`nCAS`/`nWE`/`SDRAM_A` command
+  sequencing rather than a black-box latency stub.
+
+  **Burst-4 controller: built and verified.** `rtl/memory/sdram/sdram.sv` (`PROVENANCE.md` in the
+  same directory documents every change from the vendored upstream reference in detail) — mode
+  register burst length set to 4, `dout` widened to 64 bits, four-cycle read-capture sequence
+  replacing the single-word capture. `sim/sdram_tb/tb_sdram.sv` + `sim/sdram_tb/sdram_chip_model.sv`
+  (a real command-decoding behavioral MT48LC16M16 model, not a latency stub) cover burst-4 read
+  assembly, byte-lane write masking, two simultaneous ports, and a latency-bound sanity check — 4/4
+  PASS. Real bugs found and fixed along the way, not just syntax porting: (1) the row/column
+  address split had to be **swapped** from upstream's `row=low-bits/col=high-bits` — upstream never
+  bursts, so the split was arbitrary there, but a hardware burst auto-increments the *column*, so
+  four consecutive word addresses (one granule) must land at four consecutive columns of the *same*
+  row, not four different rows — caught when three of four burst lanes came back reading unrelated,
+  unwritten memory; (2) the chip model initially ignored the `DQML`/`DQMH` byte-lane write mask
+  entirely (always wrote the full 16 bits), caught by the byte-masking test case clobbering the
+  untouched byte lane instead of preserving it; (3) a genuine off-by-one in the burst-read CAS
+  timing (dropped upstream's own `+1` registration-delay margin when computing the first
+  read-capture cycle), caught by the first burst word capturing high-impedance garbage instead of
+  real data. Also fixed, unrelated to the burst logic: two real Verilog-to-SystemVerilog
+  compilation-mode differences (forward-referenced `mode`/`reset`/`MODE_NORMAL` before their
+  declarations, and procedural assignment directly to an `inout` net) and two simulation-fidelity
+  gaps (uninitialized `state`/`ack0..2` registers reading `X` in ModelSim instead of the `0` real
+  hardware powers up with, silently wedging the whole state machine) — all documented in
+  `PROVENANCE.md`. `sdram_phy.sv` (req/valid wrapper for one physical port) and
+  `sdram_arbiter2.sv` (2-way round-robin, same hold-until-ack design as `ddram_arbiter`) are
+  also built.
+
+  **Direct measurement, not just design intent**: `sim/video_pipeline_tb/tb_video_pipeline_sdram.sv`
+  re-runs the exact dual-tilemap-layer scenario `tb_video_pipeline_ddram.sv` confirmed failing
+  (954/954 mismatches, 100%) against the real SDRAM stack. First attempt (both layers sharing one
+  arbitrated port, matching the port-grouping table as first drafted): 370/954 (39%) — a large
+  real improvement, not a full fix. Root cause: that grouping put the two consumers *proven* to
+  contend simultaneously onto the same port. Rewired to give each layer its own dedicated
+  physical port (no arbiter at all between them — `docs/phase1_sdram_map.md`'s port-grouping
+  table revised accordingly): 189/954 (20%) — real, but still not a full fix.
+
+  **Residual 20% root-caused and fixed, not just measured.** "Dedicated ports" only separates
+  the address/data *buses* — `sdram.sv`'s read-capture pipeline (`state`/`dout`/`ram_req`) is a
+  single shared resource across all 3 logical ports (one physical chip, one data bus). Since
+  both tilemap layers run off identical `line_start`/`h_active` timing, they request in
+  near-lockstep; instrumenting layer 1's real per-tile `gfxrom_req`→`gfxrom_valid` latency showed
+  a bimodal split — ~15 cycles nominal (fits the 16-cycle budget), but ~22 or ~35 cycles on
+  roughly 1-in-5 tiles when layer 0's simultaneous request won arbitration. With only 1 tile ever
+  banked ahead of display, each such stall was an immediate miss (1-in-5 ≈ the measured 20%).
+  Fix: widened `tilemap_line_engine`'s prefetch from a fixed 2-entry ping-pong to a parameterized
+  `PREFETCH_DEPTH`-entry ring buffer (module interface unchanged, `fetch_target`/`display_sel`
+  generalized from a toggle bit to a modulo-N pointer); `PREFETCH_DEPTH=8` gives enough
+  absorption to ride out these stalls. **Confirmed clean: 0/12720 mismatches over 40 sustained
+  lines** (widened from the original 3-line check specifically to give the stall many chances to
+  recur) — re-verified against every existing consumer of `tilemap_line_engine`
+  (`tilemap_line_engine_tb`, `tb_video_pipeline`, `tb_video_pipeline_compositor`), no regressions.
+  This is a real fix for the exact contention pattern tested, not a formal guarantee against every
+  possible contention pattern — the single-shared-pipeline constraint is real hardware (one SDR
+  SDRAM chip), and a deeper buffer works around it rather than removing it; a genuinely faster,
+  independently-clocked fetch domain (real CDC) or a pipelined/overlapping SDRAM controller
+  remain the architecturally "correct" long-term fix, tracked as a known limitation, not urgent.
+
+  Also found and recorded as a genuine, useful negative result along the way: tried a realistic
+  ~1-in-14 `ce_pix` divider (matching a real `clk_sys`/pixel-clock ratio) instead of `1'b1`, and
+  it made things dramatically worse (12426/13356) because `tilemap_line_engine` has no `ce_pix`
+  input — it's a single-clock-domain design (`clk` == pixel clock throughout), not a
+  fast-clock-plus-`ce_pix` one. `ce_pix=1'b1` in these testbenches is therefore the *correct*
+  model of the current RTL, not a simplification — see `docs/phase1_sdram_map.md`'s "Verification
+  results" for the full writeup.
+- **Port 2 (sprite gfxrom + spritelut + maincpu + audiocpu + download): built and measured.**
+  `sdram_arbiter5.sv` (5-way, direct reuse of `ddram_arbiter`'s design) and
+  `sdram_narrow_bridge.sv` (new: extracts a 16-bit word or 8-bit byte from `sdram.sv`'s 64-bit
+  granule, needed since only sprite gfxrom is naturally granule-shaped — spritelut/maincpu/
+  audiocpu are narrower) are both built and verified against the real SDRAM transport, not stubs
+  (`sim/sdram_arbiter5_tb/`, `sim/sdram_narrow_bridge_tb/`).
+
+  **Real bug found and fixed, not just measured: gfx ROM byte order.** Wiring the real
+  `sprite_render_engine` through this stack with genuinely non-uniform gfx ROM content
+  (`sim/port2_sdram_tb/tb_port2_sdram.sv`) immediately failed with scrambled pixels.
+  `sdram.sv`'s burst-4 capture packs bytes in ordinary ascending-address order (confirmed against
+  `tb_sdram.sv`'s own passing test), but `tilemap_line_engine.sv`/`sprite_render_engine.sv` both
+  assume the opposite (MAME's MSB-first `gfx_16x16x4_packed_msb` format, correct and already
+  unit-tested against synthetic ROM models using that same convention) — neither side was wrong
+  on its own, the mismatch was only at the untested seam between them. Every prior SDRAM video
+  test (`tb_video_pipeline_sdram.sv`) used uniform all-zero ROM content, which is
+  byte-order-invariant, so this never showed up before. Fixed with a new adapter,
+  `rtl/memory/gfxrom_byte_reorder.sv`, inserted at the `sdram.sv`-to-gfxrom-consumer seam (NOT a
+  change to `sdram.sv`, which is still correct and relied on as-is by `sdram_narrow_bridge.sv`'s
+  ordinary little-endian word/byte consumers) — confirmed load-bearing by temporarily bypassing
+  it and reproducing the exact predicted scrambled-pixel failures, then restoring it. Retrofitted
+  into `tb_video_pipeline_sdram.sv` too (a no-op there given uniform data, but closes a real
+  coverage gap so the wrong-but-passing wiring pattern doesn't get copied into real top-level
+  integration). See `docs/phase1_sdram_map.md`'s "Port 2: built and measured" for the full writeup.
+
+  **Contention measurement**: one real 16×16 sprite through the full stack — baseline
+  `frame_done` 514 cycles, with synthetic continuous-pressure `maincpu`+`audiocpu` traffic
+  contending on the same arbiter throughout, 736 cycles (~43% slower), correctness unaffected in
+  both cases (0 pixel mismatches). `maincpu`/`audiocpu` are synthetic (no real CPU wrapper RTL
+  exists yet, see "Next steps" below) but modeled as worst-case continuous back-to-back requests,
+  same reasoning as the tilemap contention test. HPS download deliberately left inactive
+  (doesn't overlap real gameplay); its absolute-priority behavior is covered separately.
+- **Top-level integration: started.** `rtl/video/video_timing.sv` — the raw H/V timing
+  generator — is built and verified: hcnt/vcnt raster counters, h_active/v_active/hblank/
+  vblank, hsync/vsync, and the `line_start`/`frame_start` pulses the video engines and
+  `sprite_frame_buffer`'s swap trigger need, matching the exact screen config confirmed from
+  `psikyo.cpp`'s `set_raw(14.318181_MHz_XTAL/2, 456, 0, 320, 262, 0, 224)` (not assumed).
+  hsync/vsync pulse width/position are explicitly flagged as this project's own RTL-level
+  design choice, since MAME's `set_raw()` only specifies blanking boundaries, not real sync
+  timing (it doesn't drive an analog CRT) — not claimed to match the original PCB. Verified
+  across 7 cases including a full two-frame walk. Not yet done: instantiating this alongside
+  the DDRAM stack, video/sound engines, and TG68K.C in the actual top-level `emu.sv`/core
+  module, the CRT_Offset module, DIP/control mapping, and hiscore.v (later-stage) — this is
+  also where the `.mra` files' DIP status-bit positions get finalized/verified against real
+  RTL for the first time (the ROM-layout half of that is already done — see next item).
+
+  **Real integration test, plus a real (smaller) bug found and fixed**: wired `video_timing`
+  into a real `tilemap_line_engine` instance for the first time (`sim/video_pipeline_tb/`) —
+  confirmed the two modules' hcnt/vcnt/h_active/line_start conventions genuinely agree
+  (cross-checked against `docs/phase1_video_engine.md`'s own stated contract beforehand).
+  First attempt at this test reported an apparent sustained-operation `fetch_overrun`
+  starting around active line 2-3, initially written up here as an unresolved open item — that
+  turned out to be a **false alarm from the test's own methodology**, not a real problem:
+  `fetch_overrun` is sticky, and the very first active line after any reset is an unavoidable
+  cold-start case (`video_timing`'s reset always lands mid-active-line, no prior hblank to
+  prefetch in) — once that expected, understood cold start latches the sticky bit, it's
+  permanently indistinguishable from "a real overrun happened later" no matter how carefully
+  reset timing is arranged afterward (confirmed by direct experimentation — several
+  reset-sequencing approaches were tried, none worked, since the underlying condition is
+  genuinely met at that moment regardless of when reset releases). Fixed by not checking the
+  DUT's sticky output at all — independently replicating its own trigger condition
+  (`h_active && !buf_ready[display_sel]`) via hierarchical access instead, giving a true,
+  non-sticky per-cycle reading. With that fix, the test **genuinely PASSes**: detailed
+  cycle-by-cycle tracing across multiple lines showed completely healthy, steady-state
+  fetch/display interaction throughout — sustained multi-line/full-frame operation is
+  confirmed clean.
+
+  A real, independent, smaller bug WAS found and fixed along the way in
+  `tilemap_line_engine.sv`: the fetch FSM only acted on `line_start` from `S_IDLE`, inside
+  the state case statement — since the fetch FSM's last tile for a line can legitimately
+  still be in flight when the next line's `line_start` arrives (no structural guarantee fetch
+  always finishes strictly before display needs it), that pulse could be silently dropped
+  whenever the FSM wasn't already idle, permanently desyncing fetch from display for the rest
+  of the frame. Fixed by checking `line_start` before the state case, top priority in any
+  state (a new line always outranks finishing stale work for the old one). Re-verified against
+  `tilemap_line_engine`'s own pre-existing single-line testbench — still PASSes unchanged.
+  `tilemap_line_engine` can now be treated as verified for sustained real gameplay, not just
+  the narrower single-line scenario its original testbench covered.
+
+  **Extended one stage further**: `sim/video_pipeline_tb/tb_video_pipeline_compositor.sv`
+  wires `video_timing` driving BOTH tilemap layers into a real `compositor` instance
+  (sprites still tied off — that needs the DDRAM stack, a separate step). Distinct VRAM
+  content per layer makes the composited output distinguishable, letting the test verify
+  real compositor priority end-to-end (layer 1 wins when both draw; disabling layer 1
+  mid-stream correctly hands off to layer 0, proving it was genuinely live, not just unused
+  wiring). One real, understood pipeline-startup artifact found and excluded (not a bug):
+  `pixel_valid`'s registered one-cycle-ish latency from `h_active` means the first pixel or
+  two of every line legitimately sees neither layer valid yet and falls back to backdrop —
+  found via the test itself, excluded with a documented reason, not silently loosened.
+
+  **Extended once more, onto the real DDRAM transport** —
+  `sim/video_pipeline_tb/tb_video_pipeline_ddram.sv` routes both tilemap layers' gfxrom ports
+  through the actual `ddram_arbiter`/`ddram_phy` (not synthetic per-layer models) under
+  sustained operation. **This one genuinely fails, and correctly so** — not a false alarm this
+  time, but the first concrete confirmation of `docs/phase1_ddram_map.md`'s already-documented
+  "Known open item: throughput, not just correctness": with a realistic 10-cycle DDR model
+  latency, two consumers requesting a tile simultaneously (which the two tilemap layers
+  routinely do) forces the arbiter to fully serialize them, ~26 combined cycles against each
+  layer's 16-cycle-per-tile budget. Confirmed via tracing that this is the exact predicted
+  serialization mechanism, not a wiring bug. Committed deliberately still failing as
+  reproducible evidence for the eventual throughput pass (wider `ddram_phy` bursts and/or a
+  prefetch-ahead scheduling scheme) — do not loosen this test's checks to force a pass; fix the
+  underlying budget instead. What's left before the full raster path is proven: sprite output
+  (needs the DDRAM stack wired to `sprite_render_engine`/`sprite_frame_buffer`, which will make
+  the throughput picture worse, not better, before it's addressed).
+
+- **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
+  layout previously used a tightly-packed per-game concatenation (flagged provisional in each
+  header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
+  file uses that real, fixed-region map (`maincpu`@`0x000000`/`0x200000`,
+  `audiocpu`@`0x200000`/`0x040000`, `sprites`@`0x240000`/`0x800000`,
+  `tiles`@`0xA40000`/`0x200000`, `ymsnd:adpcma`@`0xC40000`/`0x100000`,
+  `ymsnd:adpcmb`@`0xD40000`/`0x080000`, `spritelut`@`0xDC0000`/`0x040000`), padded with
+  `<part repeat="0xNNNN"> FF</part>` filler (matching the precedent in
+  rmonic79/Arcade-Raiden_MiSTer's own `.mra` files) wherever a set's actual content is smaller
+  than its region's reservation. Every file's total padding cross-checked against hand
+  computation before committing. This closes the ROM-layout half of the "not yet consumed by
+  any RTL" caveat every file carried — the DIP status-bit-position half is still provisional,
+  pending the top-level integration item above.
 
 Every RTL module so far has been verified in ModelSim against an independently-computed
 reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
@@ -261,28 +539,41 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 - **YMF278B de-risking spike** should probably happen early (maybe alongside Phase 0) rather than
   right before Phase 2, given it's the other component with no existing shortcut — worth deciding
   scheduling once Phase 1 is underway and its actual cost is clearer.
-- **Sprite frame-renderer throughput is still unbudgeted, now that `sprite_render_engine` exists
-  and its actual per-stage cycle costs are known.** Rough math from the RTL as built: one
-  sub-tile costs roughly (LUT round-trip) + `dst_size_y` × (gfx ROM round-trip + `dst_size_x`
-  column cycles) — at full zoom (16×16) with, say, a 4-cycle ROM round-trip, that's on the order
-  of ~330 cycles/sub-tile. Worst case (1023 display-list entries, each an 8×8-tile sprite = 64
-  sub-tiles) would be ~21M cycles — far beyond one frame period at any realistic clock. Real
-  games are extremely unlikely to hit that theoretical worst case, but this still hasn't been
-  checked against actual per-game sprite/sub-tile counts (no MAME frame trace pulled yet).
-  Revisit once real per-game numbers are known — may need a per-sub-tile cycle budget/drop-excess
-  bound, a faster render clock, or reduced ROM latency (e.g. wider on-chip gfx ROM bursts).
+- **Sprite frame-renderer throughput is still unbudgeted at the whole-frame/whole-game level,
+  though one real single-sprite data point now exists.** `sim/port2_sdram_tb/tb_port2_sdram.sv`
+  measured one real 16×16 (1 sub-tile) sprite against the actual SDRAM transport (not the ~4-cycle
+  synthetic ROM latency the rough math below assumed): 514 cycles alone, 736 under sustained
+  maincpu+audiocpu contention. Extrapolating that single-sub-tile cost across a worst-case
+  display list is still the open question — 1023 entries × up to 64 sub-tiles/entry (8×8-tile
+  sprites) would be far beyond one frame period at any realistic clock, but real games are
+  extremely unlikely to hit that theoretical worst case, and this hasn't been checked against
+  actual per-game sprite/sub-tile counts (no MAME frame trace pulled yet). Revisit once real
+  per-game numbers are known — may need a per-sub-tile cycle budget/drop-excess bound, a faster
+  render clock, or reduced ROM latency (e.g. wider on-chip gfx ROM bursts).
 
 ## Next steps
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Sound subsystem, continued: a real jt10 verification pass (audio-domain, not just
-   compile-clean — see `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either
-   sound CPU wrapper's YM I/O chip-select bus; and ADPCM-A/B ROM banking once jt10 itself is
-   trusted.
-2. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer,
-   including the CRT_Offset module, DIP/status-bit + control mapping, and (later-stage/polish,
-   not needed for initial bring-up) hiscore.v — see "Component reuse map" above. This is also
-   where the `.mra` files' provisional ROM-blob layout and DIP status-bit positions (see
-   "Progress" above) get checked against real RTL for the first time and corrected if needed.
+1. Top-level integration against Template_MiSTer: wiring the video/sound engines + TG68K.C into
+   `emu.sv`, the CRT_Offset module, DIP/status-bit + control mapping, and (later-stage/polish, not
+   needed for initial bring-up) hiscore.v — see "Component reuse map" above. Gfx/CPU ROM streaming
+   goes through the SDRAM stack (`sdram_phy`/`sdram`/`sdram_arbiter*`/`sdram_narrow_bridge`, see
+   `docs/phase1_sdram_map.md`) now, not DDRAM — the DDRAM stack (`ddram_phy`/`ddram_arbiter`/
+   `ddram_download`) is built and still available but is no longer Phase 1's critical path (see
+   `docs/phase1_ddram_map.md`'s header note). Every gfx-ROM-row consumer (tilemap ×2, sprite)
+   MUST route through `rtl/memory/gfxrom_byte_reorder.sv` between the SDRAM controller and its
+   `gfxrom_data` port — easy to forget since it compiles and even *runs* fine without it, just
+   produces byte-order-scrambled tile/sprite graphics (see "Progress" above for the real bug this
+   caught). `sdram_narrow_bridge.sv` consumers (spritelut, `maincpu`, `audiocpu`) must NOT use it.
+   This is also where the `.mra` files' DIP status-bit
+   positions (see "Progress" above) get checked against real RTL for the first time and corrected
+   if needed. Sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`) stay on their current fixed-1-cycle
+   ROM ports for this integration pass, since the req/valid conversion is blocked (see "Progress"
+   above) — their ROM ports simply don't connect to a real arbiter yet.
+2. Sound subsystem: resolve the sound-CPU req/valid conversion bug (needs a T80-internal
+   waveform trace, not another blind attempt — see "Progress" above); a real jt10 verification
+   pass (audio-domain, not just compile-clean — see `rtl/sound/jt10/PROVENANCE.md`) before
+   actually wiring it into either sound CPU wrapper's YM I/O chip-select bus; and ADPCM-A/B ROM
+   banking once jt10 itself is trusted.
 3. DE10-nano black-box bring-up once a build exists.

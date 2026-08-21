@@ -2,9 +2,9 @@
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
     This project does not include, distribute, or link to any ROM files. Run this only
     with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../Readme.md.
+    rights to. See ../../Readme.md.
 
-    Sengoku Ace is the Japan-region release of the same game as Samurai Aces (World)  - 
+    Sengoku Ace is the Japan-region release of the same game as Samurai Aces (World) -
     same video/sound/sprite ROM content, but a genuinely different maincpu program ROM
     pair (confirmed from MAME's separate ROM_START(sngkace) block, not assumed to just
     be a region-switch variant of samuraia's romset the way World/USA/Korea/HK/Taiwan
@@ -21,6 +21,10 @@
     parent set in its own right - confirmed from source, matching this project's
     releases/ convention of one parent-set .mra per top-level game and every clone set
     under _alternatives/ (see docs/ROADMAP.md).
+
+    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
+    map (same padding scheme as the parent samuraia - see that file for the full
+    per-region base/size/padding breakdown).
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -36,31 +40,34 @@
 	<region>Japan</region>
 
 	<rom index="0" zip="sngkace.zip" md5="none">
-		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, Japan-region
-		     content (different CRCs than samuraia's, same load scheme) -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - Japan-region content
+		     (different CRCs than samuraia's, same load scheme). Actual 0x80000. -->
 		<interleave output="16">
 			<part name="1-u127.bin" crc="6c45b2f8" map="01"/>
 			<part name="2-u126.bin" crc="845a6760" map="10"/>
 		</interleave>
+		<part repeat="0x180000"> FF</part>
 
-		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - Z80 sound program ROM, byte-for-
-		     byte identical to samuraia's (same CRC, confirmed from source) -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x0A0000-0x29FFFF (0x200000) - identical to samuraia's -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
 		<part name="u14.bin" crc="00a546cb"/>
+		<part repeat="0x600000"> FF</part>
 
-		<!-- tiles: 0x2A0000-0x49FFFF (0x200000) - identical to samuraia's -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
 		<part name="u35.bin" crc="c4ca0164"/>
 
-		<!-- ymsnd:adpcma: 0x4A0000-0x59FFFF (0x100000) - identical to samuraia's -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to samuraia's. -->
 		<part name="u68.bin" crc="9a7f6c34"/>
 
-		<!-- spritelut: 0x5A0000-0x5DFFFF (0x40000) - identical to samuraia's -->
-		<part name="u11.bin" crc="11a04d91"/>
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - not present, all padding. -->
+		<part repeat="0x80000"> FF</part>
 
-		<!-- total: 0x5E0000 bytes -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to samuraia's. -->
+		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>

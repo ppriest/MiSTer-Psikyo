@@ -1,7 +1,10 @@
 // Tilemap scanline sequencer -- one instance per layer. Drives the
 // combinational address/decode chain (tilemap_coord -> tilemap_addrgen ->
 // tile_cell_decode -> tile_row_decode) against real per-cycle timing and
-// memory latency, double-buffering one tile ahead of display.
+// memory latency, prefetching up to PREFETCH_DEPTH tiles ahead of display
+// through a ring buffer (was a fixed 2-entry ping-pong; widened after real
+// SDRAM contention measurement, see the buf_pixels/buf_ready declaration
+// below and docs/phase1_sdram_map.md).
 //
 // See docs/phase1_video_engine.md ("Tilemap scanline sequencer") for the
 // full design rationale -- interface contract, the fetch-must-complete-
@@ -9,7 +12,11 @@
 // index is the raw scanline number, not the Y-scrolled one.
 
 module tilemap_line_engine #(
-    parameter int LAYER = 0   // 0 or 1 -- passed through to tile_cell_decode
+    parameter int LAYER = 0,   // 0 or 1 -- passed through to tile_cell_decode
+    // Prefetch ring buffer depth -- see the buf_pixels/buf_ready declaration
+    // below for why this became a parameter instead of a fixed 2-entry
+    // ping-pong (real SDRAM contention measurement, docs/phase1_sdram_map.md).
+    parameter int PREFETCH_DEPTH = 8
 ) (
     input  logic        clk,
     input  logic         reset,
@@ -49,6 +56,14 @@ module tilemap_line_engine #(
     output logic [6:0]  pixel_color,
     output logic         fetch_overrun  // sticky: fetch pipeline didn't keep up with display
 );
+
+    // Declared here (top of the body), not next to buf_pixels/buf_ready
+    // below where it's conceptually explained -- PTR_W is used by
+    // fetch_target's declaration, which comes first in file order, and this
+    // toolchain (vlog -sv) does not resolve forward references to
+    // body-local declarations across statements (same class of issue as
+    // sdram.sv's mode/reset reordering, see rtl/memory/sdram/PROVENANCE.md).
+    localparam int PTR_W = $clog2(PREFETCH_DEPTH);
 
     // ---- combinational address/decode chain, fed by registered fetch state ----
 
@@ -117,7 +132,7 @@ module tilemap_line_engine #(
     logic [3:0]  fine_x_initial;
     logic        first_tile;
     logic [4:0]  tiles_to_fetch;
-    logic        fetch_target;   // which buffer index the fetch engine is filling
+    logic [PTR_W-1:0] fetch_target;   // which buffer index the fetch engine is filling
 
     // sampled at line_start, held stable through S_ROWSCROLL_WAIT
     logic [15:0] base_x_scroll_latched;
@@ -129,11 +144,27 @@ module tilemap_line_engine #(
     logic [14:0] tile_number_reg;
     logic [6:0]  color_reg;
 
-    // double-buffered decoded tile storage
-    logic [3:0] buf_pixels [0:1][0:15];
-    logic [6:0] buf_color  [0:1];
-    logic [3:0] buf_start  [0:1];
-    logic [4:0] buf_count  [0:1];
+    // Prefetch ring buffer, PREFETCH_DEPTH tiles deep. Was a fixed 2-entry
+    // ping-pong (fetch always exactly one tile ahead of display) until real
+    // measurement against the SDRAM transport (sim/video_pipeline_tb/
+    // tb_video_pipeline_sdram.sv, see docs/phase1_sdram_map.md's
+    // "Verification results") showed that's not enough margin: rtl/memory/
+    // sdram/sdram.sv's three ports share ONE internal transaction pipeline,
+    // so when both tilemap layers request in the same window, one of them
+    // occasionally waits out the other's full round trip (measured: nominal
+    // 15 cycles, contention-stalled 22 or 35 cycles, against this module's
+    // own 16-cycle-per-tile budget). With only one tile banked ahead, that
+    // single stall was an immediate visible miss. Depth 4 gives up to 3
+    // tile-periods (~48 cycles) of absorption instead of 1 (~16), enough to
+    // ride out an isolated stall without needing a faster clock domain or a
+    // redesigned (pipelined/overlapping) SDRAM controller -- see
+    // PROVENANCE.md-style reasoning in docs/phase1_sdram_map.md for why a
+    // faster fetch-domain clock remains the "correct" long-term fix but a
+    // separate, larger task.
+    logic [3:0] buf_pixels [0:PREFETCH_DEPTH-1][0:15];
+    logic [6:0] buf_color  [0:PREFETCH_DEPTH-1];
+    logic [3:0] buf_start  [0:PREFETCH_DEPTH-1];
+    logic [4:0] buf_count  [0:PREFETCH_DEPTH-1];
 
     // Buffer-ready handshake, race-free by construction: each toggle bit
     // has exactly one writer (fetch_tog here, disp_tog in the display
@@ -146,37 +177,66 @@ module tilemap_line_engine #(
     // Phase 0 CPU spike), and it was ALSO simply never cleared on the
     // display side at all, which alone would have permanently stalled
     // the fetch engine after the first two tiles.
-    logic fetch_tog [0:1];
-    logic disp_tog  [0:1];
-    logic buf_ready [0:1];
-    assign buf_ready[0] = fetch_tog[0] ^ disp_tog[0];
-    assign buf_ready[1] = fetch_tog[1] ^ disp_tog[1];
+    logic fetch_tog [0:PREFETCH_DEPTH-1];
+    logic disp_tog  [0:PREFETCH_DEPTH-1];
+    logic buf_ready [0:PREFETCH_DEPTH-1];
+    generate
+        genvar gi;
+        for (gi = 0; gi < PREFETCH_DEPTH; gi++) begin : g_buf_ready
+            assign buf_ready[gi] = fetch_tog[gi] ^ disp_tog[gi];
+        end
+    endgenerate
 
     always_ff @(posedge clk) begin
         if (reset) begin
             state          <= S_IDLE;
-            fetch_tog[0]   <= 1'b0;
-            fetch_tog[1]   <= 1'b0;
+            for (int i = 0; i < PREFETCH_DEPTH; i++) fetch_tog[i] <= 1'b0;
             gfxrom_req     <= 1'b0;
+        end else if (line_start) begin
+            // A new line always takes priority over whatever the fetch FSM
+            // was still doing for the previous one -- checked here BEFORE
+            // the state case, not as a branch inside S_IDLE only (an
+            // earlier version had it there, matching S_IDLE being the
+            // "expected" resting state between lines). Real bug: with a
+            // fixed 21-tile-per-line fetch budget throttled by the
+            // display's own consumption rate (S_WAIT_FREE), the fetch
+            // FSM's last tile for a line routinely finishes at or after
+            // h_active ends -- i.e. it is NOT reliably back in S_IDLE by
+            // the time the next line_start pulse arrives. Since that pulse
+            // was only ever checked from S_IDLE, it was silently dropped
+            // whenever the FSM was still mid-fetch, permanently desyncing
+            // the fetch pipeline from the display for the rest of the
+            // frame (found via sim/video_pipeline_tb/, a sustained
+            // multi-line integration test -- tilemap_line_engine's own
+            // prior single-line testbench never exercised a second
+            // line_start arriving while busy, so never caught this).
+            // Restarting unconditionally here means any in-flight
+            // S_GFXROM_WAIT request gets abandoned (gfxrom_req cleared);
+            // a late gfxrom_valid for it is harmless since no state
+            // reacts to it before the next real request. The display
+            // side already discards whatever wasn't shown on its own
+            // line_start handling below, so there is no stale data to
+            // preserve here either.
+            mode_latched          <= mode;
+            bank_latched          <= bank;
+            base_x_scroll_latched <= base_x_scroll;
+            rowscroll_en_latched  <= rowscroll_enable;
+            rowscroll_addr        <= rowscroll_pertile ? {4'd0, vcnt[7:4]} : vcnt;
+            for (int i = 0; i < PREFETCH_DEPTH; i++) fetch_tog[i] <= 1'b0;
+            fetch_target          <= '0;
+            first_tile            <= 1'b1;
+            tiles_to_fetch        <= 5'd21;  // fixed worst-case count, see doc
+            gfxrom_req            <= 1'b0;   // abort any in-flight request cleanly
+            // stash what S_ROWSCROLL_WAIT needs that isn't re-derivable there
+            eff_y_latched         <= base_y_scroll + {8'd0, vcnt};
+            state                 <= S_ROWSCROLL_WAIT;
         end else begin
             unique case (state)
 
                 S_IDLE: begin
-                    if (line_start) begin
-                        mode_latched          <= mode;
-                        bank_latched          <= bank;
-                        base_x_scroll_latched <= base_x_scroll;
-                        rowscroll_en_latched  <= rowscroll_enable;
-                        rowscroll_addr        <= rowscroll_pertile ? {4'd0, vcnt[7:4]} : vcnt;
-                        fetch_tog[0]          <= 1'b0;
-                        fetch_tog[1]          <= 1'b0;
-                        fetch_target          <= 1'b0;
-                        first_tile            <= 1'b1;
-                        tiles_to_fetch        <= 5'd21;  // fixed worst-case count, see doc
-                        // stash what S_ROWSCROLL_WAIT needs that isn't re-derivable there
-                        eff_y_latched         <= base_y_scroll + {8'd0, vcnt};
-                        state                 <= S_ROWSCROLL_WAIT;
-                    end
+                    // line_start is handled above (any state, not just
+                    // here) -- nothing to do while idle and no new line
+                    // has started yet.
                 end
 
                 S_ROWSCROLL_WAIT: begin
@@ -241,7 +301,7 @@ module tilemap_line_engine #(
                     first_tile              <= 1'b0;
                     fetch_eff_x             <= fetch_eff_x + 16'd16;
                     tiles_to_fetch          <= tiles_to_fetch - 5'd1;
-                    fetch_target            <= ~fetch_target;
+                    fetch_target            <= (fetch_target == PREFETCH_DEPTH-1) ? '0 : fetch_target + 1'b1;
                     if (tiles_to_fetch > 5'd1)
                         state <= S_WAIT_FREE;
                     else
@@ -269,25 +329,23 @@ module tilemap_line_engine #(
     // one procedural driver; this is the same class of bug as the VHDL
     // testbench multi-driver issue from the Phase 0 CPU spike.
 
-    logic       display_sel;
-    logic [3:0] consumed;
+    logic [PTR_W-1:0] display_sel;
+    logic [3:0]        consumed;
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            display_sel   <= 1'b0;
+            display_sel   <= '0;
             consumed      <= 4'd0;
             pixel_valid   <= 1'b0;
             pixel_index   <= 4'd0;
             pixel_color   <= 7'd0;
             fetch_overrun <= 1'b0;
-            disp_tog[0]   <= 1'b0;
-            disp_tog[1]   <= 1'b0;
+            for (int i = 0; i < PREFETCH_DEPTH; i++) disp_tog[i] <= 1'b0;
         end else if (line_start) begin
-            display_sel <= 1'b0;
+            display_sel <= '0;
             consumed    <= 4'd0;
             pixel_valid <= 1'b0;
-            disp_tog[0] <= 1'b0;
-            disp_tog[1] <= 1'b0;
+            for (int i = 0; i < PREFETCH_DEPTH; i++) disp_tog[i] <= 1'b0;
         end else if (h_active) begin
             if (buf_ready[display_sel]) begin
                 pixel_valid <= 1'b1;
@@ -296,7 +354,7 @@ module tilemap_line_engine #(
 
                 if ({1'b0, consumed} + 5'd1 >= buf_count[display_sel]) begin
                     disp_tog[display_sel] <= ~disp_tog[display_sel];  // free this buffer
-                    display_sel            <= ~display_sel;
+                    display_sel            <= (display_sel == PREFETCH_DEPTH-1) ? '0 : display_sel + 1'b1;
                     consumed                <= 4'd0;
                 end else begin
                     consumed <= consumed + 4'd1;

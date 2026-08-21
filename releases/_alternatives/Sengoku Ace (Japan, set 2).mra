@@ -12,6 +12,9 @@
     (program revision) differs; every other region is byte-for-byte identical to
     samuraia/sngkace. See "Samurai Aces (World).mra" for the general layout/DIP-
     status-bit-position caveats, which apply identically here.
+
+    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
+    map (same padding scheme as the parent samuraia).
 -->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
@@ -27,30 +30,34 @@
 	<region>Japan</region>
 
 	<rom index="0" zip="sngkacea.zip" md5="none">
-		<!-- maincpu: 0x000000-0x07FFFF (0x80000) - 68EC020 program ROM, this set's own
-		     revision (different CRCs than both samuraia's and sngkace's) -->
+		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
+		     (different CRCs than both samuraia's and sngkace's). Actual 0x80000. -->
 		<interleave output="16">
 			<part name="1.-u127.bin" crc="3a43708d" map="01"/>
 			<part name="2.-u126.bin" crc="7aa50c46" map="10"/>
 		</interleave>
+		<part repeat="0x180000"> FF</part>
 
-		<!-- audiocpu: 0x080000-0x09FFFF (0x20000) - identical to samuraia's -->
+		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
+		<part repeat="0x20000"> FF</part>
 
-		<!-- sprites: 0x0A0000-0x29FFFF (0x200000) - identical to samuraia's -->
+		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
 		<part name="u14.bin" crc="00a546cb"/>
+		<part repeat="0x600000"> FF</part>
 
-		<!-- tiles: 0x2A0000-0x49FFFF (0x200000) - identical to samuraia's -->
+		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
 		<part name="u35.bin" crc="c4ca0164"/>
 
-		<!-- ymsnd:adpcma: 0x4A0000-0x59FFFF (0x100000) - identical to samuraia's -->
+		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to samuraia's. -->
 		<part name="u68.bin" crc="9a7f6c34"/>
 
-		<!-- spritelut: 0x5A0000-0x5DFFFF (0x40000) - identical to samuraia's -->
-		<part name="u11.bin" crc="11a04d91"/>
+		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - not present, all padding. -->
+		<part repeat="0x80000"> FF</part>
 
-		<!-- total: 0x5E0000 bytes -->
+		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to samuraia's. -->
+		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
