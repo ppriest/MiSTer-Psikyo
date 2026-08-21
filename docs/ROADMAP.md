@@ -109,13 +109,16 @@ already are.
 
 ## Open items / assumptions to revisit
 
-- **No real hardware access** (confirmed) — this project is built purely from MAME source +
-  datasheets/chip documentation, with no PCB available for logic-analyzer ground-truth. That makes
-  **MAME's own emulated output the de facto accuracy target**, including its acknowledged
-  uncertainties: the driver's own comments flag the layer-enable bits, sprite zoom curve, and
-  tilemap size-switch behavior as "not quite right" / unverified, and without a board there's no
-  way to resolve those beyond matching MAME's behavior as closely as possible. Worth remembering
-  this ceiling exists rather than chasing precision MAME itself doesn't have.
+- **No original Psikyo PCB** (confirmed) — this project is built purely from MAME source +
+  datasheets/chip documentation, with no genuine-hardware bus/video signals to capture as ground
+  truth. That makes **MAME's own emulated output the de facto accuracy target**, including its
+  acknowledged uncertainties: the driver's own comments flag the layer-enable bits, sprite zoom
+  curve, and tilemap size-switch behavior as "not quite right" / unverified, and there's no board
+  to resolve those beyond matching MAME's behavior as closely as possible.
+  Separately: **DE10-nano hardware bring-up is available** — copy `.rbf`/`.mra` over and launch
+  manually. This is black-box testing only (no JTAG, so no live signal capture/debug on real
+  MiSTer hardware), but it's enough to validate each phase's exit criteria (does it boot, does it
+  play correctly) beyond simulation.
 - **YMF278B de-risking spike** should probably happen early (maybe alongside Phase 0) rather than
   right before Phase 2, given it's the other component with no existing shortcut — worth deciding
   scheduling once Phase 1 is underway and its actual cost is clearer.

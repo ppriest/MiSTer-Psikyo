@@ -38,3 +38,17 @@ c5_pin_model_dump.txt
 *_netlist
 *.cdf
 **/.DS_Store
+
+# ModelSim
+sim/**/work/
+transcript
+vsim.wlf
+modelsim.ini
+
+# vasm: NOT vendored (license is non-commercial/no-modification
+# redistribution, see tools/README.md) -- built locally on demand by
+# scripts/fetch_build_vasm.sh instead. Assembled test-program outputs are
+# regenerable build artifacts, not source; the .s files are what's tracked.
+tools/vasm/
+sim/**/*.bin
+sim/**/*.lst
