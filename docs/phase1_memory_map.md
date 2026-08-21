@@ -161,10 +161,14 @@ word (see below), one of four fixed layouts, all mapping the same 4096-cell VRAM
 | 2 | 2048×512 | 128×32 (`0x80 × 0x20`) |
 | 3 | 4096×256 | 256×16 (`0x100 × 0x10`) |
 
-The actual VRAM→screen address mapping per size code is a nontrivial bit-interleave
-(`tile_scan<Layer>`, psikyo_v.cpp:88-98) — not a simple row-major/col-major formula. This is
-real video-engine work, tracked separately from this memory-map document; flagging its
-existence here because it directly determines how the RTL needs to address layer VRAM.
+The VRAM→screen address mapping per size code (`tile_scan<Layer>`, psikyo_v.cpp:88-98) looks
+like a bit-interleave in the C++ source, but isn't one in practice: the caller
+(`get_tile_info`) always masks the result with `& 0xFFF`, and every extra term in each case's
+formula lands entirely above bit 11 — dead once masked. Worked this out numerically rather than
+trusting the source's shape at a glance (see docs/phase1_video_engine.md, "Tilemap addressing"):
+after masking, **all four modes reduce to plain row-major addressing**, `index = col + row *
+width`, for `width` = 64/128/256/32 tiles respectively across the four size codes. Full detail
+and verification in docs/phase1_video_engine.md.
 
 ## Video registers (`0x804000-0x807FFF`, 16 KB, both boards identical)
 
