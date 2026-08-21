@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-21, commit `4b2b4d0`)
+## Progress (kept current — last updated 2026-08-22, commit `e0bf109`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -74,8 +74,41 @@ actually testbench mistakes, documented so they aren't re-investigated).
   distributed by this project in any form. Anyone running this core is responsible for either
   dumping ROMs from hardware they own or otherwise holding appropriate legal rights to them —
   documented in [`Readme.md`](../Readme.md) as the low-risk default for this project.
-- Not yet started: sound subsystem (T80+jt10), SDRAM tile/sprite/sound ROM banking, top-level
-  integration against Template_MiSTer, `.mra` files.
+- **Sound subsystem: started.** T80 (Z80, `rtl/cpu/t80/`) and jt10 (YM2610, `rtl/sound/jt10/`)
+  vendored, licenses/provenance documented (T80: BSD-style, low risk — it's the de facto
+  standard MiSTer-devel Z80 core, not a single-option risk like TG68K.C. jt10: GPL-3.0, a real
+  copyleft posture worth having noted explicitly rather than glossed over). T80 boot-spike
+  verified (`sim/t80_spike/`) — resets, fetches from address 0, executes opcode fetch/immediate
+  fetch/memory write/I/O write/HALT correctly, matching the classic Z80 bus protocol this
+  project's memory-map wiring depends on. jt10 is vendored but **deliberately not yet
+  verified** — FM synthesis correctness needs real audio-domain verification (e.g. VGM playback
+  comparison), a much bigger undertaking than a boot spike, tracked honestly as not-done rather
+  than claimed on a token compile check. Confirmed directly from `psikyo.cpp`'s ROM_START blocks
+  that jt10's ADPCM-A/B ROM interfaces are load-bearing for Phase 1 (sngkace: ADPCM-A;
+  gunbird: ADPCM-A+B), not optional — sound-side SDRAM/ROM banking will need to cover them.
+  `sound_cpu_sngkace.sv` wires T80se up against sngkace's actual sound CPU memory/IO map
+  (fixed/RAM/banked ROM regions, bank register, sound-latch/NMI handshake), with the bank's
+  physical-ROM mapping confirmed from source (`sound_bankswitch_w<0>`) rather than assumed. YM
+  I/O is exposed as an external chip-select bus, not yet wired to jt10 (same "prove the trusted
+  piece before the risky one" ordering as T80-before-jt10). The real open question here —
+  generating correct WAIT_n for T80 against this project's synchronous 1-cycle ROM/RAM — was
+  worked out from a real reference (NeoGeo_MiSTer's Z80 wiring) and then verified empirically in
+  simulation rather than trusted from derivation alone; both test scenarios (straight-line
+  ROM/RAM/bank exercise, and a dedicated NMI-handshake scenario) PASS.
+  `sound_cpu_gunbird.sv` is the gunbird/btlkroad variant (confirmed via the `GAME()` driver
+  table that Battle K-Road shares gunbird's exact machine config/sound map, so one module covers
+  both) — different RAM size/location (512B at 0x8000-0x81FF vs sngkace's 2KB at
+  0x7800-0x7FFF), different I/O port layout (bank select at 0x00, YM2610 at 0x04-0x07), and a
+  different bank-select shift (`(data>>4)&0x03` vs sngkace's `data&0x03`). Its banked window
+  (0x8200-0xFFFF, 0x7E00 bytes — not a power of two) turns out to collapse to the exact same
+  clean `{bank, addr[14:0]}` concatenation sngkace uses, confirmed algebraically against the
+  real `m_audiobank->configure_entries(0, 4, base+0x200, 0x8000)` call rather than assumed —
+  documented in the module header. Same two-scenario testbench structure as sngkace's, with the
+  banked read deliberately targeting the window's first address (0x8200) to confirm the
+  boundary math holds exactly at the edge; both scenarios PASS.
+- Not yet started: SDRAM tile/sprite/sound ROM banking, top-level integration against
+  Template_MiSTer (CRT_Offset, DIP/control mapping, hiscore.v — see "Component reuse map"
+  above), `.mra` files.
 
 Every RTL module so far has been verified in ModelSim against an independently-computed
 reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
@@ -187,9 +220,13 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
   curve, and tilemap size-switch behavior as "not quite right" / unverified, and there's no board
   to resolve those beyond matching MAME's behavior as closely as possible.
   Separately: **DE10-nano hardware bring-up is available** — copy `.rbf`/`.mra` over and launch
-  manually. This is black-box testing only (no JTAG, so no live signal capture/debug on real
-  MiSTer hardware), but it's enough to validate each phase's exit criteria (does it boot, does it
-  play correctly) beyond simulation.
+  manually, and (as of 2026-08-21) a MiSTer is set up with a USB Blaster II-style cable to the
+  DE10-nano's JTAG port, meaning direct Quartus programming/debug should become possible in
+  addition to the copy-and-launch black-box flow. **Not yet reachable from this dev
+  environment**: `jtagconfig` reports "No JTAG hardware available" and no Blaster/FTDI device
+  shows up in Windows' device list on this machine — the cable may be connected to a different
+  machine than this session runs on, or not yet fully connected/drivers not installed. Revisit
+  (recheck `jtagconfig`) before assuming JTAG programming is actually usable from here.
 - **YMF278B de-risking spike** should probably happen early (maybe alongside Phase 0) rather than
   right before Phase 2, given it's the other component with no existing shortcut — worth deciding
   scheduling once Phase 1 is underway and its actual cost is clearer.
@@ -208,7 +245,10 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Sound subsystem: T80 + jt10 (YM2610), sound CPU memory map from `docs/phase1_memory_map.md`.
+1. Sound subsystem, continued: a real jt10 verification pass (audio-domain, not just
+   compile-clean — see `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either
+   sound CPU wrapper's YM I/O chip-select bus; and ADPCM-A/B ROM banking once jt10 itself is
+   trusted.
 2. SDRAM tile/sprite/sound ROM banking and top-level integration against Template_MiSTer,
    including the CRT_Offset module, DIP/status-bit + control mapping, and (later-stage/polish,
    not needed for initial bring-up) hiscore.v — see "Component reuse map" above.
