@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `4f48e23`)
+## Progress (kept current — last updated 2026-08-22, commit `1e1312e`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
