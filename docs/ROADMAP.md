@@ -144,8 +144,9 @@ actually testbench mistakes, documented so they aren't re-investigated).
   tightly-packed per-game layout the `.mra` files currently use, which every one of them
   already flags as provisional). Confirms directly against the built RTL that
   `tilemap_line_engine`/`sprite_render_engine`'s gfxrom/spritelut ports are already req/valid
-  latency-agnostic (no redesign needed), while `sound_cpu_sngkace`/`gunbird`'s ROM ports are
-  NOT yet (still fixed 1-cycle, flagged as an open item, not converted in this pass).
+  latency-agnostic (no redesign needed); `sound_cpu_sngkace`/`gunbird`'s ROM ports were NOT at
+  the time this was written (flagged as an open item) but have since been converted too — see
+  the "sound-CPU ROM ports converted to req/valid" entry above.
   `rtl/memory/ddram_phy.sv` — the single-port req/valid wrapper around the real `DDRAM_*`
   handshake — is built and verified (`sim/ddram_phy_tb/`, two independently-parameterized
   read-latency models, 6 and 13 cycles, to rule out latency-dependent bugs). Two real bugs
@@ -171,26 +172,40 @@ actually testbench mistakes, documented so they aren't re-investigated).
   one-shot `ioctl_wr` into this convention). Not yet built: the HPS-facing wrapper itself, and
   converting the sound CPU wrappers' ROM ports to req/valid so they can join this arbiter too.
 
-  **Attempted and reverted**: converting `sound_cpu_sngkace`'s `rom_addr`/`rom_data` to
-  req/valid (variable-length `WAIT_n` held until `rom_valid`, mirroring the scheme above) hit a
-  real, reproducible bug — simulated against a req/valid ROM model with deliberately
-  non-trivial latency (5 cycles), the CPU corrupted its own accumulator partway through
-  Scenario 1's test program, traced (via cycle-by-cycle signal dumps) to specifically the `LD
-  A,(0x8000)` instruction — a 3-byte opcode with its own memory-read M-cycle following two
-  operand-fetch M-cycles, unlike every simpler 1-2-byte instruction earlier in the same program
-  which worked correctly with the identical new WAIT_n scheme. Symptom: the address bus itself
-  went X during a later I/O cycle (`OUT (n),A` puts the accumulator on the address bus's upper
-  byte on real Z80/T80 hardware — an X there means A was never correctly loaded), with no
-  memory access to `0x8000` visible anywhere in the trace between the operand fetch and the
-  next opcode fetch. Root cause not conclusively identified — leading suspicion is a race in
-  the `rom_pending` edge-detection logic specifically for back-to-back ROM-read M-cycles within
-  a single multi-byte instruction (the module's own header already flags Z80 bus timing as
-  "easy to get subtly wrong," confirmed correct by simulation rather than derivation for
-  exactly this reason) — but this needs a proper T80-internal T-state waveform trace to pin
-  down, not more blind top-level signal-log reading. Reverted cleanly to the last verified
-  commit rather than land a change with a known, unresolved correctness bug — both files are
-  back to their pre-attempt state, `sound_cpu_sngkace_tb` still PASSes as before. Revisit with
-  more time/a waveform viewer, not another blind attempt.
+  **Resolved: sound-CPU ROM ports converted to req/valid**, both `sound_cpu_sngkace.sv` and
+  `sound_cpu_gunbird.sv`. A first attempt (see git history) hit a real, reproducible bug —
+  against a req/valid ROM model with 5-cycle latency, `LD A,(0x8000)` (a 3-byte opcode whose own
+  memory-read M-cycle follows two operand-fetch M-cycles) corrupted the accumulator, with no
+  memory access to `0x8000` visible anywhere in the trace — and was reverted rather than land a
+  known-broken change, with the note that a proper T80-internal T-state waveform trace was
+  needed, not more blind top-level signal-log reading.
+
+  This second attempt was designed directly from `T80.vhd`/`T80se.vhd`'s actual RTL (read, not
+  re-derived from memory or guessed): `T80.vhd`'s state machine freezes `TState` at 2 for as long
+  as `WAIT_n` reads 0 (resampled every cycle, no separate edge logic); `T80se.vhd` captures
+  `DI_Reg <= DI` on the exact edge `TState=2 and WAIT_n=1` is first true; and — the key fact the
+  first attempt's "race in back-to-back M-cycles" suspicion didn't have — `RD_n`/`MREQ_n` are
+  registered outputs that default to `1` every cycle and are only pulled low by a matching
+  `TState` condition, so there IS always a real one-cycle gap (T3) between the end of one read
+  M-cycle and the start of the next, even within one multi-byte instruction. Given that gap is
+  real, the new design ties ROM-read `WAIT_n` to a plain combinational level
+  (`is_rom_read = mem_active_rd && !is_ram`, glitch-free by construction since `mreq_n`/`rd_n`
+  can't toggle mid-M-cycle) combined with a level-tracked `rom_pending` flag (set when a fresh
+  `is_rom_read` window opens, cleared on `rom_valid`) — structurally unable to miss a transition
+  the way a same-cycle edge-detector can. RAM/I/O/writes keep the original fixed one-wait-cycle
+  scheme unchanged, explicitly scoped out via `!is_rom_read`, so nothing about their
+  already-verified behavior was touched.
+
+  **Confirmed, not just re-derived**: re-ran the exact same `LD A,(0x8000)` (sngkace) and
+  `LD A,(0x8200)` (gunbird, its own equivalent case, already present in that testbench) scenarios
+  against a real 5-cycle-latency req/valid ROM model, with real T80-internal M-cycle/T-state
+  tracing (hierarchical reference into `u_cpu.u0`'s `MCycle`/`TState`, the actual signals
+  `T80se.vhd`'s architecture exposes — not reconstructed from external bus signals). Both games'
+  traces show all 4 M-cycles of the instruction (3 fetch + 1 banked read) with exactly one clean
+  `rom_req` pulse each, `wait_n` dropping and returning at the right edges, and the correct byte
+  (`0xC3`/`0xC7`) landing in the accumulator — this is the actual "T80-internal T-state waveform
+  trace" the first attempt's revert note flagged as necessary. Both testbenches PASS in full
+  (address decode, banking, RAM, sound-latch/NMI handshake, and the ROM port).
 
   `rtl/memory/ddram_download.sv` bridges hps_io's real ROM-download interface (checked
   directly against `sys/hps_io.sv`'s port list — `ioctl_download`/`ioctl_index`/`ioctl_wr`/
@@ -536,6 +551,34 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
   shows up in Windows' device list on this machine — the cable may be connected to a different
   machine than this session runs on, or not yet fully connected/drivers not installed. Revisit
   (recheck `jtagconfig`) before assuming JTAG programming is actually usable from here.
+
+  **Reference for when JTAG bring-up actually starts**: danifunker/lbmactwo_MiSTer's
+  `docs/MISTER_HARDWARE_DEBUGGING.md` (github.com/danifunker/lbmactwo_MiSTer, a real DE10-nano
+  Cyclone V core) documents the practical workflow in useful detail — worth reading in full at
+  that point, not just this summary:
+  - **Programming**: JTAG chain has 2 devices (HPS at position 1, FPGA at position 2) — program
+    with `quartus_pgm -c 1 -m jtag -o "p;output_files/<name>.sof@2"` (the `@2` matters; wrong
+    device targets the HPS instead of the FPGA). `quartus_pgm --list`/`-a` to check detection.
+  - **In-system probing without rebuilding**: prefers Altera `altsource_probe` (ISSP) megafunction
+    instances over SignalTap for a design near its ALM budget — SignalTap costs block RAM/fit
+    margin, ISSP costs less and is read via a Tcl script (`quartus_stp_tcl -t script.tcl`) against
+    a running bitstream. Their design (~80% ALM with a lite 68881 FPU) caps out around 19 probes
+    before fit failures; each probe is deliberately kept read-only and 4-char-tagged.
+  - **Debugging patterns**: a free-running counter tied to a bus-cycle strobe (e.g. `_cpuAS`) that
+    stops advancing is how they detect a hung CPU; *shifting* (not constant) video noise between
+    screenshots indicates VRAM scanout reading stale data under SDRAM arbiter starvation, not a
+    fixed addressing bug — directly the same failure family as this project's own SDRAM
+    contention work (`docs/phase1_sdram_map.md`'s residual-throughput findings, and the real
+    byte-order bug `rtl/memory/gfxrom_byte_reorder.sv` fixed) — worth specifically checking for
+    both patterns (byte-order and arbiter starvation) once this project reaches real hardware,
+    since sim can't surface either on its own (their doc's own "sim vs. hardware" list names both
+    as things Verilator-only testing missed for them too).
+  - **MiSTer only auto-loads ROM index 0** — a second ROM region (their case: a declaration ROM)
+    needs baking into the bitstream via `$readmemh` if used, not relying on HPS download. Worth
+    checking against this project's own `.mra` region layout once top-level integration wires up
+    `ioctl_download` for real.
+  - Screenshot capture via the MiSTer Remote web API: `curl -s -X POST
+    http://<mister-ip>:8182/api/screenshots`.
 - **YMF278B de-risking spike** should probably happen early (maybe alongside Phase 0) rather than
   right before Phase 2, given it's the other component with no existing shortcut — worth deciding
   scheduling once Phase 1 is underway and its actual cost is clearer.
@@ -579,12 +622,12 @@ See "Progress" above for current status. Immediate next items, in order:
    caught). `sdram_narrow_bridge.sv` consumers (spritelut, `maincpu`, `audiocpu`) must NOT use it.
    This is also where the `.mra` files' DIP status-bit
    positions (see "Progress" above) get checked against real RTL for the first time and corrected
-   if needed. Sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`) stay on their current fixed-1-cycle
-   ROM ports for this integration pass, since the req/valid conversion is blocked (see "Progress"
-   above) — their ROM ports simply don't connect to a real arbiter yet.
-2. Sound subsystem: resolve the sound-CPU req/valid conversion bug (needs a T80-internal
-   waveform trace, not another blind attempt — see "Progress" above); a real jt10 verification
-   pass (audio-domain, not just compile-clean — see `rtl/sound/jt10/PROVENANCE.md`) before
-   actually wiring it into either sound CPU wrapper's YM I/O chip-select bus; and ADPCM-A/B ROM
-   banking once jt10 itself is trusted.
+   if needed. Sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`) now have req/valid ROM ports
+   (see "Progress" above) and are ready to connect to a real arbiter/`sdram_narrow_bridge`
+   (`WORD_BYTES=1`, matching the Z80's 8-bit fetch) for this pass — not wired yet, but no longer
+   blocked.
+2. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
+   `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either sound CPU wrapper's YM
+   I/O chip-select bus; ADPCM-A/B ROM banking once jt10 itself is trusted; and applying the
+   samuraia/sngkace ADPCM-A bit 6/7 swap (see the open item above) during ROM download.
 3. DE10-nano black-box bring-up once a build exists.

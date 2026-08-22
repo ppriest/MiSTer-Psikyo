@@ -42,18 +42,29 @@
 //   0x08       sound latch read
 //   0x0C       sound latch acknowledge write (clears NMI)
 //
-// WAIT_n generation: identical scheme to sound_cpu_sngkace.sv (one wait
-// cycle per MREQ/IORQ access, matching this project's synchronous 1-cycle
-// BRAM convention) -- this is a generic Z80-bus-timing scheme, not board
-// specific, so it carries over unchanged and re-verified here rather than
-// assumed correct by association.
+// WAIT_n generation: identical split scheme to sound_cpu_sngkace.sv --
+// RAM/I/O/writes keep the fixed one-wait-cycle scheme (this project's
+// synchronous 1-cycle BRAM convention), while program ROM reads (fixed
+// and banked alike) go through a real req/valid handshake
+// (`rom_req`/`rom_valid`), since ROM streaming is meant to eventually
+// reach the SDRAM stack (docs/phase1_sdram_map.md), which has variable,
+// multi-cycle latency. This is a generic Z80-bus-timing scheme, not board
+// specific, so it carries over from sngkace's own (verified, see that
+// module's header for the full derivation and the real T80.vhd/T80se.vhd
+// mechanism it's built from) conversion rather than being re-derived here
+// -- re-verified for THIS module's own memory map/timing in
+// sim/sound_cpu_gunbird_tb/, not assumed to match sngkace by association.
 
 module sound_cpu_gunbird (
     input logic clk,
     input logic reset,
 
-    // external program ROM (128KB physical, 17-bit addr), 1-cycle sync read
+    // external program ROM (128KB physical, 17-bit addr), req/valid --
+    // rom_req pulses once per access (while !rom_pending, see below);
+    // rom_data must be valid during the same cycle rom_valid pulses
+    output logic         rom_req,
     output logic [16:0] rom_addr,
+    input  logic         rom_valid,
     input  logic [7:0]  rom_data,
 
     // sound latch, from the main CPU side
@@ -129,6 +140,12 @@ module sound_cpu_gunbird (
     logic mem_active_rd;
     assign mem_active_rd = (mreq_n == 1'b0) && (rd_n == 1'b0);
 
+    // is_rom_read: any active MREQ read that isn't RAM -- covers both the
+    // fixed and banked ROM regions identically, matching rom_addr's own
+    // uniform {bank_or_00, a[14:0]} treatment of both.
+    logic is_rom_read;
+    assign is_rom_read = mem_active_rd && !is_ram;
+
     always_comb begin
         if (mem_active_rd) begin
             if (is_ram)          di = ram_rd_data;
@@ -166,19 +183,43 @@ module sound_cpu_gunbird (
         end
     end
 
-    // ---- WAIT_n generation: one wait cycle per MREQ/IORQ access ----
+    // ---- WAIT_n generation ----
+    // RAM/I/O/writes: unchanged fixed one-wait-cycle scheme, explicitly
+    // excluding rom reads (`!is_rom_read`) so the two schemes never
+    // overlap or fight over wait_n for the same access.
     logic access_started;
 
-    wire access_now = (mreq_n == 1'b0 || iorq_n == 1'b0) && (rd_n == 1'b0 || wr_n == 1'b0);
+    wire access_now        = (mreq_n == 1'b0 || iorq_n == 1'b0) && (rd_n == 1'b0 || wr_n == 1'b0);
+    wire access_now_nonrom = access_now && !is_rom_read;
 
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
             access_started <= 1'b0;
         end else begin
-            access_started <= access_now;
+            access_started <= access_now_nonrom;
         end
     end
 
-    assign wait_n = access_now ? access_started : 1'b1;
+    // ROM reads: real req/valid handshake. rom_pending is a level (set the
+    // cycle a fresh is_rom_read window opens, cleared the cycle rom_valid
+    // arrives) -- see sound_cpu_sngkace.sv's header for why this, not a
+    // same-cycle edge-detector, is what makes back-to-back ROM-read
+    // M-cycles within one instruction safe.
+    logic rom_pending;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            rom_pending <= 1'b0;
+        end else begin
+            if (is_rom_read && !rom_pending) rom_pending <= 1'b1;
+            else if (rom_valid)                 rom_pending <= 1'b0;
+        end
+    end
+
+    assign rom_req = is_rom_read && !rom_pending;
+
+    assign wait_n = is_rom_read        ? rom_valid
+                   : access_now_nonrom ? access_started
+                   : 1'b1;
 
 endmodule

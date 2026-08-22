@@ -1,10 +1,16 @@
 // Checks sound_cpu_gunbird's address decode / banking / WAIT_n generation
-// and the sound-latch/NMI handshake, against a synchronous 128KB ROM model
-// (1-cycle read latency, matching every other BRAM interface convention in
-// this project). Mirrors sound_cpu_sngkace_tb's structure (two separate
-// scenarios, same reasoning for keeping them separate -- see that
-// testbench's header), adjusted for gunbird's different memory map, RAM
-// size, I/O port layout, and bank-select shift.
+// and the sound-latch/NMI handshake, against a REAL variable-latency (5
+// cycle) req/valid ROM model for the ROM port -- RAM/I/O still behave as
+// fixed 1-cycle, matching the module's own split scheme (see its header).
+// Mirrors sound_cpu_sngkace_tb's structure and its req/valid conversion
+// exactly (two separate scenarios, same reasoning for keeping them
+// separate, same T80-internal T-state tracing -- see that testbench's
+// header for the full derivation this module's conversion is built on),
+// adjusted for gunbird's different memory map, RAM size, I/O port layout,
+// and bank-select shift. Scenario 1's `LD A,(0x8200)` already exercises
+// the same "3-byte opcode whose own memory-read M-cycle follows two
+// operand-fetch M-cycles" shape sngkace's bug was found against -- kept
+// unchanged specifically to stress that shape here too, not invented new.
 //
 // Scenario 1 (straight-line, NMI never fires): exercises fixed-ROM fetch,
 // a RAM write (0x8000, gunbird's RAM base -- different from sngkace's
@@ -36,7 +42,9 @@ module tb_sound_cpu_gunbird;
     always #5 clk = ~clk;
 
     logic reset;
+    logic         rom_req;
     logic [16:0] rom_addr;
+    logic         rom_valid;
     logic [7:0]  rom_data;
     logic [7:0]  latch_data;
     logic         latch_write;
@@ -46,12 +54,62 @@ module tb_sound_cpu_gunbird;
     logic [7:0]  ym_dout;
     logic [7:0]  ym_din;
 
+    int errors;
+
     assign ym_din = 8'hAA;   // arbitrary fixed stub response, unused by these tests' reads
 
     sound_cpu_gunbird dut (.*);
 
+    // ---- ROM model: real req/valid, fixed 5-cycle round trip (matches
+    // sound_cpu_sngkace_tb's model exactly) ----
     logic [7:0] rom [0:131071];
-    always_ff @(posedge clk) rom_data <= rom[rom_addr];
+    localparam int ROM_LATENCY = 5;
+    logic         rom_busy;
+    int           rom_cnt;
+    // plain always, not always_ff: this block also increments `errors`,
+    // which the initial block's procedural code drives too -- always_ff
+    // enforces single-driver exclusivity that a plain always doesn't.
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            rom_busy  <= 1'b0;
+            rom_valid <= 1'b0;
+        end else begin
+            rom_valid <= 1'b0;
+            if (rom_req && !rom_busy) begin
+                rom_busy <= 1'b1;
+                rom_cnt  <= 0;
+            end else if (rom_busy) begin
+                if (rom_cnt == ROM_LATENCY - 1) begin
+                    rom_valid <= 1'b1;
+                    rom_data  <= rom[rom_addr];
+                    rom_busy  <= 1'b0;
+                end else begin
+                    rom_cnt <= rom_cnt + 1;
+                end
+            end
+            if (rom_req && rom_busy) begin
+                $display("FAIL: rom_req pulsed while a previous ROM access was still in flight (rom_pending race)");
+                errors++;
+            end
+        end
+    end
+
+    // ---- T80-internal T-state/M-cycle trace, around LD A,(0x8200)'s full
+    // M-cycle sequence: its own 3 fetch bytes (rom_addr 0x0009-0x000B) and
+    // the banked read it triggers (rom_addr 0x10200, physical for bank 2
+    // offset 0x200 -- see rom_addr's {bank,a[14:0]} concatenation). See
+    // tb_sound_cpu_sngkace.sv's header for why this trace matters.
+    logic [2:0] mcycle_prev, tstate_prev;
+    always_ff @(posedge clk) begin
+        if ({dut.u_cpu.u0.MCycle, dut.u_cpu.u0.TState} !== {mcycle_prev, tstate_prev}) begin
+            if ((rom_addr >= 17'h00009 && rom_addr <= 17'h0000B) ||
+                (rom_addr >= 17'h10200 && rom_addr <= 17'h10202))
+                $display("T80 trace: MCycle=%0d TState=%0d rom_addr=%h rom_req=%b rom_valid=%b wait_n=%b",
+                          dut.u_cpu.u0.MCycle, dut.u_cpu.u0.TState, rom_addr, rom_req, rom_valid, dut.wait_n);
+            mcycle_prev <= dut.u_cpu.u0.MCycle;
+            tstate_prev <= dut.u_cpu.u0.TState;
+        end
+    end
 
     // capture every YM stub write as a small FIFO-ish trail (only a few
     // writes ever happen in these tests, so a plain array + count is fine)
@@ -63,8 +121,6 @@ module tb_sound_cpu_gunbird;
             ym_write_count             <= ym_write_count + 1;
         end
     end
-
-    int errors;
 
     task automatic reset_dut;
         ym_write_count = 0;
@@ -96,7 +152,7 @@ module tb_sound_cpu_gunbird;
         rom[17'h10200] = 8'hC7;
 
         reset_dut();
-        run_cycles(300);
+        run_cycles(2000);
 
         if (dut.ram[0] !== 8'h55) begin
             errors++;
@@ -125,7 +181,7 @@ module tb_sound_cpu_gunbird;
         rom[16'h006C] = 8'hED; rom[16'h006D] = 8'h45;   // RETN
 
         reset_dut();
-        run_cycles(100);   // let it reach HALT and settle
+        run_cycles(500);   // let it reach HALT and settle
 
         if (dut.halt_n !== 1'b0) begin
             errors++;
@@ -148,7 +204,7 @@ module tb_sound_cpu_gunbird;
             $display("FAIL(s2) latch_pending did not assert after latch_write");
         end
 
-        run_cycles(200);   // let the NMI handler run to completion
+        run_cycles(1000);   // let the NMI handler run to completion
 
         if (ym_write_count < 1 || ym_writes[0] !== 8'h77) begin
             errors++;
@@ -162,7 +218,7 @@ module tb_sound_cpu_gunbird;
         $display("Scenario 2 done (sound latch write -> NMI -> handler reads/echoes/acks)");
 
         if (errors == 0)
-            $display("PASS: sound_cpu_gunbird matches reference for all cases");
+            $display("PASS: sound_cpu_gunbird matches reference for all cases, ROM port verified against a real 5-cycle-latency req/valid model");
         else
             $display("FAIL: %0d mismatches", errors);
 
