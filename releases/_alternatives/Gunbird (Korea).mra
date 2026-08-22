@@ -31,7 +31,7 @@
 	<joystick>8-way</joystick>
 	<region>Korea</region>
 
-	<rom index="0" zip="gunbirdk.zip" md5="none">
+	<rom index="0" zip="gunbirdk.zip|gunbird.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - two 0x80000 ROMs (twice
 		     the size of the parent gunbird's) word-swap-interleaved. Actual
 		     0x100000. -->
@@ -84,5 +84,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260822000000</mratimestamp>
+	<mratimestamp>20260822210000</mratimestamp>
 </misterromdescription>

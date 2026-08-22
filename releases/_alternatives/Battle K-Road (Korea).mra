@@ -30,7 +30,7 @@
 	<joystick>8-way</joystick>
 	<region>Korea</region>
 
-	<rom index="0" zip="btlkroadk.zip" md5="none">
+	<rom index="0" zip="btlkroadk.zip|btlkroad.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
 		     (different CRCs than btlkroad's). Actual 0x80000. -->
 		<interleave output="16">
@@ -91,5 +91,5 @@
 		<dip name="Region" bits="32,33,34,35" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260822000000</mratimestamp>
+	<mratimestamp>20260822210000</mratimestamp>
 </misterromdescription>

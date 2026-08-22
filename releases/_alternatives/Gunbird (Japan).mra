@@ -30,7 +30,7 @@
 	<joystick>8-way</joystick>
 	<region>Japan</region>
 
-	<rom index="0" zip="gunbirdj.zip" md5="none">
+	<rom index="0" zip="gunbirdj.zip|gunbird.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
 		     (different CRCs than gunbird's or gunbirdk's). Actual 0x80000. -->
 		<interleave output="16">
@@ -81,5 +81,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260822000000</mratimestamp>
+	<mratimestamp>20260822210000</mratimestamp>
 </misterromdescription>

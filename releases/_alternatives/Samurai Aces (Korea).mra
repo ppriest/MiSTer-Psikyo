@@ -36,7 +36,7 @@
 	<joystick>8-way</joystick>
 	<region>Korea</region>
 
-	<rom index="0" zip="samuraiak.zip" md5="none">
+	<rom index="0" zip="samuraiak.zip|samuraia.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - two 0x80000 ROMs (twice the
 		     size of the parent samuraia's) word-swap-interleaved. Actual 0x100000. -->
 		<interleave output="16">
@@ -87,5 +87,5 @@
 		<dip name="Region" bits="32,33,34,35,36,37,38,39" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7f,0xbf,0xdf,0xef,0xff"/>
 	</switches>
 
-	<mratimestamp>20260822000000</mratimestamp>
+	<mratimestamp>20260822210000</mratimestamp>
 </misterromdescription>
