@@ -23,7 +23,7 @@ the `.mra` files in `releases/` (which describe the *download blob* layout — s
 
 DE10-nano MiSTer cores don't have a physical SDRAM chip by default (`SDRAM_*` in
 `sys/emu_ports.vh` is for an optional add-on daughterboard, tied to `'Z` in the untouched
-`Template.sv`). The real large-memory path is a slice of the HPS-side DDR3, reached through a
+`Psikyo.sv`). The real large-memory path is a slice of the HPS-side DDR3, reached through a
 fixed Avalon-MM-style interface (`sys/emu_ports.vh:100-109`):
 
 ```
