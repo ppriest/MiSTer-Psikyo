@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `8ec11c2`)
+## Progress (kept current — last updated 2026-08-22, commit `d8a640c`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -354,11 +354,9 @@ actually testbench mistakes, documented so they aren't re-investigated).
   hsync/vsync pulse width/position are explicitly flagged as this project's own RTL-level
   design choice, since MAME's `set_raw()` only specifies blanking boundaries, not real sync
   timing (it doesn't drive an analog CRT) — not claimed to match the original PCB. Verified
-  across 7 cases including a full two-frame walk. Not yet done: instantiating this alongside
-  the DDRAM stack, video/sound engines, and TG68K.C in the actual top-level `emu.sv`/core
-  module, the CRT_Offset module, DIP/control mapping, and hiscore.v (later-stage) — this is
-  also where the `.mra` files' DIP status-bit positions get finalized/verified against real
-  RTL for the first time (the ROM-layout half of that is already done — see next item).
+  across 7 cases including a full two-frame walk. (Update: this is now instantiated for real
+  in `Psikyo.sv` — see "`Psikyo.sv` top-level built" below. What's still not done: the
+  CRT_Offset module and hiscore.v, both later-stage/polish items — see "Component reuse map".)
 
   **Real integration test, plus a real (smaller) bug found and fixed**: wired `video_timing`
   into a real `tilemap_line_engine` instance for the first time (`sim/video_pipeline_tb/`) —
@@ -600,6 +598,44 @@ actually testbench mistakes, documented so they aren't re-investigated).
   its PC running off into the weeds. PASSES: byte-wide fetches really are packing-order-agnostic
   here, no fix needed.
 
+- **`Psikyo.sv` top-level built: the full core instantiated, real Quartus synthesis verified.**
+  Replaces the untouched Template_MiSTer `emu.sv` skeleton with the real top-level module —
+  `psikyo_top.sv` (video+CPU+SDRAM+sound CPU, see above) wired against `hps_io` (joystick_0/1,
+  the `ioctl_*` ROM-download bus), a real PLL (`clk_sys` = 85.909091MHz = 14.31818MHz×6, an
+  exact 12:1 `ce_pix` divider and comfortable margin over `sdram.sv`'s ~85MHz `RASCAS_DELAY`
+  assumption; `SDRAM_CLK` driven from a second, phase-shifted PLL output rather than
+  `psikyo_top`'s own passthrough, matching `sdram.sv`'s documented policy of leaving real phase
+  generation to top-level integration — the `-3000ps` shift is a starting point, not yet
+  hardware-verified), and RGB555→RGB888 video output via MSB-bit-replication (not zero-padding).
+  Input-port bit layout confirmed directly from `psikyo.cpp` source (sngkace vs.
+  gunbird/btlkroad's differing coin/NMI bit placement, all-active-low convention) rather than
+  assumed, joystick_N convention confirmed against a real reference core; `dsw_in =
+  status[47:16]` is fully generic (matches every `.mra`'s own `bits="16,17,..."` convention
+  directly — no per-game RTL needed, closing the "DIP status-bit positions" open item the
+  `.mra` rework below and the `video_timing.sv` entry above both flagged as pending). Ships
+  with `BOARD_GUNBIRD` fixed to `1'b0` (sngkace layout — this project's Phase 1 entry point); a
+  gunbird/btlkroad build needs its own top-level parameter value, not yet built. jt10/YM2610
+  stays silent (`ym_din` tied to `0`) — unchanged from "Sound CPU wired in" above, still
+  pending its own audio-domain verification pass (see "Next steps").
+
+  **New verification method introduced here: real Quartus `quartus_map` synthesis**, not just
+  ModelSim. Running it against the actual project (`files.qip` rewritten with the complete real
+  source list, superseding the Template_MiSTer placeholder `mycore.v`/`lfsr.v`/`cos.sv`, now
+  deleted) found a real, Quartus-only bug no amount of simulation could have caught: Quartus
+  17.0's SystemVerilog elaborator rejects non-blocking assignments to block-local variables in
+  `sdram.sv`'s access-manager and initialization blocks, even with the `static` keyword
+  (confirmed empirically not a working fix, despite that exact pattern already existing
+  upstream and compiling fine under ModelSim) — `Error (10959): illegal assignment - automatic
+  variables can't have non-blocking assignments`. Fixed by moving `rfs_cnt`/`rfs`/`rfs2`/
+  `init_old` to module-level declarations, matching every other register in the file; purely a
+  declaration-scope change, full ModelSim regression re-verified with no behavior change (see
+  `rtl/memory/sdram/PROVENANCE.md`'s own writeup). With that fix, the entire RTL chain built
+  this session — `Psikyo.sv` → `psikyo_top.sv` → `psikyo_core.sv`/`psikyo_sdram_top.sv` → every
+  video/memory/sound/CPU module — synthesizes cleanly under real Quartus 17.0: 0 errors, 22382
+  logic cells, 1349 RAM segments, 3 PLLs, 39 DSP elements, zero warnings in the new top-level
+  code. This closes the last open item ("Instantiate the result inside `Psikyo.sv`/`emu.sv`")
+  from "Next steps" item 1 below.
+
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
   header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
@@ -789,20 +825,19 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Top-level integration: `rtl/psikyo_top.sv` (see "Progress" above) connects `psikyo_core.sv`
-   (video+CPU — `maincpu.sv`, shared VRAM/palette/vregs/spriteram, both tilemap engines, the
-   sprite pipeline, the compositor), `psikyo_sdram_top.sv` (the SDRAM backend), and the
-   board-appropriate sound CPU wrapper, all verified together under genuine multi-CPU SDRAM
-   contention with real downloaded programs (see "Progress" above — both the contention bug and
-   the audiocpu byte-order question are resolved). What's left before this reaches
-   `Psikyo.sv`/`emu.sv`:
-   - Instantiate the result inside `Psikyo.sv`/`emu.sv` (still the untouched Template_MiSTer
-     skeleton) alongside the CRT_Offset module, DIP/status-bit + control mapping (this is where
-     the `.mra` files' DIP status-bit positions, see "Progress" above, get checked against real
-     RTL for the first time and corrected if needed), and (later-stage/polish, not needed for
-     initial bring-up) hiscore.v — see "Component reuse map" above. The DDRAM stack (`ddram_phy`/
-     `ddram_arbiter`/`ddram_download`) remains built and available but is no longer Phase 1's
-     critical path (see `docs/phase1_ddram_map.md`'s header note).
+1. Top-level integration: **done for sngkace-layout boards.** `Psikyo.sv` (see "Progress"
+   above — "`Psikyo.sv` top-level built") now instantiates the full `rtl/psikyo_top.sv` chain
+   (`psikyo_core.sv` video+CPU, `psikyo_sdram_top.sv` SDRAM backend, board-appropriate sound CPU
+   wrapper) against `hps_io`, a real PLL, and real video output, with the whole chain verified
+   under real Quartus 17.0 synthesis (0 errors/warnings). DIP status-bit positions are resolved
+   generically (`dsw_in = status[47:16]`, matching every `.mra`'s own convention) — no longer an
+   open item. What's left:
+   - A `BOARD_GUNBIRD(1'b1)` build variant for gunbird/btlkroad (currently `Psikyo.sv` fixes
+     `BOARD_GUNBIRD` to `1'b0`/sngkace only).
+   - The CRT_Offset module and hiscore.v — both later-stage/polish, not needed for initial
+     bring-up — see "Component reuse map" above.
+   - The DDRAM stack (`ddram_phy`/`ddram_arbiter`/`ddram_download`) remains built and available
+     but is no longer Phase 1's critical path (see `docs/phase1_ddram_map.md`'s header note).
 2. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
    `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either sound CPU wrapper's YM
    I/O chip-select bus; ADPCM-A/B ROM banking once jt10 itself is trusted; and applying the
