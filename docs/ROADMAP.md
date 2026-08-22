@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `5568e0c`)
+## Progress (kept current — last updated 2026-08-22, commit `0715591`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -519,6 +519,40 @@ actually testbench mistakes, documented so they aren't re-investigated).
   already-proven `do @(posedge clk); while (...);` pattern, which guarantees a full edge (and NBA
   settle) before the first check.
 
+  **`rtl/psikyo_top.sv` built: video+CPU connected to the SDRAM backend, two real bugs found
+  doing it.** Connects `psikyo_core.sv` directly to `psikyo_sdram_top.sv` -- both were built
+  with matching ROM port shapes specifically so this would be a straight port-to-port
+  connection. Proving it with a real CPU program driven entirely through the HPS download path
+  (not a directly-poked ROM array, unlike every earlier integration test) surfaced two genuine
+  bugs neither module's own isolated testbench had caught:
+
+  1. **Two reset domains, not one.** The first version wired the same `reset` into both
+     `psikyo_core.sv` and `psikyo_sdram_top.sv`. Sequencing a download-then-run test the natural
+     way -- hold reset through the whole download -- silently discarded every downloaded byte
+     with no error, since `psikyo_sdram_top.sv`'s own req/valid wrappers (`sdram_download.sv`
+     included) were held in reset for that entire span too, exactly when they most need to be
+     live. Real MiSTer cores hold the CORE in reset during load while the SDRAM backend stays
+     operational -- `rtl/psikyo_top.sv` now does the same: `core_reset = reset | ioctl_download`
+     gates `psikyo_core.sv` only, while `psikyo_sdram_top.sv` keeps the plain `reset`.
+  2. **A real byte-order bug in `psikyo_sdram_top.sv`'s maincpu ROM path**, not caught by
+     `tb_psikyo_sdram_top.sv` because that test only checked the port against
+     `sdram_narrow_bridge.sv`'s own self-consistent little-endian convention, never against what
+     a real 68020 program needs. `sdram_narrow_bridge.sv` packs 16-bit words little-endian
+     (correct for spritelut, whose MAME `ROM_REGION16_LE` format genuinely is little-endian) but
+     maincpu's program ROM is plain `ROM_REGION` (big-endian, like every 68k program ROM this
+     project has downloaded so far). Undetected, this silently byte-swapped every fetched
+     instruction word -- caught only once a real downloaded program's PC ran off into address
+     `0x800` instead of `0x8`. Fixed with a byte swap at the maincpu-specific seam, not in
+     `sdram_narrow_bridge.sv` itself (still correct as-is for spritelut and for audiocpu's
+     byte-wide fetches, which have no endianness question). `tb_psikyo_sdram_top.sv`'s own
+     `cpu_rom_data` expectation updated to match.
+
+  Verified: `sim/psikyo_top_tb/tb_psikyo_top.sv` downloads `sim/psikyo_core_tb/test_video.s`'s
+  same program through the real HPS path into the real SDRAM stack and confirms the same
+  tile-origin pixel `tb_psikyo_core.sv` checked lands correctly -- the complete chain (HPS
+  download → `psikyo_sdram_top.sv` → `psikyo_core.sv` → compositor → `rgb`) proven for the first
+  time with a real backend, not a stub.
+
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
   header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
@@ -708,27 +742,28 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Top-level integration: `rtl/psikyo_core.sv` (see "Progress" above) covers the video+CPU half —
-   `maincpu.sv`, the shared VRAM/palette/vregs/spriteram memory, both tilemap engines, the sprite
-   pipeline, and the compositor, all wired together and verified with a real CPU-driven test.
-   `rtl/memory/psikyo_sdram_top.sv` (see "Progress" above) covers the SDRAM backend — every ROM
-   port `psikyo_core.sv` needs (`cpu_rom_*`, `l0_gfxrom_*`, `l1_gfxrom_*`, `sp_gfxrom_*`,
-   `sp_lut_*`), plus an `audiocpu_rom_*` port ready for the sound CPU work below, verified with a
-   real HPS-download-then-read round trip through every client port. What's left before this
-   reaches `Psikyo.sv`/`emu.sv`:
-   - **Wire `psikyo_core.sv` directly to `psikyo_sdram_top.sv`** — both modules' ROM ports were
-     built to match each other's shapes exactly (see "Progress" above for both), so this should
-     be a straight port-to-port connection, not new logic; the DDRAM stack (`ddram_phy`/
-     `ddram_arbiter`/`ddram_download`) remains built and available but is no longer Phase 1's
-     critical path (see `docs/phase1_ddram_map.md`'s header note).
+1. Top-level integration: `rtl/psikyo_top.sv` (see "Progress" above) connects `psikyo_core.sv`
+   (video+CPU — `maincpu.sv`, shared VRAM/palette/vregs/spriteram, both tilemap engines, the
+   sprite pipeline, the compositor) directly to `psikyo_sdram_top.sv` (the SDRAM backend — every
+   ROM port `psikyo_core.sv` needs), verified with a real CPU program downloaded through the
+   actual HPS path into the actual SDRAM stack, not a stub. Two real bugs found assembling this
+   (reset-domain split, maincpu ROM byte order) are fixed and documented above. What's left
+   before this reaches `Psikyo.sv`/`emu.sv`:
    - Wire the sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`, which already have req/valid ROM
-     ports — see "Progress" above) to `psikyo_sdram_top.sv`'s already-built `audiocpu_rom_*` port
-     and to `psikyo_core.sv`'s `latch_data`/`latch_write` output.
+     ports — see "Progress" above) to `rtl/psikyo_top.sv`'s already-exposed `audiocpu_rom_*` port
+     and to its `latch_data`/`latch_write` output. Given the maincpu byte-order bug just found,
+     check whether audiocpu's ROM region (`ROM_REGION` for the Z80 sound CPU) needs the same
+     scrutiny before assuming `sdram_narrow_bridge.sv`'s WORD_BYTES=1 byte-wide fetch is
+     endianness-safe as reasoned in "Progress" above (byte-wide fetches have no packing order,
+     so no swap should be needed — but that reasoning hasn't yet been checked against a real
+     downloaded Z80 program the way maincpu's was, only asserted).
    - Instantiate the result inside `Psikyo.sv`/`emu.sv` (still the untouched Template_MiSTer
      skeleton) alongside the CRT_Offset module, DIP/status-bit + control mapping (this is where
      the `.mra` files' DIP status-bit positions, see "Progress" above, get checked against real
      RTL for the first time and corrected if needed), and (later-stage/polish, not needed for
-     initial bring-up) hiscore.v — see "Component reuse map" above.
+     initial bring-up) hiscore.v — see "Component reuse map" above. The DDRAM stack (`ddram_phy`/
+     `ddram_arbiter`/`ddram_download`) remains built and available but is no longer Phase 1's
+     critical path (see `docs/phase1_ddram_map.md`'s header note).
 2. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
    `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either sound CPU wrapper's YM
    I/O chip-select bus; ADPCM-A/B ROM banking once jt10 itself is trusted; and applying the
