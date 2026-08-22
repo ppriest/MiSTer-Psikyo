@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `78579ee`)
+## Progress (kept current — last updated 2026-08-22, commit `a84033b`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -553,37 +553,40 @@ actually testbench mistakes, documented so they aren't re-investigated).
   download → `psikyo_sdram_top.sv` → `psikyo_core.sv` → compositor → `rgb`) proven for the first
   time with a real backend, not a stub.
 
-  **Sound CPU wired in, and a real, still-open bug found doing it.** `rtl/psikyo_top.sv` now
-  instantiates the board-appropriate sound CPU wrapper (`sound_cpu_sngkace.sv`/
-  `sound_cpu_gunbird.sv`, selected by the same `BOARD_GUNBIRD` parameter `psikyo_core.sv` already
-  uses) wired to `psikyo_core.sv`'s `latch_data`/`latch_write` output and
-  `psikyo_sdram_top.sv`'s `audiocpu_rom_*` port -- both already built to match this wrapper's
-  shapes directly. `latch_data`/`latch_write`/`audiocpu_rom_*` are no longer external ports (now
-  internal); the sound CPU's YM2610 chip-select bus (`ym_*`) is exposed instead, since jt10
-  hasn't had its own audio-domain verification pass and isn't wired in yet. Verified structurally
-  two ways: `sim/psikyo_top_tb/tb_psikyo_top_sound_smoke.sv` elaborates and runs clean for BOTH
-  board variants (`vsim -gBOARD_GUNBIRD=0/1`); `tb_psikyo_sdram_top.sv` (unaffected) re-verified,
-  no regression.
+  **Sound CPU wired in.** `rtl/psikyo_top.sv` now instantiates the board-appropriate sound CPU
+  wrapper (`sound_cpu_sngkace.sv`/`sound_cpu_gunbird.sv`, selected by the same `BOARD_GUNBIRD`
+  parameter `psikyo_core.sv` already uses) wired to `psikyo_core.sv`'s `latch_data`/`latch_write`
+  output and `psikyo_sdram_top.sv`'s `audiocpu_rom_*` port -- both already built to match this
+  wrapper's shapes directly. `latch_data`/`latch_write`/`audiocpu_rom_*` are no longer external
+  ports (now internal); the sound CPU's YM2610 chip-select bus (`ym_*`) is exposed instead, since
+  jt10 hasn't had its own audio-domain verification pass and isn't wired in yet.
 
-  **Found a real, unresolved bug, not a wiring mistake**: the full video+CPU functional test
-  above (`tb_psikyo_top.sv`) PASSED before this change and now FAILS. With the sound CPU
-  genuinely contending against maincpu for the same Port 2 SDRAM arbiter, maincpu's own SDRAM
-  read granule capture (`sdram.sv`'s `dout[15:0/31:16/...] <= SDRAM_DQ`) intermittently captures
-  X, even though the arbiter's own `astate`/`sel` show one cleanly-serialized transaction
-  throughout with no overlap at the arbiter level -- the corruption is happening below the
-  arbiter, inside `sdram.sv`/the SDR timing model itself. Traced in detail (cycle-by-cycle FSM
-  state, `ram_req`, `dout` contents) but not yet root-caused; suspected a real SDR SDRAM timing
-  constraint (e.g. tRP, row precharge-to-activate) that single-client testing
-  (`sdram_arbiter5_tb`, `port2_sdram_tb`) never stressed, since `sdram.sv` issues no explicit
-  PRECHARGE and relies entirely on auto-precharge with zero enforced gap between two clients'
-  back-to-back transactions -- a hypothesis, not confirmed. One dead end already ruled out: a
-  `dout` zero-initializer (matching `state`/`ack0..2`'s own existing simulation-fidelity fix)
-  does NOT resolve it, so this is a different class of issue than the earlier TG68K.C
-  uninitialized-signal crash. Committed deliberately still failing, same posture as the
-  DDRAM-throughput test below -- `tb_psikyo_top.sv` now fails fast with a clear message (a
-  monitor calls `$finish` the moment the X is detected) rather than running toward the same
-  memory-exhaustion crash sustained X propagation caused earlier in this project's history, and
-  its header documents the issue in full for whoever picks this up next.
+  **Found and fixed a real SDRAM read-corruption bug this wiring exposed** (not a wiring
+  mistake): the full video+CPU functional test (`tb_psikyo_top.sv`) briefly regressed --
+  genuinely contending against the sound CPU for the same Port 2 SDRAM arbiter, maincpu's own
+  SDRAM reads intermittently came back corrupted. Isolated without any CPU at all:
+  `sim/sdram_tb/tb_sdram.sv`'s new Case 6 (two independent ports continuously contending, 1000
+  iterations) first FAILED 100% of the time -- but the bug was in the TEST, not the RTL: `dout0`/
+  `dout1`/`dout2` are literally the same `dout` register in `sdram.sv`, not independently latched
+  per port, so a caller must sample on its own valid/ack cycle, never later. Fixing the test to
+  sample inside each fork branch at its own ack toggle made it pass cleanly, proving `sdram.sv`
+  and `sdram_arbiter5.sv` were never the bug (also ruling out the tRP/row-precharge-timing
+  hypothesis this investigation started with -- Case 5, 400 back-to-back different-row reads on
+  one port, never reproduced anything either). That pointed at the consumer: `rtl/cpu/maincpu.sv`'s
+  `rom_pending` flag cleared on `rom_valid`'s one-cycle pulse rather than on the CPU's own bus
+  cycle actually ending (`is_rom_access`, driven by `as_n`, held low for several more cycles after
+  DTACK releases in a real 68k bus cycle), letting `rom_req` fire a second, spurious request for
+  data the CPU had already latched -- harmless alone, but under real contention another client
+  could win that spurious request's arbitration slot and overwrite the shared `dout` register
+  before the CPU's bus cycle finished, while `dtack_n` glitched low-high-low, corrupting what
+  TG68K.C sampled. Fixed by holding `rom_pending` through the whole bus cycle (clearing on
+  `!is_rom_access` instead of `rom_valid`). Verified: `tb_maincpu.sv` Case 1 still passes (Case
+  2's pre-existing, unrelated vector-fetch issue unaffected); `tb_psikyo_core.sv`'s smoke and
+  functional tests still pass; `tb_psikyo_top_sound_smoke.sv` still passes both board variants;
+  `tb_psikyo_top.sv` passes again, the full HPS-download-to-pixel chain verified under genuine
+  maincpu+sound-CPU SDRAM contention for the first time. `tb_sdram.sv`'s Cases 5 and 6 stay as
+  permanent regression coverage no prior test provided (each Port 2 client's own data correctness
+  under a sustained, many-iteration contention loop, not just a single simultaneous round).
 
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
@@ -774,23 +777,12 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. **Fix the SDRAM contention bug** (see "Progress" above) before anything else in this list --
-   `sim/psikyo_top_tb/tb_psikyo_top.sv` is currently a known-failing regression, committed
-   deliberately as reproducible evidence, not something to work around. maincpu's SDRAM read
-   capture returns X under genuine two-client contention (sound CPU now live), traced down to
-   `sdram.sv` itself (below the arbiter, which serializes correctly) but not yet root-caused.
-   Leading hypothesis: a real SDR SDRAM timing constraint (tRP-class row precharge-to-activate
-   gap) `sdram.sv` doesn't enforce between two different clients' back-to-back transactions,
-   never stressed by any single-client test. Next concrete step: extend `sim/sdram_tb/tb_sdram.sv`
-   or `sim/sdram_arbiter5_tb/` with a back-to-back-different-row two-consumer scenario that
-   reproduces this in isolation (much faster to iterate on than the full `psikyo_top.sv` chain),
-   then check the real MT48LC16M16 datasheet's tRP/tRC timing against `sdram.sv`'s fixed
-   `RASCAS_DELAY`/`CAS_LATENCY` state-cycle counts.
-2. Top-level integration: `rtl/psikyo_top.sv` (see "Progress" above) connects `psikyo_core.sv`
+1. Top-level integration: `rtl/psikyo_top.sv` (see "Progress" above) connects `psikyo_core.sv`
    (video+CPU — `maincpu.sv`, shared VRAM/palette/vregs/spriteram, both tilemap engines, the
    sprite pipeline, the compositor), `psikyo_sdram_top.sv` (the SDRAM backend), and now the
-   board-appropriate sound CPU wrapper. Once item 1 above is fixed, what's left before this
-   reaches `Psikyo.sv`/`emu.sv`:
+   board-appropriate sound CPU wrapper, verified together under genuine multi-CPU SDRAM
+   contention (see "Progress" above — the contention bug that briefly blocked this is fixed).
+   What's left before this reaches `Psikyo.sv`/`emu.sv`:
    - Check whether audiocpu's ROM region (`ROM_REGION` for the Z80 sound CPU) needs the same
      byte-order scrutiny the maincpu bug got (see "Progress" above) before trusting
      `sdram_narrow_bridge.sv`'s WORD_BYTES=1 byte-wide fetch is endianness-safe as reasoned there
@@ -804,8 +796,8 @@ See "Progress" above for current status. Immediate next items, in order:
      initial bring-up) hiscore.v — see "Component reuse map" above. The DDRAM stack (`ddram_phy`/
      `ddram_arbiter`/`ddram_download`) remains built and available but is no longer Phase 1's
      critical path (see `docs/phase1_ddram_map.md`'s header note).
-3. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
+2. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
    `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either sound CPU wrapper's YM
    I/O chip-select bus; ADPCM-A/B ROM banking once jt10 itself is trusted; and applying the
    samuraia/sngkace ADPCM-A bit 6/7 swap (see the open item above) during ROM download.
-4. DE10-nano black-box bring-up once a build exists.
+3. DE10-nano black-box bring-up once a build exists.
