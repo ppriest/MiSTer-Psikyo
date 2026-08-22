@@ -10,12 +10,20 @@
 // for SDRAM_CLK (the chip needs to see its clock edge advanced relative to
 // the address/command bus, same reasoning rtl/memory/sdram/sdram.sv's own
 // header documents for why that phase generation belongs at this
-// top-level integration stage, not in the controller itself). -3000ps is
-// a conservative starting value only, copied from the same ballpark
+// top-level integration stage, not in the controller itself). -3000ps was
+// the originally intended starting value (copied from the same ballpark
 // several other MiSTer-devel SDRAM-equipped cores use for the DE10-nano's
-// SDRAM daughterboard -- NOT independently re-derived or hardware-tuned
-// for this specific board/layout; real DE10-nano bring-up should verify
-// this against actual SDRAM read/write margin, not just trust it.
+// SDRAM daughterboard), but this altera_pll configuration's Fitter only
+// accepts phase_shift in [0ps, one full output period), quantized to
+// ~132.275ps steps -- a negative value is flatly illegal here, not just
+// unverified (caught by a real `quartus_fit` run: "Error: PLL Output
+// Counter parameter 'phase_shift' is set to an illegal value of '-3000
+// ps'"). Expressed as the equivalent positive shift instead: one full
+// 85.909091MHz period is ~11640.42ps, so -3000ps == +8640.42ps, rounded to
+// the nearest legal enumerated step Quartus itself reported, 8598ps. Still
+// NOT independently re-derived or hardware-tuned for this specific
+// board/layout -- real DE10-nano bring-up should verify this against
+// actual SDRAM read/write margin, not just trust it.
 module  pll_0002(
 
 	// interface 'refclk'
@@ -43,7 +51,7 @@ module  pll_0002(
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
 		.output_clock_frequency1("85.909091 MHz"),
-		.phase_shift1("-3000 ps"),
+		.phase_shift1("8598 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("0 MHz"),
 		.phase_shift2("0 ps"),
