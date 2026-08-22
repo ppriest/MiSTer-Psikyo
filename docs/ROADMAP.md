@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `5f07d33`)
+## Progress (kept current — last updated 2026-08-22, commit `5568e0c`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -492,6 +492,33 @@ actually testbench mistakes, documented so they aren't re-investigated).
   test failed (0 matches) -- root cause was the testbench's own `$readmemh` path being relative
   to the wrong working directory, not an RTL bug; fixed and reran clean.
 
+  **`rtl/memory/psikyo_sdram_top.sv` built: the full SDRAM backend assembled.** Every piece
+  (`sdram.sv`, `sdram_phy.sv`, `sdram_arbiter5.sv`, `sdram_narrow_bridge.sv`,
+  `gfxrom_byte_reorder.sv`, `sdram_download.sv`) was already independently verified -- this
+  module is the concrete assembly `docs/phase1_sdram_map.md`'s "Arbiter architecture" table has
+  described since that doc was written: 3 `sdram_phy` instances on the chip's 3 raw ports
+  (dedicated tilemap layer 0/1 gfxrom on ports 0/1, everything else -- sprite gfxrom, spritelut,
+  maincpu, audiocpu, HPS download -- fanned out through `sdram_arbiter5` on port 2), with each
+  client's own local address convention (byte offsets for gfxrom, word addresses for
+  spritelut/maincpu, byte address for audiocpu) converted to an absolute SDRAM byte address by
+  adding the region's fixed base from the address map, so no client engine needs to know its own
+  placement in the flat map. Client-facing ports match `rtl/psikyo_core.sv`'s external ROM port
+  shapes directly -- built to be wired straight onto that module.
+
+  Verified with a real HPS-download-then-read round trip through all 6 client ports. Two real
+  bugs found and fixed, both in the testbench, not the RTL: (1) `sim/sdram_tb/
+  sdram_chip_model.sv` deliberately folds SDRAM row addresses to 8 bits (sized for what existing
+  tests exercise, not full 32MB capacity) -- writing all 7 widely-separated regions up front
+  before reading any of them let two regions alias to the same modeled storage; fixed by writing
+  and immediately reading back each region in turn instead. (2) A genuine testbench race, the
+  same class already documented in this project from `sim/ddram_phy_tb/`'s own history: `while
+  (ioctl_wait) @(posedge clk);`, checked in the same active-region delta as `sdram_download.sv`'s
+  own `always_ff` updating its state for that edge, can read `ioctl_wait` before its NBA update
+  commits and return before the real transaction starts -- silently dropped every other byte in a
+  back-to-back write sequence. Fixed by copying `sim/ddram_download_tb/tb_ddram_download.sv`'s
+  already-proven `do @(posedge clk); while (...);` pattern, which guarantees a full edge (and NBA
+  settle) before the first check.
+
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
   header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
@@ -681,23 +708,22 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Top-level integration: `rtl/psikyo_core.sv` (see "Progress" above) now covers the video+CPU
-   half — `maincpu.sv`, the shared VRAM/palette/vregs/spriteram memory, both tilemap engines, the
-   sprite pipeline, and the compositor, all wired together and verified with a real CPU-driven
-   test. What's left before this reaches `Psikyo.sv`/`emu.sv`:
-   - Wire `psikyo_core.sv`'s external ROM ports (`cpu_rom_*`, `l0_gfxrom_*`, `l1_gfxrom_*`,
-     `sp_gfxrom_*`, `sp_lut_*` — currently tied to constant-stub models in its own testbenches)
-     to the real SDRAM stack (`sdram_phy`/`sdram`/`sdram_arbiter*`/`sdram_narrow_bridge`, see
-     `docs/phase1_sdram_map.md`) — not DDRAM, which is built and still available but is no longer
-     Phase 1's critical path (see `docs/phase1_ddram_map.md`'s header note). Every gfx-ROM-row
-     consumer (tilemap ×2, sprite) MUST route through `rtl/memory/gfxrom_byte_reorder.sv` between
-     the SDRAM controller and its `gfxrom_data` port — easy to forget since it compiles and even
-     *runs* fine without it, just produces byte-order-scrambled tile/sprite graphics (see
-     "Progress" above for the real bug this caught). `sdram_narrow_bridge.sv` consumers
-     (spritelut, `maincpu`, `audiocpu`) must NOT use it.
+1. Top-level integration: `rtl/psikyo_core.sv` (see "Progress" above) covers the video+CPU half —
+   `maincpu.sv`, the shared VRAM/palette/vregs/spriteram memory, both tilemap engines, the sprite
+   pipeline, and the compositor, all wired together and verified with a real CPU-driven test.
+   `rtl/memory/psikyo_sdram_top.sv` (see "Progress" above) covers the SDRAM backend — every ROM
+   port `psikyo_core.sv` needs (`cpu_rom_*`, `l0_gfxrom_*`, `l1_gfxrom_*`, `sp_gfxrom_*`,
+   `sp_lut_*`), plus an `audiocpu_rom_*` port ready for the sound CPU work below, verified with a
+   real HPS-download-then-read round trip through every client port. What's left before this
+   reaches `Psikyo.sv`/`emu.sv`:
+   - **Wire `psikyo_core.sv` directly to `psikyo_sdram_top.sv`** — both modules' ROM ports were
+     built to match each other's shapes exactly (see "Progress" above for both), so this should
+     be a straight port-to-port connection, not new logic; the DDRAM stack (`ddram_phy`/
+     `ddram_arbiter`/`ddram_download`) remains built and available but is no longer Phase 1's
+     critical path (see `docs/phase1_ddram_map.md`'s header note).
    - Wire the sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`, which already have req/valid ROM
-     ports — see "Progress" above) to a real arbiter/`sdram_narrow_bridge` (`WORD_BYTES=1`,
-     matching the Z80's 8-bit fetch) and to `psikyo_core.sv`'s `latch_data`/`latch_write` output.
+     ports — see "Progress" above) to `psikyo_sdram_top.sv`'s already-built `audiocpu_rom_*` port
+     and to `psikyo_core.sv`'s `latch_data`/`latch_write` output.
    - Instantiate the result inside `Psikyo.sv`/`emu.sv` (still the untouched Template_MiSTer
      skeleton) alongside the CRT_Offset module, DIP/status-bit + control mapping (this is where
      the `.mra` files' DIP status-bit positions, see "Progress" above, get checked against real
