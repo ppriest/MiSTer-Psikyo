@@ -43,6 +43,8 @@ module vreg_decode (
     output logic [15:0] layer0_base_y_scroll,
     output logic [1:0]  layer0_bank,
     output logic         layer0_enable,
+    output logic         layer0_opaque,          // ctrl bit 1, compositor's l0_ctrl_opaque
+    output logic         layer0_transpen_sel,     // ctrl bit 3, compositor's l0_ctrl_transpen_sel
     output logic         layer0_rowscroll_enable,
     output logic         layer0_rowscroll_pertile,
 
@@ -51,6 +53,8 @@ module vreg_decode (
     output logic [15:0] layer1_base_y_scroll,
     output logic [1:0]  layer1_bank,
     output logic         layer1_enable,
+    output logic         layer1_opaque,
+    output logic         layer1_transpen_sel,
     output logic         layer1_rowscroll_enable,
     output logic         layer1_rowscroll_pertile
 );
@@ -97,12 +101,16 @@ module vreg_decode (
     // Layer control word bits, docs/phase1_memory_map.md's "Layer control
     // word bits" table.
     assign layer0_enable            = l0_ctrl[0];
+    assign layer0_opaque            = l0_ctrl[1];
+    assign layer0_transpen_sel      = l0_ctrl[3];
     assign layer0_mode              = l0_ctrl[7:6];
     assign layer0_rowscroll_enable  = l0_ctrl[8];
     assign layer0_rowscroll_pertile = l0_ctrl[9];
     assign layer0_bank              = 2'd0; // live bank select (ctrl bit 10) is board-specific (m_ka302c_banking) -- not yet wired, fixed banks applied by the caller for now
 
     assign layer1_enable            = l1_ctrl[0];
+    assign layer1_opaque            = l1_ctrl[1];
+    assign layer1_transpen_sel      = l1_ctrl[3];
     assign layer1_mode              = l1_ctrl[7:6];
     assign layer1_rowscroll_enable  = l1_ctrl[8];
     assign layer1_rowscroll_pertile = l1_ctrl[9];

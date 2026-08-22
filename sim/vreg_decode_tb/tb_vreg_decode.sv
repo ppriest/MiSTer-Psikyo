@@ -24,6 +24,8 @@ module tb_vreg_decode;
     logic [15:0] layer1_base_x_scroll, layer1_base_y_scroll;
     logic [1:0]  layer0_bank, layer1_bank;
     logic         layer0_enable, layer1_enable;
+    logic         layer0_opaque, layer1_opaque;
+    logic         layer0_transpen_sel, layer1_transpen_sel;
     logic         layer0_rowscroll_enable, layer1_rowscroll_enable;
     logic         layer0_rowscroll_pertile, layer1_rowscroll_pertile;
 
@@ -66,9 +68,9 @@ module tb_vreg_decode;
         cpu_write(13'h0203, 16'h0022); // layer0 X scroll base
         cpu_write(13'h0205, 16'h0033); // layer1 Y scroll
         cpu_write(13'h0207, 16'h0044); // layer1 X scroll base
-        // layer0 ctrl: enable=1, mode=2 (bits7-6=10), rowscroll_enable=1,
-        // rowscroll_pertile=0 -> 0b00_00_0_1_10_000001 = bits: [0]=1 [7:6]=10 [8]=1
-        cpu_write(13'h0209, 16'b0000_0001_1000_0001);
+        // layer0 ctrl: enable=1, opaque=1, transpen_sel=1, mode=2 (bits7-6=10),
+        // rowscroll_enable=1, rowscroll_pertile=0
+        cpu_write(13'h0209, 16'b0000_0001_1000_1011);
         // layer1 ctrl: enable=1, mode=3 (11), rowscroll_enable=1,
         // rowscroll_pertile=1
         cpu_write(13'h020B, 16'b0000_0011_1100_0001);
@@ -94,10 +96,14 @@ module tb_vreg_decode;
         check16(layer1_base_y_scroll, 16'h0033, "l1 y_scroll");
         check16(layer1_base_x_scroll, 16'h0044, "l1 x_scroll");
         if (layer0_enable !== 1'b1)            begin errors++; $display("FAIL l0 enable"); end
+        if (layer0_opaque !== 1'b1)             begin errors++; $display("FAIL l0 opaque"); end
+        if (layer0_transpen_sel !== 1'b1)       begin errors++; $display("FAIL l0 transpen_sel"); end
         if (layer0_mode !== 2'b10)               begin errors++; $display("FAIL l0 mode=%b expected=10", layer0_mode); end
         if (layer0_rowscroll_enable !== 1'b1)   begin errors++; $display("FAIL l0 rowscroll_enable"); end
         if (layer0_rowscroll_pertile !== 1'b0)  begin errors++; $display("FAIL l0 rowscroll_pertile"); end
         if (layer1_enable !== 1'b1)              begin errors++; $display("FAIL l1 enable"); end
+        if (layer1_opaque !== 1'b0)              begin errors++; $display("FAIL l1 opaque"); end
+        if (layer1_transpen_sel !== 1'b0)        begin errors++; $display("FAIL l1 transpen_sel"); end
         if (layer1_mode !== 2'b11)               begin errors++; $display("FAIL l1 mode=%b expected=11", layer1_mode); end
         if (layer1_rowscroll_enable !== 1'b1)   begin errors++; $display("FAIL l1 rowscroll_enable"); end
         if (layer1_rowscroll_pertile !== 1'b1)  begin errors++; $display("FAIL l1 rowscroll_pertile"); end
