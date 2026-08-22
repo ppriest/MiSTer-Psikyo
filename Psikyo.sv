@@ -15,7 +15,36 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 //============================================================================
-
+//
+// Top-level HPS/DIP/CRT_Offset glue for the Phase 1 SH201B/KA302C board
+// (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road -- docs/ROADMAP.md's
+// "Hardware reality" table), wiring rtl/psikyo_top.sv (video+CPU+SDRAM+
+// sound CPU, already verified end to end in simulation, see
+// docs/ROADMAP.md's "Progress") into MiSTer-devel/Template_MiSTer's
+// framework. BOARD_GUNBIRD is fixed to sngkace's layout here (this
+// project's own Phase 1 entry point, per docs/ROADMAP.md); a gunbird/
+// btlkroad build needs its own top-level parameter value, same as
+// rtl/psikyo_top.sv itself already requires per board.
+//
+// Input port bit layout (P1P2 32-bit port, separate COIN port) confirmed
+// directly from psikyo.cpp's own sngkace_input_r()/INPUT_PORTS_START
+// block, not assumed -- see the p1p2_in/coin_in assignments below for the
+// exact bit positions. Standard MiSTer joystick_0/1 bit convention
+// (0=Right,1=Left,2=Down,3=Up,4=Button1,5=Button2,6=Button3,10=Start,
+// 11=Coin) confirmed against a real, already-built, similar-genre
+// MiSTer-devel core (rmonic79/Arcade-Raiden_MiSTer, already named in this
+// project's own "Component reuse map"), not assumed either.
+//
+// NOT yet done here (tracked, not silently skipped): jt10/YM2610 (silent
+// for now -- rtl/psikyo_top.sv's ym_* bus is exposed but unconnected,
+// matching docs/ROADMAP.md's own "Next steps" ordering: jt10's
+// audio-domain verification pass hasn't happened yet), per-game DIP
+// switch *labels* (the generic "DIP;" CONF_STR entry pulls them from
+// whichever .mra is loaded, matching every MiSTer arcade core's standard
+// convention -- no per-game RTL needed), and real hardware SDRAM_CLK
+// phase-shift tuning (rtl/pll/pll_0002.v's -3000ps is a starting point
+// copied from another core's ballpark, not independently verified against
+// this board).
 module emu
 (
 	`include "sys/emu_ports.vh"
@@ -27,8 +56,7 @@ assign ADC_BUS  = 'Z;
 assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;  
+assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
 
 assign VGA_SL = 0;
 assign VGA_F1 = 0;
@@ -38,6 +66,7 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
+// No sound yet -- jt10 isn't wired in (see module header).
 assign AUDIO_S = 0;
 assign AUDIO_L = 0;
 assign AUDIO_R = 0;
@@ -54,42 +83,32 @@ wire [1:0] ar = status[122:121];
 assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
 assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 
-`include "build_id.v" 
+`include "build_id.v"
 localparam CONF_STR = {
 	"Psikyo;;",
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
-	"O[2],TV Mode,NTSC,PAL;",
-	"O[4:3],Noise,White,Red,Green,Blue;",
 	"-;",
-	"P1,Test Page 1;",
-	"P1-;",
-	"P1-, -= Options in page 1 =-;",
-	"P1-;",
-	"P1O[5],Option 1-1,Off,On;",
-	"d0P1F1,BIN;",
-	"H0P1O[10],Option 1-2,Off,On;",
+	"DIP;",
 	"-;",
-	"P2,Test Page 2;",
-	"P2-;",
-	"P2-, -= Options in page 2 =-;",
-	"P2-;",
-	"P2S0,DSK;",
-	"P2O[7:6],Option 2,1,2,3,4;",
-	"-;",
-	"-;",
-	"T[0],Reset;",
-	"R[0],Reset and close OSD;",
-	"v,0;", // [optional] config version 0-99. 
-	        // If CONF_STR options are changed in incompatible way, then change version number too,
-			  // so all options will get default values on first start.
-	"V,v",`BUILD_DATE 
+	"J1,Button 1,Button 2,Button 3,Start,Coin;",
+	"R[0],Reset;",
+	"V,v",`BUILD_DATE
 };
 
-wire forced_scandoubler;
-wire   [1:0] buttons;
+wire         forced_scandoubler;
+wire  [1:0] buttons;
 wire [127:0] status;
 wire  [10:0] ps2_key;
+
+wire [31:0] joystick_0, joystick_1;
+
+wire         ioctl_download;
+wire [15:0] ioctl_index;
+wire         ioctl_wr;
+wire [26:0] ioctl_addr;
+wire  [7:0] ioctl_dout;
+wire         ioctl_wait;
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
@@ -103,71 +122,154 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.buttons(buttons),
 	.status(status),
 	.status_menumask({status[5]}),
-	
+
+	.joystick_0(joystick_0),
+	.joystick_1(joystick_1),
+
+	.ioctl_download(ioctl_download),
+	.ioctl_index(ioctl_index),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_dout(ioctl_dout),
+	.ioctl_wait(ioctl_wait),
+
 	.ps2_key(ps2_key)
 );
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
-wire clk_sys;
+// 85.909091 MHz = 14.31818 MHz (this hardware's real pixel/screen XTAL)
+// x 6 -- see rtl/pll/pll_0002.v's own header for the full division-ratio
+// and SDRAM-timing-margin reasoning. outclk_1 is the same frequency,
+// phase-shifted, driving the real SDRAM_CLK pin directly (NOT through
+// rtl/psikyo_top.sv's own SDRAM_CLK output, which is left unconnected --
+// that output is simulation-only, tracking rtl/memory/sdram/sdram.sv's
+// own `assign SDRAM_CLK = clk;` placeholder, which that file's own header
+// explicitly documents as deferring real phase generation to here).
+wire clk_sys, clk_sdram_shifted, pll_locked;
 pll pll
 (
 	.refclk(CLK_50M),
 	.rst(0),
-	.outclk_0(clk_sys)
+	.outclk_0(clk_sys),
+	.outclk_1(clk_sdram_shifted),
+	.locked(pll_locked)
 );
 
-wire reset = RESET | status[0] | buttons[1];
+assign SDRAM_CLK = clk_sdram_shifted;
 
-wire [1:0] col = status[4:3];
-
-wire HBlank;
-wire HSync;
-wire VBlank;
-wire VSync;
-wire ce_pix;
-wire hvcnt_atzero;
-wire [7:0] video;
-
-// Leave H/V sync always on. This stabilizes the video output while the core
-// is in reset. This example releases the reset when H/V counters are at zero.
-reg reset_core = 1;
+// ce_pix: exact 1-in-12 divide of clk_sys down to 7.159091 MHz, matching
+// psikyo_v.cpp's real 14.31818MHz/2 screen clock exactly (see pll_0002.v's
+// header for why 85.909091/12 lands on this exactly, not approximately).
+reg [3:0] ce_pix_cnt = 0;
+wire       ce_pix = (ce_pix_cnt == 0);
 always @(posedge clk_sys) begin
-	if(reset) reset_core <= 1;
-	else if(hvcnt_atzero) reset_core <= 0;
+	ce_pix_cnt <= (ce_pix_cnt == 11) ? 4'd0 : ce_pix_cnt + 4'd1;
 end
 
-mycore mycore
+wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
+
+///////////////////////   INPUTS   ////////////////////////////////
+
+// Confirmed against psikyo.cpp's sngkace_input_r()/INPUT_PORTS_START
+// (docs/ROADMAP.md's own "Progress" cites the exact fetch), not assumed:
+// P1P2 is a 32-bit port with P2 in bits 23:16 and P1 in bits 31:24 (each
+// laid out UP,DOWN,RIGHT,LEFT,B1,B2,B3,START from the top bit down), all
+// IP_ACTIVE_LOW (0 = pressed) -- hence the `~` on every joystick bit
+// below, since hps_io's joystick_N convention is active-HIGH (1 = pressed,
+// confirmed against Arcade-Raiden_MiSTer's own joystick_0/1 usage, see
+// module header). Bits 15:0 are unused by sngkace's P1P2 port (this
+// board's coin/service/z80-nmi bits live in the separate COIN port
+// instead, unlike gunbird/btlkroad which fold them into THIS port's low
+// bits -- a real, confirmed board difference, not a simplification).
+wire [31:0] p1p2_in = {
+	~joystick_0[3], ~joystick_0[2], ~joystick_0[0], ~joystick_0[1],  // P1 UP,DOWN,RIGHT,LEFT
+	~joystick_0[4], ~joystick_0[5], ~joystick_0[6], ~joystick_0[10], // P1 B1,B2,B3,START
+	~joystick_1[3], ~joystick_1[2], ~joystick_1[0], ~joystick_1[1],  // P2 UP,DOWN,RIGHT,LEFT
+	~joystick_1[4], ~joystick_1[5], ~joystick_1[6], ~joystick_1[10], // P2 B1,B2,B3,START
+	16'hFFFF
+};
+
+// COIN port (sngkace-only): COIN1 = bit16, COIN2 = bit17, both
+// IP_ACTIVE_LOW; bit23 is MAME's z80_nmi_r() (IP_ACTIVE_HIGH, not
+// inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
+// exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
+// full derivation). Every other bit is unused by sngkace_input_r.
+wire [31:0] coin_in = {
+	8'hFF,                                    // bits 31:24 unused
+	nmi_pending,                                // bit 23
+	5'h1F,                                      // bits 22:18 unused
+	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
+	16'hFFFF                                    // bits 15:0 unused
+};
+
+// DIP switches: status[47:16] passed straight through -- every .mra's own
+// <dip bits="16,...> entries already target this exact range (confirmed
+// against the built releases/*.mra files), so no per-game RTL is needed
+// here; the CONF_STR's "DIP;" entry is what makes the OSD show the right
+// per-game menu for whichever .mra is loaded.
+wire [31:0] dsw_in = status[47:16];
+
+///////////////////////   VIDEO   ///////////////////////////////
+
+wire [8:0] hcnt, vcnt;
+wire        hblank, vblank, hsync, vsync;
+wire [14:0] rgb;
+wire        nmi_pending;
+
+wire         ym_cs, ym_rd, ym_wr;
+wire [1:0]  ym_addr;
+wire [7:0]  ym_dout;
+
+psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 (
 	.clk(clk_sys),
-	.reset(reset_core),
-
-	.pal(status[2]),
-	.scandouble(forced_scandoubler),
-
 	.ce_pix(ce_pix),
-	.hvcnt_atzero(hvcnt_atzero),
+	.reset(reset),
+	.init(~pll_locked),
 
-	.HBlank(HBlank),
-	.HSync(HSync),
-	.VBlank(VBlank),
-	.VSync(VSync),
+	.SDRAM_A(SDRAM_A), .SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
+	.SDRAM_BA(SDRAM_BA), .SDRAM_nCS(SDRAM_nCS), .SDRAM_nWE(SDRAM_nWE),
+	.SDRAM_nRAS(SDRAM_nRAS), .SDRAM_nCAS(SDRAM_nCAS),
+	.SDRAM_CLK(), // real pin driven directly from clk_sdram_shifted above
+	.SDRAM_CKE(SDRAM_CKE), .SDRAM_DQ(SDRAM_DQ),
 
-	.video(video)
+	.ioctl_download(ioctl_download),
+	.ioctl_index(ioctl_index),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr[24:0]),
+	.ioctl_dout(ioctl_dout),
+	.ioctl_wait(ioctl_wait),
+
+	.p1p2_in(p1p2_in),
+	.dsw_in(dsw_in),
+	.coin_in(coin_in),
+
+	.nmi_pending(nmi_pending),
+	.ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
+	.ym_dout(ym_dout), .ym_din(8'h00), // no jt10 yet -- see module header
+
+	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
+	.hsync(hsync), .vsync(vsync), .rgb(rgb)
 );
 
 assign CLK_VIDEO = clk_sys;
 assign CE_PIXEL = ce_pix;
 
-assign VGA_DE = ~(HBlank | VBlank);
-assign VGA_HS = HSync;
-assign VGA_VS = VSync;
-assign VGA_G  = (!col || col == 2) ? video : 8'd0;
-assign VGA_R  = (!col || col == 1) ? video : 8'd0;
-assign VGA_B  = (!col || col == 3) ? video : 8'd0;
+assign VGA_DE = ~(hblank | vblank);
+assign VGA_HS = hsync;
+assign VGA_VS = vsync;
+
+// xRGB_555 -> 8 bits/channel, standard MSB-replication expansion (not
+// zero-padding, which would darken max-brightness colors) -- rgb[14:10]=R,
+// rgb[9:5]=G, rgb[4:0]=B, MAME's own xRGB555 convention (R in the high
+// bits), matching docs/phase1_memory_map.md's "Palette format is xRGB_555".
+assign VGA_R = {rgb[14:10], rgb[14:12]};
+assign VGA_G = {rgb[9:5],   rgb[9:7]};
+assign VGA_B = {rgb[4:0],   rgb[4:2]};
 
 reg  [26:0] act_cnt;
-always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1; 
+always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
 assign LED_USER    = act_cnt[26]  ? act_cnt[25:18]  > act_cnt[7:0]  : act_cnt[25:18]  <= act_cnt[7:0];
 
 endmodule

@@ -121,3 +121,29 @@ CAS-latency and burst-sequencing timing, so a wiring bug in either the burst ext
 the surrounding req/ack contract would show up as a real protocol violation (e.g. driving
 `SDRAM_DQ` while the chip model is also driving it, or reading before CAS latency has elapsed),
 not just wrong data.
+
+## Quartus-only synthesis fix: `rfs_cnt`/`rfs`/`rfs2`/`init_old` moved to module level
+
+Found running a real `quartus_map` pass on the full `Psikyo.sv` build (docs/ROADMAP.md's
+top-level integration work) — never caught by any ModelSim simulation, since ModelSim accepts
+the construct that broke this. Three registers (`rfs_cnt`, `rfs`, `rfs2` in the access-manager
+`always` block) were declared as plain block-local `reg`s inside their own `always
+@(posedge clk)` block, and a fourth (`init_old`, initialization block) as `static reg
+init_old=0;` — upstream's own existing pattern, inherited here, not added by this project.
+Quartus 17.0's SystemVerilog elaborator rejects non-blocking assignments to *either* form
+outright: `Error (10959): illegal assignment - automatic variables can't have non-blocking
+assignments`. `static` is not a working fix for this Quartus version (tried it on `rfs_cnt`/
+`rfs`/`rfs2` first — same error, just relocated). The actual fix: move all four to module-level
+`reg` declarations (unambiguously static, like every other register in this file), given the
+same explicit `= 0` initializers as `state`/`ack0..2`/`active`/`ram_req` already have, for the
+same simulation-fidelity reason (real hardware zero-powers-up these registers; ModelSim leaves
+a never-explicitly-initialized `reg` as `X`, and `rfs_cnt`'s own `rfs_cnt <= rfs_cnt + 1` would
+never escape `X` once it started there — not confirmed load-bearing for any specific observed
+bug, refresh timing hasn't been the subject of a dedicated test, but zero-risk and consistent
+with the rest of this file). Purely a declaration-scope change, no behavioral difference:
+re-verified `sim/sdram_tb/tb_sdram.sv` (all 6 cases, including the two added investigating a
+separate, unrelated bug — see docs/ROADMAP.md) and `sim/psikyo_sdram_top_tb/`,
+`sim/psikyo_top_tb/`'s full suite all still pass. With this fix, `Psikyo.sv`'s entire RTL chain
+(this file included) synthesizes cleanly under real Quartus 17.0 `quartus_map` — 0 errors, 22382
+logic cells, 1349 RAM segments, 3 PLLs, 39 DSP elements, no warnings anywhere in `Psikyo.sv`,
+`rtl/psikyo_top.sv`, or this file.

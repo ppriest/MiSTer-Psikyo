@@ -1,5 +1,74 @@
-set_global_assignment -name VERILOG_FILE rtl/lfsr.v
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/cos.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/mycore.v
+# PLL (Altera PLL megafunction wrapper, rtl/pll.v/rtl/pll/pll_0002.v) --
+# self-references its own source files, see that QIP's own VERILOG_FILE
+# lines.
+set_global_assignment -name QIP_FILE rtl/pll.qip
+
+# TG68K.C (68EC020 core, vendored -- see rtl/cpu/tg68k/PROVENANCE.md).
+# Package first, then the two files that depend on it, then the top-level
+# wrapper -- same order sim/*_tb/ compiles them in.
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68K_Pack.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68K_ALU.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68KdotC_Kernel.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68K.vhd
+
+# T80 (Z80 core, vendored -- see rtl/cpu/t80/PROVENANCE.md). Same
+# package-first order.
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_Pack.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_MCode.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_ALU.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_Reg.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80se.vhd
+
+# maincpu.sv (68EC020 bus wrapper around TG68K.C).
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/maincpu.sv
+
+# Sound CPU wrappers (T80 + this board's own memory map/bank/latch/NMI
+# handling).
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu_sngkace.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu_gunbird.sv
+
+# Memory glue: CPU<->video-engine shared RAM.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/dpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/vreg_decode.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/spriteram_dbuf.sv
+
+# Video pipeline: timing, tilemap engine (and its combinational stages),
+# sprite pipeline, compositor.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/video_timing.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tilemap_coord.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tilemap_addrgen.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tile_cell_decode.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tile_row_decode.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tilemap_line_engine.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_display_list_walker.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_record_fetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_record_decode.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_pos_transform.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_zoom_lut.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_subtile_step.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_zoom_src_index.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_render_engine.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_frame_buffer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/compositor.sv
+
+# Video+CPU integration.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/psikyo_core.sv
+
+# SDRAM backend: burst-4 controller (vendored/adapted, see
+# rtl/memory/sdram/PROVENANCE.md), req/valid wrapper, 5-way arbiter, narrow
+# client bridge, gfx-ROM byte reorder, HPS download bridge, full assembly.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram/sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_phy.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_arbiter5.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_narrow_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/gfxrom_byte_reorder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_download.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/psikyo_sdram_top.sv
+
+# Video+CPU+SDRAM+sound CPU integration -- the module Psikyo.sv itself
+# instantiates.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/psikyo_top.sv
+
 set_global_assignment -name SDC_FILE Psikyo.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE Psikyo.sv

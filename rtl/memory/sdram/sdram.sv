@@ -118,6 +118,25 @@ reg        active = 0;
 reg  [2:0] ram_req = 0;
 wire [2:0] wr = {wrl2|wrh2,wrl1|wrh1,wrl0|wrh0};
 
+// rfs_cnt/rfs/rfs2 (access-manager block below) and init_old
+// (initialization block further down) both used to be declared as
+// block-local `reg`s inside their own `always @(posedge clk)` blocks --
+// rfs_cnt/rfs/rfs2 as plain `reg`, init_old as `static reg init_old=0;`
+// (upstream's own existing pattern, inherited here, not added by this
+// project). Both forms compile fine under ModelSim but Quartus 17.0's
+// SystemVerilog elaborator rejects non-blocking assignments to EITHER
+// form outright ("automatic variables can't have non-blocking
+// assignments") -- a real Quartus-only synthesis error, not a ModelSim
+// quirk, found running quartus_map on the real Psikyo.sv build
+// (docs/ROADMAP.md's top-level integration work). `static` is not a
+// working fix for this Quartus version; moving the declarations to
+// module level (unambiguously static, like every other reg in this file)
+// is. Given explicit `= 0` initializers at the same time, same
+// simulation-fidelity reasoning as `state`/`active`/`ram_req` above.
+reg [9:0] rfs_cnt = 10'd0;
+reg        rfs = 1'b0, rfs2 = 1'b0;
+reg         init_old = 1'b0;
+
 reg [63:0] dout;
 
 assign dout0 = dout;
@@ -138,9 +157,6 @@ reg [4:0] reset=5'h1f;
 
 // access manager
 always @(posedge clk) begin
-	reg [9:0] rfs_cnt;
-	reg rfs, rfs2;
-
 	rfs_cnt <= rfs_cnt + 1'd1;
 	if (rfs_cnt == 850) begin
 		rfs <= 1;
@@ -217,7 +233,6 @@ end
 
 // initialization
 always @(posedge clk) begin
-	static reg init_old=0;
 	init_old <= init;
 
 	if(init_old & ~init) reset <= 5'h1f;
