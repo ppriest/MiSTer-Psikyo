@@ -550,6 +550,17 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
   actual per-game sprite/sub-tile counts (no MAME frame trace pulled yet). Revisit once real
   per-game numbers are known — may need a per-sub-tile cycle budget/drop-excess bound, a faster
   render clock, or reduced ROM latency (e.g. wider on-chip gfx ROM bursts).
+- **samuraia/sngkace ADPCM-A sample ROM needs a bit 6/7 swap not yet implemented anywhere.**
+  MAME's `init_sngkace()` (psikyo.cpp) applies `out[7]=in[6], out[6]=in[7]` to the entire
+  `ymsnd:adpcma` region for samuraia/samuraiak/sngkace/sngkacea ONLY — confirmed directly from the
+  driver's `GAME()` table, not gunbird/btlkroad despite identical sound hardware, and not either
+  Phase 2 game. This is a real ROM-mastering artifact (Samurai Aces/Sengoku Ace's audio will
+  decode as garbage without it), can't be expressed in `.mra` (byte-level format only, no
+  intra-byte bit permutation), and needs a per-game select signal to gate it correctly since it
+  must not apply to Gun Bird/Battle K-Road sharing the same core. Full writeup and RTL options in
+  `docs/phase1_memory_map.md`'s new "samuraia/sngkace ADPCM-A sample ROM: bit 6/7 swap" section —
+  belongs in the sound subsystem work below, most naturally as a download-time fixup alongside
+  `sdram_download.sv`.
 
 ## Next steps
 

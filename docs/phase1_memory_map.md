@@ -115,6 +115,57 @@ separate-acknowledge mode, latch-pending drives the sound CPU's **NMI** line dir
 regular IRQ) — the sound CPU wakes on NMI when the main CPU writes a command byte, reads it at
 I/O `0x08`, and must write I/O `0x0C` to acknowledge/clear the pending line.
 
+### samuraia/sngkace ADPCM-A sample ROM: bit 6/7 swap (`init_sngkace`, psikyo.cpp)
+
+**Not yet implemented anywhere in this project — real gap, flagged here to close before Phase 1
+sound bring-up.** MAME's `psikyo_state::init_sngkace()` applies a one-time fixup to the entire
+`ymsnd:adpcma` ROM region at driver-init time, before the YM2610 core ever reads it:
+
+```cpp
+u8 *RAM = memregion("ymsnd:adpcma")->base();
+int len = memregion("ymsnd:adpcma")->bytes();
+/* Bit 6&7 of the samples are swapped. Naughty, naughty... */
+for (int i = 0; i < len; i++)
+{
+    int x = RAM[i];
+    RAM[i] = ((x & 0x40) << 1) | ((x & 0x80) >> 1) | (x & 0x3f);
+}
+```
+
+i.e. `out[7]=in[6]`, `out[6]=in[7]`, `out[5:0]=in[5:0]` unchanged — bits 6 and 7 swap, nothing
+else moves. This is a real-hardware artifact (how the actual sample ROM was mastered/wired on the
+PCB, not an emulation convenience), so a real MiSTer core needs the equivalent transform or
+Samurai Aces/Sengoku Ace's ADPCM-A samples will decode as garbage — everything else about their
+sound path (Z80 program, YM2610 register access, sound latch/NMI) is unaffected.
+
+**Scope — confirmed directly from the driver's `GAME()` table, not assumed:** only
+`init_sngkace` applies this swap, and only these ROM sets use `init_sngkace`:
+
+| ROM set | Swap applied? |
+|---|---|
+| samuraia, samuraiak, sngkace, sngkacea | **Yes** |
+| gunbird, gunbirdk, gunbirdj, btlkroad, btlkroadk | No (`init_gunbird` — banking only) |
+| s1945, s1945a, s1945j, tengai, tengaij | No (Phase 2, different init functions, no swap) |
+
+Despite Gun Bird and Battle K-Road sharing identical SH201B/KA302C sound hardware (same Z80 +
+YM2610, same address map above) with Samurai Aces/Sengoku Ace, they do **not** get this swap —
+it's specific to how that one game's sample ROM was mastered, not a hardware-family property. A
+per-game flag/select is required to gate it, not a hardware-group one.
+
+**Where this belongs in the RTL, not decided yet:** the `.mra` format only expresses byte-level
+ROM layout (offset/length/interleave/patch) — it cannot express an intra-byte bit permutation, so
+this cannot be done in the `.mra` loader alone. Two real options:
+1. Apply the swap during HPS ROM download (`ddram_download.sv`/`sdram_download.sv`'s byte-write
+   path), conditionally on a per-game select signal, for bytes landing in the `ymsnd:adpcma`
+   region — a one-time fixup at load time, directly mirroring what MAME's `init_sngkace` itself
+   does, and cheap (no cost on the read/playback path at all).
+2. Apply it on every ADPCM-A byte read on the way into jt10 — always-correct but pays a small
+   combinational cost on every sample fetch for no benefit over option 1.
+Option 1 is the natural fit given the project's existing download-path architecture. Needs a
+per-game select bit/signal threaded from somewhere (status bit, `.mra` region metadata, or ROM
+size/checksum detection) — how games are actually distinguished at the top level isn't decided
+yet either (see ROADMAP.md's top-level integration item).
+
 ## Sprite RAM layout (`0x400000-0x401FFF`, both boards identical)
 
 From `psikyo_v.cpp` (`get_sprites()`, `draw_sprites()`):
