@@ -1,23 +1,13 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../../Readme.md.
+    No ROM files included/distributed - dump your own. See ../../Readme.md.
 
-    MAME clone set sngkacea (parent: samuraia, alongside sibling clone sngkace - "set 2"
-    of the same Japan release) - confirmed via the GAME() driver table. Same input
-    ports/DIP layout as sngkace (ipt="sngkace", no functioning Region dip). Same ROM
-    sizes/layout as sngkace's own set (0x40000-per-half maincpu, matching the parent
-    samuraia's size, unlike samuraiak's larger ROMs) - only the maincpu content
-    (program revision) differs; every other region is byte-for-byte identical to
-    samuraia/sngkace. See "Samurai Aces (World).mra" for the general layout/DIP-
-    status-bit-position caveats, which apply identically here.
-
-    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
-    map (same padding scheme as the parent samuraia).
+    MAME clone sngkacea (parent samuraia, "set 2" alongside sibling clone sngkace) -
+    same layout as sngkace, different maincpu revision. See "Samurai Aces (World).mra"
+    for shared layout/DIP notes.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Sengoku Ace (Japan, set 2)</name>
 	<setname>sngkacea</setname>
 	<year>1993</year>
@@ -36,15 +26,15 @@
 			<part name="1.-u127.bin" crc="3a43708d" map="01"/>
 			<part name="2.-u126.bin" crc="7aa50c46" map="10"/>
 		</interleave>
-		<part repeat="0x180000"> FF</part>
+		<part repeat="0x180000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
 		<part name="u14.bin" crc="00a546cb"/>
-		<part repeat="0x600000"> FF</part>
+		<part repeat="0x600000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
@@ -54,7 +44,7 @@
 		<part name="u68.bin" crc="9a7f6c34"/>
 
 		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - not present, all padding. -->
-		<part repeat="0x80000"> FF</part>
+		<part repeat="0x80000">FF</part>
 
 		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="u11.bin" crc="11a04d91"/>
@@ -77,5 +67,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260822210000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>

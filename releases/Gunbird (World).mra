@@ -1,25 +1,12 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../Readme.md.
+    No ROM files included/distributed - dump your own. See ../Readme.md.
 
-    ROM layout derived from MAME's psikyo.cpp ROM_START(gunbird) block, matching
-    docs/phase1_ddram_map.md's finalized fixed-region DDRAM address map (same scheme as
-    "Samurai Aces (World).mra" - region base offsets/sizes sized off the largest real
-    content across ALL Phase 1 parent AND clone sets, padded with filler wherever this
-    game's actual content is smaller than its region's reservation).
-
-    Gunbird's "sprites" region has FOUR ROM_LOAD16_WORD_SWAP entries (0x700000 total,
-    confirmed by summing offsets/lengths against the declared ROM_REGION size) - larger
-    than Samurai Aces/Sengoku Ace's single-ROM sprites region (this is in fact the
-    largest sprites content of any Phase 1 set, which is why the region is reserved at
-    exactly 0x800000), and gunbird also has a real ymsnd:adpcmb (DELTA-T) region that
-    samuraia/sngkace don't (confirmed directly from ROM_START, not assumed just because
-    both are YM2610 boards).
+    DIP status-bit positions (bit 16+) are a provisional placeholder, not yet verified
+    against real core RTL status[] wiring.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Gunbird (World)</name>
 	<setname>gunbird</setname>
 	<year>1994</year>
@@ -38,12 +25,12 @@
 			<part name="4.u46" crc="b78ec99d" map="01"/>
 			<part name="5.u39" crc="925f095d" map="10"/>
 		</interleave>
-		<part repeat="0x180000"> FF</part>
+		<part repeat="0x180000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - LZ8420M (Z80-compatible)
 		     sound program ROM. Actual 0x20000. -->
 		<part name="3.u71" crc="2168e4ba"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
 		     four ROMs concatenated in ROM_START's own order (not interleaved with
@@ -53,7 +40,7 @@
 		<part name="u24.bin" crc="5e3ffc9d"/>
 		<part name="u15.bin" crc="a827bfb5"/>
 		<part name="u25.bin" crc="ef652e0c"/>
-		<part repeat="0x100000"> FF</part>
+		<part repeat="0x100000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
 		<part name="u33.bin" crc="54494e6b"/>
@@ -98,5 +85,5 @@
 		<dip name="Region" bits="32,33,34,35" ids="Taiwan,Hong Kong,Korea,USA,World" values="0x7,0xb,0xd,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260822000000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>

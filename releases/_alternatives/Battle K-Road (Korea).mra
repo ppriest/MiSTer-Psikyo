@@ -1,24 +1,12 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../../Readme.md.
+    No ROM files included/distributed - dump your own. See ../../Readme.md.
 
-    MAME clone set btlkroadk (parent: btlkroad) - confirmed via the GAME() driver
-    table. Uses its own INPUT_PORTS_START(btlkroadk) block, which PORT_INCLUDEs
-    btlkroad's base ports and overrides only the Region PORT_CONFNAME (same option
-    set as btlkroad's own, but a different default: Korea here vs. Japan on the
-    parent - confirmed from source). Same ROM sizes/region layout as btlkroad
-    (including only three sprites ROMs, not gunbird's four) - only maincpu and
-    audiocpu content differ. See "Battle K-Road.mra" for the general layout/DIP-
-    status-bit-position caveats and the DSW bit-repurposing note, which apply
-    identically here.
-
-    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
-    map (same padding scheme as the parent btlkroad).
+    MAME clone of btlkroad (Region default: Korea vs. the parent's Japan). See
+    "Battle K-Road.mra" for shared layout/DIP notes.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Battle K-Road (Korea)</name>
 	<setname>btlkroadk</setname>
 	<year>1994</year>
@@ -37,12 +25,12 @@
 			<part name="4,dot.u46" crc="e724d429" map="01"/>
 			<part name="5,dot.u39" crc="c0d65765" map="10"/>
 		</interleave>
-		<part repeat="0x180000"> FF</part>
+		<part repeat="0x180000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - this set's own sound ROM
 		     revision (different CRC than btlkroad's). Actual 0x20000. -->
 		<part name="3,k.u71" crc="e0f0c597"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to btlkroad's
 		     (only three ROMs, matching the parent - not gunbird's four). Actual
@@ -50,7 +38,7 @@
 		<part name="u14.bin" crc="282d89c3"/>
 		<part name="u24.bin" crc="bbe9d3d1"/>
 		<part name="u15.bin" crc="d4d1b07c"/>
-		<part repeat="0x200000"> FF</part>
+		<part repeat="0x200000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to btlkroad's. -->
 		<part name="u33.bin" crc="4c8577f1"/>
@@ -91,5 +79,5 @@
 		<dip name="Region" bits="32,33,34,35" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260822210000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>

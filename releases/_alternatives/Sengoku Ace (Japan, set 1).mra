@@ -1,33 +1,13 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../../Readme.md.
+    No ROM files included/distributed - dump your own. See ../../Readme.md.
 
-    Sengoku Ace is the Japan-region release of the same game as Samurai Aces (World) -
-    same video/sound/sprite ROM content, but a genuinely different maincpu program ROM
-    pair (confirmed from MAME's separate ROM_START(sngkace) block, not assumed to just
-    be a region-switch variant of samuraia's romset the way World/USA/Korea/HK/Taiwan
-    are). See "Samurai Aces (World).mra" for the shared-ROM layout notes and the
-    provisional-status-bit-position caveat for DIP switches - both apply identically
-    here.
-
-    sngkace's own INPUT_PORTS_START marks its region byte as IPT_UNKNOWN (no functioning
-    region PORT_CONFNAME, unlike samuraia) - confirmed from source, not assumed - so
-    this .mra has no Region dip, unlike Samurai Aces (World).mra.
-
-    Lives in _alternatives rather than at the top level of releases/ because MAME's own
-    GAME() driver table lists sngkace as a CLONE of samuraia (parent=samuraia), not a
-    parent set in its own right - confirmed from source, matching this project's
-    releases/ convention of one parent-set .mra per top-level game and every clone set
-    under _alternatives/ (see docs/ROADMAP.md).
-
-    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
-    map (same padding scheme as the parent samuraia - see that file for the full
-    per-region base/size/padding breakdown).
+    MAME clone sngkace (parent samuraia) - a genuinely different maincpu program, not
+    just a region-switch variant. No Region dip (IPT_UNKNOWN on this set). See
+    "Samurai Aces (World).mra" for shared layout/DIP notes.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Sengoku Ace (Japan, set 1)</name>
 	<setname>sngkace</setname>
 	<year>1993</year>
@@ -46,15 +26,15 @@
 			<part name="1-u127.bin" crc="6c45b2f8" map="01"/>
 			<part name="2-u126.bin" crc="845a6760" map="10"/>
 		</interleave>
-		<part repeat="0x180000"> FF</part>
+		<part repeat="0x180000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
 		<part name="u14.bin" crc="00a546cb"/>
-		<part repeat="0x600000"> FF</part>
+		<part repeat="0x600000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
@@ -64,7 +44,7 @@
 		<part name="u68.bin" crc="9a7f6c34"/>
 
 		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - not present, all padding. -->
-		<part repeat="0x80000"> FF</part>
+		<part repeat="0x80000">FF</part>
 
 		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="u11.bin" crc="11a04d91"/>
@@ -87,5 +67,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260822210000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>

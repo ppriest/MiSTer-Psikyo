@@ -1,30 +1,13 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../../Readme.md.
+    No ROM files included/distributed - dump your own. See ../../Readme.md.
 
-    MAME clone set samuraiak (parent: samuraia) - confirmed via the GAME() driver
-    table, hence living under _alternatives/ rather than at the top level (see
-    "Samurai Aces (World).mra" for the parent-vs-clone convention and the general
-    ROM-layout/DIP-status-bit-position caveats, which apply identically here). MAME's
-    own title for this set is "Samurai Aces (Korea?)" - the question mark is in the
-    driver source itself (region attribution uncertain), kept in the <name> below;
-    dropped from this file's name only because "?" isn't a valid filename character.
-
-    Same input ports/DIP layout as the parent samuraia set (ipt="samuraia" in the
-    GAME() line) - but a genuinely different, LARGER maincpu ROM: two 0x80000 ROMs
-    (0x100000 total) vs. the parent's two 0x40000 ROMs (0x80000 total), confirmed from
-    ROM_START(samuraiak) directly, not assumed to match. Every other region (audiocpu,
-    sprites, tiles, adpcm-a, spritelut) is byte-for-byte identical to samuraia's.
-
-    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
-    map. The maincpu region's reservation (0x200000, sized off this exact set alongside
-    gunbirdk) needs only half its usual padding here since this set's own maincpu
-    content is already double the norm.
+    MAME clone samuraiak (MAME's own title: "Samurai Aces (Korea?)" - "?" dropped from
+    the filename). Larger maincpu ROM (0x100000 vs 0x80000). See "Samurai Aces
+    (World).mra" for shared layout/DIP notes.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Samurai Aces (Korea?)</name>
 	<setname>samuraiak</setname>
 	<year>1993</year>
@@ -43,15 +26,15 @@
 			<part name="u127.bin" crc="ed4a3626" map="01"/>
 			<part name="u126.bin" crc="21803147" map="10"/>
 		</interleave>
-		<part repeat="0x100000"> FF</part>
+		<part repeat="0x100000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
 		<part name="u14.bin" crc="00a546cb"/>
-		<part repeat="0x600000"> FF</part>
+		<part repeat="0x600000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->
 		<part name="u34.bin" crc="e6a75bd8"/>
@@ -61,7 +44,7 @@
 		<part name="u68.bin" crc="9a7f6c34"/>
 
 		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - not present, all padding. -->
-		<part repeat="0x80000"> FF</part>
+		<part repeat="0x80000">FF</part>
 
 		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to samuraia's. -->
 		<part name="u11.bin" crc="11a04d91"/>
@@ -87,5 +70,5 @@
 		<dip name="Region" bits="32,33,34,35,36,37,38,39" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7f,0xbf,0xdf,0xef,0xff"/>
 	</switches>
 
-	<mratimestamp>20260822210000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>

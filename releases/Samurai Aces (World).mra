@@ -1,27 +1,12 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../Readme.md.
+    No ROM files included/distributed - dump your own. See ../Readme.md.
 
-    ROM layout below matches docs/phase1_ddram_map.md's finalized DDRAM address map: one
-    flat, fixed-region layout shared by every Phase 1 game (region base offsets/sizes
-    sized off the largest real content across ALL parent AND clone sets, not just this
-    game), padded with filler bytes wherever this specific game's actual content is
-    smaller than its region's reservation. This replaced an earlier tightly-packed
-    per-game concatenation once the DDRAM transport RTL (ddram_phy/ddram_arbiter/
-    ddram_download, all built and verified) settled on the real address map - see
-    docs/ROADMAP.md's DDRAM integration notes for the history.
-
-    DIP switch VALUES/OPTIONS below are taken directly from psikyo.cpp's
-    INPUT_PORTS_START(samuraia) PORT_DIPNAME/PORT_DIPSETTING declarations. The STATUS-BIT
-    POSITIONS they're assigned to (the <dip bits="..."> values) are STILL a provisional
-    placeholder scheme (bit 16 upward, reserving 0-15 for standard OSD options) - that
-    part hasn't been settled yet, unlike the ROM layout above; it depends on the actual
-    core .sv status[] wiring, which doesn't exist yet.
+    DIP status-bit positions (bit 16+) are a provisional placeholder, not yet verified
+    against real core RTL status[] wiring.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Samurai Aces (World)</name>
 	<setname>samuraia</setname>
 	<year>1993</year>
@@ -42,19 +27,19 @@
 			<part name="4-u127.bin" crc="8c9911ca" map="01"/>
 			<part name="5-u126.bin" crc="d20c3ef0" map="10"/>
 		</interleave>
-		<part repeat="0x180000"> FF</part>
+		<part repeat="0x180000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - Z80 sound program ROM.
 		     Actual content 0x20000; padded to the full reservation. -->
 		<part name="3-u58.bin" crc="310f5c76"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics.
 		     Actual content 0x200000 (this family's sprites region is the smallest of
 		     any Phase 1 game - gunbird's needs the full 0x700000); padded to the
 		     full reservation. -->
 		<part name="u14.bin" crc="00a546cb"/>
-		<part repeat="0x600000"> FF</part>
+		<part repeat="0x600000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - tilemap layer 0+1 graphics, 2
 		     ROMs concatenated (not interleaved with each other). Exact fit, no
@@ -69,7 +54,7 @@
 		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - samuraia/sngkace have
 		     NO ADPCM-B region at all (confirmed from ROM_START - only the gunbird
 		     family does), so this entire reservation is padding. -->
-		<part repeat="0x80000"> FF</part>
+		<part repeat="0x80000">FF</part>
 
 		<!-- spritelut: base 0xDC0000, reserved 0x040000 - sprite code lookup table
 		     ROM. Exact fit, no padding needed (also the last region - nothing
@@ -107,5 +92,5 @@
 		<dip name="Region" bits="32,33,34,35,36,37,38,39" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7f,0xbf,0xdf,0xef,0xff"/>
 	</switches>
 
-	<mratimestamp>20260822000000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>

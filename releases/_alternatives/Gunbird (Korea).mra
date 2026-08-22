@@ -1,25 +1,13 @@
 <!--
     Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    This project does not include, distribute, or link to any ROM files. Run this only
-    with ROMs you have dumped from hardware you own or otherwise hold appropriate legal
-    rights to. See ../../Readme.md.
+    No ROM files included/distributed - dump your own. See ../../Readme.md.
 
-    MAME clone set gunbirdk (parent: gunbird) - confirmed via the GAME() driver table.
-    Uses the same INPUT_PORTS_START(gunbirdj) block as sibling clone gunbirdj (no
-    functioning Region dip). Genuinely LARGER maincpu ROM than the parent: two 0x80000
-    ROMs (0x100000 total) vs. gunbird's two 0x40000 ROMs (0x80000 total) - confirmed
-    from ROM_START(gunbirdk) directly, not assumed. Also has its own distinct audiocpu
-    ROM content. Every other region (sprites, tiles, adpcm-a, adpcm-b, spritelut) is
-    byte-for-byte identical to gunbird's. See "Gunbird (World).mra" for the general
-    layout/DIP-status-bit-position caveats, which apply identically here.
-
-    ROM layout matches docs/phase1_ddram_map.md's finalized fixed-region DDRAM address
-    map. The maincpu region's reservation needs only half its usual padding here since
-    this set's own maincpu content is already double the norm (same situation as
-    "Samurai Aces (Korea).mra").
+    MAME clone of gunbird, with a larger maincpu ROM (0x100000 vs 0x80000) and its own
+    audiocpu revision. No Region dip (shares gunbirdj's IPT_UNKNOWN ports). See
+    "Gunbird (World).mra" for shared layout/DIP notes.
 -->
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp" comment="Generated from MAME driver source, not yet verified against a built core"/>
+	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Gunbird (Korea)</name>
 	<setname>gunbirdk</setname>
 	<year>1994</year>
@@ -39,19 +27,19 @@
 			<part name="1k.u46" crc="745cee52" map="01"/>
 			<part name="2k.u39" crc="669632fb" map="10"/>
 		</interleave>
-		<part repeat="0x100000"> FF</part>
+		<part repeat="0x100000">FF</part>
 
 		<!-- audiocpu: base 0x200000, reserved 0x040000 - this set's own sound ROM
 		     revision (different CRC than gunbird's). Actual 0x20000. -->
 		<part name="k3.u71" crc="11994055"/>
-		<part repeat="0x20000"> FF</part>
+		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to gunbird's. -->
 		<part name="u14.bin" crc="7d7e8a00"/>
 		<part name="u24.bin" crc="5e3ffc9d"/>
 		<part name="u15.bin" crc="a827bfb5"/>
 		<part name="u25.bin" crc="ef652e0c"/>
-		<part repeat="0x100000"> FF</part>
+		<part repeat="0x100000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to gunbird's. -->
 		<part name="u33.bin" crc="54494e6b"/>
@@ -84,5 +72,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260822210000</mratimestamp>
+	<mratimestamp>20260822220000</mratimestamp>
 </misterromdescription>
