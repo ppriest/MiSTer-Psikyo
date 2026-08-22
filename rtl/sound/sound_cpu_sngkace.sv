@@ -101,6 +101,17 @@ module sound_cpu_sngkace (
     input  logic [7:0]  latch_data,
     input  logic         latch_write,   // pulse: main CPU wrote a new command byte
 
+    // Mirrors MAME's psikyo_state::z80_nmi_r() (psikyo.cpp): 1 while a sound
+    // command is pending (written by the main CPU, not yet acked by this
+    // Z80's own ISR -- see latch_pending below), 0 once acked. Real
+    // hardware exposes this to the 68020 as a readable input bit (folded
+    // into the sngkace board's separate COIN port, byte 0xC00008-0xC0000B
+    // bit 23, or gunbird's own P1P2 port bit 7 -- docs/phase1_memory_map.md
+    // "Input ports" for the region, MAME source for the exact bit position)
+    // so the main CPU can poll "has the Z80 finished my last sound command"
+    // before sending a new one.
+    output logic         nmi_pending,
+
     // YM2610 I/O handoff -- NOT wired to jt10 yet
     output logic         ym_cs,
     output logic [1:0]  ym_addr,
@@ -164,7 +175,8 @@ module sound_cpu_sngkace (
     // ---- sound latch ----
     logic [7:0] latch_reg;
     logic         latch_pending;
-    assign nmi_n = latch_pending ? 1'b0 : 1'b1;
+    assign nmi_n        = latch_pending ? 1'b0 : 1'b1;
+    assign nmi_pending = latch_pending;
 
     // ---- read data mux (combinational, matches T80's DI expectation) ----
     logic mem_active_rd;

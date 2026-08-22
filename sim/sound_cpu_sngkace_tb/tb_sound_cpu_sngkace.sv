@@ -56,6 +56,7 @@ module tb_sound_cpu_sngkace;
     logic [7:0]  rom_data;
     logic [7:0]  latch_data;
     logic         latch_write;
+    logic         nmi_pending; // unused by these tests, just needed for the .* binding below
     logic         ym_cs;
     logic [1:0]  ym_addr;
     logic         ym_rd, ym_wr;

@@ -72,6 +72,15 @@ module psikyo_top #(
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
 
+    // Mirrors MAME's psikyo_state::z80_nmi_r() -- see
+    // rtl/sound/sound_cpu_sngkace.sv's own comment for the full derivation.
+    // Not looped back into p1p2_in/coin_in internally: which bit position
+    // it occupies is board-specific (sngkace's own separate COIN port vs.
+    // gunbird's P1P2 port bit 7), so the caller folds this into whichever
+    // input word it assembles, same as it already owns all other
+    // board-specific bit layout decisions.
+    output logic         nmi_pending,
+
     // Sound chip (YM2610) bus -- to jt10, not instantiated here yet.
     output logic         ym_cs,
     output logic [1:0]  ym_addr,
@@ -150,6 +159,7 @@ module psikyo_top #(
                 .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
                 .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
                 .latch_data(latch_data), .latch_write(latch_write),
+                .nmi_pending(nmi_pending),
                 .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
                 .ym_dout(ym_dout), .ym_din(ym_din)
             );
@@ -159,6 +169,7 @@ module psikyo_top #(
                 .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
                 .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
                 .latch_data(latch_data), .latch_write(latch_write),
+                .nmi_pending(nmi_pending),
                 .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
                 .ym_dout(ym_dout), .ym_din(ym_din)
             );
