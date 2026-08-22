@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `363c5de`)
+## Progress (kept current — last updated 2026-08-22, commit `5f07d33`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -452,6 +452,46 @@ actually testbench mistakes, documented so they aren't re-investigated).
   not yet resolved — tracked in `rtl/cpu/tg68k/PROVENANCE.md` with a concrete lead for next time.
   Does not block using `maincpu.sv` for the rest of top-level integration in the meantime.
 
+  **`rtl/psikyo_core.sv` built: the first full video+CPU integration.** Wires `maincpu.sv`
+  against real shared memory -- two new small modules, `rtl/memory/dpram.sv` (generic true
+  dual-port word RAM, one CPU-facing R/W port plus one independent video-engine read port) and
+  `rtl/video/vreg_decode.sv` (decodes the vregs region into tilemap_line_engine's actual
+  mode/scroll/bank/rowscroll inputs plus the two layers' row-scroll table reads), plus
+  `rtl/video/spriteram_dbuf.sv` for sprite RAM specifically, since real hardware double-buffers
+  it (MAME's `buffered_spriteram32_device`, bulk-copied on vblank's rising edge,
+  docs/phase1_memory_map.md's "Sprite RAM layout") -- implemented as true ping-pong (2 dpram
+  banks, roles swapped on `frame_start`) rather than an actual copy, same pattern
+  `sprite_frame_buffer.sv` already uses on the sprite pipeline's *output* side. `vreg_decode.sv`
+  also picked up two control-word bits (`opaque`/`transpen_sel`) `compositor.sv` needed that
+  nothing had wired yet.
+
+  All of it -- `maincpu.sv`, the memory glue, `video_timing.sv`, both `tilemap_line_engine`
+  layers, `sprite_render_engine.sv` + `sprite_frame_buffer.sv`, `compositor.sv`, roughly 15
+  module instances -- is wired together in one new top module, `rtl/psikyo_core.sv`. Gfx/CPU ROM
+  content (the SDRAM stack's job) and the sound CPU/YM2610 stay external ports rather than being
+  duplicated here, same as the HPS/DIP/CRT_Offset glue that belongs in `Psikyo.sv` itself, one
+  level up (not yet touched). The one genuinely new piece of logic, not just wiring: the sprite
+  pipeline has two double buffers that must swap at *different* points in the frame --
+  `spriteram_dbuf` swaps immediately on `frame_start`, then one cycle later (once its own
+  `sprites_disable` output has caught up) conditionally kicks `sprite_render_engine`'s own
+  `frame_start`; the render engine's `frame_done` -- once rendering actually finishes, not at
+  `frame_start` -- drives `sprite_frame_buffer`'s swap, presenting the finished frame to the
+  compositor. Documented in the module header, including the open question of whether clear+
+  render always finishes before the next `frame_start` (a timing-budget measurement for later,
+  same "prove wiring first" approach already used for the SDRAM contention numbers above).
+
+  Verified two ways, both PASS from a clean build: `tb_psikyo_core_smoke.sv` elaborates the full
+  tree and runs 3 full frames (358k cycles) with no crash and no runaway X propagation, catching
+  wiring mistakes cheaply before investing in a real functional test (this DID catch one: a
+  `rd_y` port-width mismatch feeding `sprite_frame_buffer`, fixed before the smoke test was even
+  run). `tb_psikyo_core.sv` then runs a genuine CPU program (`test_video.s`, vasm-assembled) that
+  writes a tile into layer 0 VRAM, a palette entry, and layer 0's control register, and confirms
+  the expected color actually reaches the compositor's `rgb` output during real active-display
+  scanout -- the complete chain (CPU bus -> `maincpu.sv` -> vram0 -> `tilemap_line_engine` ->
+  `compositor` -> palette -> `rgb`) proven end to end, not just elaborated. First run of this
+  test failed (0 matches) -- root cause was the testbench's own `$readmemh` path being relative
+  to the wrong working directory, not an RTL bug; fixed and reran clean.
+
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
   header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
@@ -641,23 +681,28 @@ get copied over to `_Arcade/cores` once builds are ready, the way your other cor
 
 See "Progress" above for current status. Immediate next items, in order:
 
-1. Top-level integration against Template_MiSTer: wiring the video/sound engines + TG68K.C into
-   `emu.sv`, the CRT_Offset module, DIP/status-bit + control mapping, and (later-stage/polish, not
-   needed for initial bring-up) hiscore.v — see "Component reuse map" above. Gfx/CPU ROM streaming
-   goes through the SDRAM stack (`sdram_phy`/`sdram`/`sdram_arbiter*`/`sdram_narrow_bridge`, see
-   `docs/phase1_sdram_map.md`) now, not DDRAM — the DDRAM stack (`ddram_phy`/`ddram_arbiter`/
-   `ddram_download`) is built and still available but is no longer Phase 1's critical path (see
-   `docs/phase1_ddram_map.md`'s header note). Every gfx-ROM-row consumer (tilemap ×2, sprite)
-   MUST route through `rtl/memory/gfxrom_byte_reorder.sv` between the SDRAM controller and its
-   `gfxrom_data` port — easy to forget since it compiles and even *runs* fine without it, just
-   produces byte-order-scrambled tile/sprite graphics (see "Progress" above for the real bug this
-   caught). `sdram_narrow_bridge.sv` consumers (spritelut, `maincpu`, `audiocpu`) must NOT use it.
-   This is also where the `.mra` files' DIP status-bit
-   positions (see "Progress" above) get checked against real RTL for the first time and corrected
-   if needed. Sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`) now have req/valid ROM ports
-   (see "Progress" above) and are ready to connect to a real arbiter/`sdram_narrow_bridge`
-   (`WORD_BYTES=1`, matching the Z80's 8-bit fetch) for this pass — not wired yet, but no longer
-   blocked.
+1. Top-level integration: `rtl/psikyo_core.sv` (see "Progress" above) now covers the video+CPU
+   half — `maincpu.sv`, the shared VRAM/palette/vregs/spriteram memory, both tilemap engines, the
+   sprite pipeline, and the compositor, all wired together and verified with a real CPU-driven
+   test. What's left before this reaches `Psikyo.sv`/`emu.sv`:
+   - Wire `psikyo_core.sv`'s external ROM ports (`cpu_rom_*`, `l0_gfxrom_*`, `l1_gfxrom_*`,
+     `sp_gfxrom_*`, `sp_lut_*` — currently tied to constant-stub models in its own testbenches)
+     to the real SDRAM stack (`sdram_phy`/`sdram`/`sdram_arbiter*`/`sdram_narrow_bridge`, see
+     `docs/phase1_sdram_map.md`) — not DDRAM, which is built and still available but is no longer
+     Phase 1's critical path (see `docs/phase1_ddram_map.md`'s header note). Every gfx-ROM-row
+     consumer (tilemap ×2, sprite) MUST route through `rtl/memory/gfxrom_byte_reorder.sv` between
+     the SDRAM controller and its `gfxrom_data` port — easy to forget since it compiles and even
+     *runs* fine without it, just produces byte-order-scrambled tile/sprite graphics (see
+     "Progress" above for the real bug this caught). `sdram_narrow_bridge.sv` consumers
+     (spritelut, `maincpu`, `audiocpu`) must NOT use it.
+   - Wire the sound CPU wrappers (`sound_cpu_sngkace`/`gunbird`, which already have req/valid ROM
+     ports — see "Progress" above) to a real arbiter/`sdram_narrow_bridge` (`WORD_BYTES=1`,
+     matching the Z80's 8-bit fetch) and to `psikyo_core.sv`'s `latch_data`/`latch_write` output.
+   - Instantiate the result inside `Psikyo.sv`/`emu.sv` (still the untouched Template_MiSTer
+     skeleton) alongside the CRT_Offset module, DIP/status-bit + control mapping (this is where
+     the `.mra` files' DIP status-bit positions, see "Progress" above, get checked against real
+     RTL for the first time and corrected if needed), and (later-stage/polish, not needed for
+     initial bring-up) hiscore.v — see "Component reuse map" above.
 2. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
    `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either sound CPU wrapper's YM
    I/O chip-select bus; ADPCM-A/B ROM banking once jt10 itself is trusted; and applying the
