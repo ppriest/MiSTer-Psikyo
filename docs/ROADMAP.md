@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `a84033b`)
+## Progress (kept current — last updated 2026-08-22, commit `8ec11c2`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -588,6 +588,18 @@ actually testbench mistakes, documented so they aren't re-investigated).
   permanent regression coverage no prior test provided (each Port 2 client's own data correctness
   under a sustained, many-iteration contention loop, not just a single simultaneous round).
 
+  **Audiocpu's SDRAM byte order checked and confirmed fine.** The open question this same
+  investigation flagged -- whether `sdram_narrow_bridge.sv`'s WORD_BYTES=1 byte-wide fetch is
+  genuinely endianness-safe for the Z80 sound CPU, or just asserted so -- is now checked against
+  a real downloaded program, not just reasoned about. `sim/psikyo_top_tb/tb_psikyo_top_sound.sv`
+  downloads `sim/sound_cpu_sngkace_tb/tb_sound_cpu_sngkace.sv`'s own Scenario 1 program
+  byte-for-byte (fixed-region fetch, a bank-register write, then a banked-region fetch at
+  physical `0x10000`) through the real HPS path into the real SDRAM backend, with the banked
+  byte set to a distinctive value (`0xAB`) specifically so a byte-order bug would surface as a
+  wrong echoed value on the observable YM I/O bus, the same way maincpu's real bug surfaced as
+  its PC running off into the weeds. PASSES: byte-wide fetches really are packing-order-agnostic
+  here, no fix needed.
+
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
   header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
@@ -779,16 +791,11 @@ See "Progress" above for current status. Immediate next items, in order:
 
 1. Top-level integration: `rtl/psikyo_top.sv` (see "Progress" above) connects `psikyo_core.sv`
    (video+CPU — `maincpu.sv`, shared VRAM/palette/vregs/spriteram, both tilemap engines, the
-   sprite pipeline, the compositor), `psikyo_sdram_top.sv` (the SDRAM backend), and now the
-   board-appropriate sound CPU wrapper, verified together under genuine multi-CPU SDRAM
-   contention (see "Progress" above — the contention bug that briefly blocked this is fixed).
-   What's left before this reaches `Psikyo.sv`/`emu.sv`:
-   - Check whether audiocpu's ROM region (`ROM_REGION` for the Z80 sound CPU) needs the same
-     byte-order scrutiny the maincpu bug got (see "Progress" above) before trusting
-     `sdram_narrow_bridge.sv`'s WORD_BYTES=1 byte-wide fetch is endianness-safe as reasoned there
-     (byte-wide fetches have no packing order, so no swap should be needed — but that reasoning
-     hasn't yet been checked against a real downloaded Z80 program the way maincpu's was, only
-     asserted).
+   sprite pipeline, the compositor), `psikyo_sdram_top.sv` (the SDRAM backend), and the
+   board-appropriate sound CPU wrapper, all verified together under genuine multi-CPU SDRAM
+   contention with real downloaded programs (see "Progress" above — both the contention bug and
+   the audiocpu byte-order question are resolved). What's left before this reaches
+   `Psikyo.sv`/`emu.sv`:
    - Instantiate the result inside `Psikyo.sv`/`emu.sv` (still the untouched Template_MiSTer
      skeleton) alongside the CRT_Offset module, DIP/status-bit + control mapping (this is where
      the `.mra` files' DIP status-bit positions, see "Progress" above, get checked against real
