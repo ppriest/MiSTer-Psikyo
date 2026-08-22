@@ -63,6 +63,37 @@ module sprite_display_list_walker (
     assign sram_addr = addr_r;
     assign busy        = (state != S_IDLE);
 
+    // sram_data % 768, full 16-bit range (matches MAME's `sprite %= 0x300`
+    // applied directly to the raw 16-bit display-list word, no prior
+    // masking -- see this module's header). Written as an explicit 7-stage
+    // conditional-subtraction chain (the standard technique for modulo by
+    // a compile-time non-power-of-2 constant) instead of Verilog's `%`
+    // operator: a real `quartus_fit` run against the full Psikyo.sv build
+    // found the plain `%` synthesized as a slow generic iterative divider
+    // (`Mod0|auto_generated|divider`) that was this design's single worst
+    // timing-closure offender by a wide margin (-5.862ns setup slack at
+    // clk_sys, the worst path in the whole build). Each stage below
+    // subtracts a decreasing power-of-2 multiple of 768 when it fits --
+    // textbook restoring division, unrolled combinationally, correct for
+    // any 16-bit input (65535/768 < 127 = 64+32+16+8+4+2+1, so the chain
+    // always fully reduces) -- same one-cycle combinational timing as the
+    // `%` it replaces, so no change to this module's cycle-count contract
+    // or any test that depends on it.
+    function automatic logic [9:0] mod768(input logic [15:0] x);
+        logic [15:0] v;
+        begin
+            v = x;
+            if (v >= 16'd49152) v = v - 16'd49152; // 768*64
+            if (v >= 16'd24576) v = v - 16'd24576; // 768*32
+            if (v >= 16'd12288) v = v - 16'd12288; // 768*16
+            if (v >= 16'd6144)  v = v - 16'd6144;  // 768*8
+            if (v >= 16'd3072)  v = v - 16'd3072;  // 768*4
+            if (v >= 16'd1536)  v = v - 16'd1536;  // 768*2
+            if (v >= 16'd768)   v = v - 16'd768;   // 768*1
+            mod768 = v[9:0];
+        end
+    endfunction
+
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
             state        <= S_IDLE;
@@ -94,7 +125,7 @@ module sprite_display_list_walker (
                         state <= S_IDLE;
                     end else begin
                         entry_valid  <= 1'b1;
-                        sprite_index <= sram_data % 16'd768;
+                        sprite_index <= mod768(sram_data);
                         state          <= S_HOLD;
                     end
                 end
