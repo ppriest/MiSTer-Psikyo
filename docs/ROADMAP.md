@@ -17,7 +17,7 @@ follow-up, drop the bootleg boards entirely — they're variant hardware that wo
 complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
 protection (matching MAME) with a real YMF278B core.
 
-## Progress (kept current — last updated 2026-08-22, commit `1e1312e`)
+## Progress (kept current — last updated 2026-08-22, commit `363c5de`)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
 correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
@@ -419,6 +419,38 @@ actually testbench mistakes, documented so they aren't re-investigated).
   underlying budget instead. What's left before the full raster path is proven: sprite output
   (needs the DDRAM stack wired to `sprite_render_engine`/`sprite_frame_buffer`, which will make
   the throughput picture worse, not better, before it's addressed).
+
+  **`rtl/cpu/maincpu.sv` built: the 68EC020 main-CPU wrapper.** Address decode + DTACK for the
+  full `psikyo_map` (`docs/phase1_memory_map.md`) over TG68K.C — ROM via the same req/valid
+  conversion `sound_cpu_sngkace.sv` established, all 6 BRAM regions (sprite RAM, palette,
+  tilemap VRAM0/1, video regs, work RAM), 32-bit input ports, sound latch, and a held-
+  autovectored level-4 vblank IRQ. Building it against a real program (not the Phase 0 spike's
+  4-instruction test) surfaced a severe ModelSim crash (SIGSEGV, then cascading multi-GB
+  allocation failures) that took a genuinely methodical investigation to root-cause — 4 levels
+  of isolation (pure-VHDL minimal repro, mixed SV/VHDL, minimal maincpu, full maincpu), ruling
+  out the mixed-language SV/VHDL boundary and address-progression as causes along the way, before
+  log-timestamp analysis showed `'X'`-in-arithmetic warnings occurring continuously from
+  simulation time 0 — matching a publicly known, still-open upstream issue
+  (github.com/TobiFlex/TG68K.C/issues/21, "uninitialised signals in arithmetic"). Fixed with
+  explicit zero initializers on every previously-uninitialized `std_logic`/`std_logic_vector`
+  signal in `TG68K_ALU.vhd` and `TG68KdotC_Kernel.vhd` (123 signals total) — simulation-fidelity
+  only, same precedent as `sdram.sv`'s own fix (`rtl/cpu/tg68k/PROVENANCE.md` has the full
+  writeup). Confirmed load-bearing and confirmed no regression against the Phase 0 spike, which
+  still passes identically (warnings dropped from hundreds of thousands to 14, all benign
+  time-0 settling). Three further real, permanent wiring bugs in `maincpu.sv` itself were found
+  and fixed along the way: HALT must track RESET (TG68K's internal reset is `RESET OR HALT`),
+  RESET/HALT are genuine open-collector nets needing `tri1` modeling (the core drives them
+  itself for self-reset), and VPA must be gated to IACK cycles only (tying it permanently low
+  also engages an alternate cycle-completion path for ordinary bus cycles).
+
+  Once past the crash, address decode/DTACK verified correct on the first real run: ROM fetch,
+  all 6 BRAM regions, the 32-bit input-port read, and the sound-latch write all PASS
+  (`sim/maincpu_tb/tb_maincpu.sv`, Case 1). **Still open**: the vblank IRQ (Case 2) doesn't yet
+  work — narrowed to a specific, understood point (the IACK cycle and the vector *offset* pushed
+  into the exception frame are both correct; the vector-table *fetch* address comes out as `0x0`
+  instead of `0x70`, suggesting two separate kernel code paths, only one currently correct) but
+  not yet resolved — tracked in `rtl/cpu/tg68k/PROVENANCE.md` with a concrete lead for next time.
+  Does not block using `maincpu.sv` for the rest of top-level integration in the meantime.
 
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
