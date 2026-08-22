@@ -17,26 +17,26 @@
 // matching real MiSTer core sequencing (core held in reset while HPS
 // loads ROM content).
 //
-// **KNOWN OPEN ISSUE, committed deliberately still failing as reproducible
-// evidence (same posture docs/ROADMAP.md's DDRAM-throughput test used) --
-// do not loosen this test's checks to force a pass; find the real bug
-// instead.** This test PASSED cleanly before rtl/psikyo_top.sv gained the
-// sound CPU (rtl/sound/sound_cpu_sngkace.sv), which now contends with
-// maincpu for the same Port 2 SDRAM arbiter. With that contention live,
-// maincpu's SDRAM read granule capture (rtl/memory/sdram/sdram.sv's
-// `dout[15:0/31:16/...] <= SDRAM_DQ`) intermittently captures X, even
-// though the arbiter's own astate/sel show one cleanly-serialized
-// transaction throughout with no overlap at the arbiter level -- the
-// corruption is happening below the arbiter, inside sdram.sv/the SDR
-// timing model itself. Root cause not yet found; suspected a real SDR
-// SDRAM timing constraint (e.g. tRP, row precharge-to-activate) that
-// single-client testing (sim/sdram_arbiter5_tb/, sim/port2_sdram_tb/)
-// never stressed, since sdram.sv issues no explicit PRECHARGE and relies
-// entirely on auto-precharge with zero enforced gap between two clients'
-// back-to-back transactions -- but this is a hypothesis, not confirmed.
-// sim/psikyo_top_tb/tb_psikyo_top_sound_smoke.sv still passes (the sound
-// CPU wiring itself elaborates and runs correctly with synthetic all-zero
-// ROM content, which doesn't happen to trigger this contention pattern).
+// **History: this test briefly regressed when the sound CPU was wired into
+// rtl/psikyo_top.sv (real contention on Port 2's SDRAM arbiter exposed a
+// real bug), and is now fixed -- kept here since the failure mode was
+// subtle and worth remembering.** With maincpu and the sound CPU
+// genuinely contending, maincpu's SDRAM reads intermittently came back
+// corrupted. Root-caused to rtl/cpu/maincpu.sv, not sdram.sv or the
+// arbiter (both confirmed clean in isolation by sim/sdram_tb/tb_sdram.sv's
+// Case 6, two independent ports continuously contending, 1000 iterations,
+// zero corruption when each port samples dout on its OWN valid cycle):
+// maincpu.sv's `rom_pending` flag cleared on `rom_valid`'s one-cycle pulse
+// rather than on the CPU's own bus cycle actually ending
+// (`!is_rom_access`), which let `rom_req` fire a second, spurious request
+// for data the CPU had already latched. Harmless alone (same address, same
+// answer), but under contention another Port 2 client could win that
+// spurious request's arbitration slot and overwrite the shared `dout`
+// register (`rtl/memory/sdram/sdram.sv`'s `dout0`/`dout1`/`dout2` are
+// literally the same signal, not independently latched per client) while
+// `dtack_n` -- driven straight from `rom_valid` -- glitched low-high-low,
+// corrupting what TG68K.C sampled. See `rtl/cpu/maincpu.sv`'s own comment
+// on `rom_pending` for the full writeup.
 module tb_psikyo_top;
 
     logic clk = 0;
@@ -102,30 +102,15 @@ module tb_psikyo_top;
     int match_count = 0;
     int match_hcnt, match_vcnt;
 
-    // KNOWN OPEN ISSUE (see this file's header): once the sound CPU
-    // (rtl/sound/sound_cpu_sngkace.sv) started contending for the same
-    // Port 2 SDRAM arbiter maincpu uses, this test began failing --
-    // maincpu's SDRAM read granule capture (rtl/memory/sdram/sdram.sv's
-    // `dout[15:0/31:16/...] <= SDRAM_DQ`) intermittently captures X while
-    // the OTHER client's request is simultaneously pending, even though
-    // the arbiter's own astate/sel show a single, cleanly-serialized
-    // transaction throughout (no overlap at the arbiter level). Root cause
-    // not yet found -- suspected a real SDR SDRAM timing constraint
-    // (e.g. tRP, row precharge-to-activate) that single-client testing
-    // never stressed, given sdram.sv issues no explicit PRECHARGE and
-    // relies entirely on auto-precharge with zero enforced gap between
-    // back-to-back transactions, but this is not confirmed. This monitor
-    // flags the failure the moment it reproduces, for whoever picks this
-    // back up.
-    // Bails out immediately once the known issue reproduces, rather than
-    // letting the run continue toward the same memory-exhaustion crash
-    // rtl/cpu/tg68k/PROVENANCE.md's own investigation hit under sustained
-    // X propagation (real, observed here too if this monitor doesn't stop
-    // the run early) -- every future run of this test fails fast and
-    // clearly instead of hanging for minutes before crashing ModelSim.
+    // Permanent regression guard for the bug this file's header describes
+    // (rtl/cpu/maincpu.sv's rom_pending fix): fails fast and clearly if
+    // maincpu's SDRAM read data is ever unknown again, rather than letting
+    // a real recurrence run toward the same memory-exhaustion crash
+    // sustained X propagation caused during that investigation.
     always @(posedge clk) begin
         if (dut.u_core.u_cpu.rom_valid && $isunknown(dut.u_core.u_cpu.rom_data)) begin
-            $display("FAIL: KNOWN ISSUE reproduced at t=%0t -- maincpu ROM read returned X (cpu_rom_addr=%h), see this file's header",
+            errors++;
+            $display("FAIL: maincpu ROM read returned X at t=%0t (cpu_rom_addr=%h) -- regression of the rom_pending bug rtl/cpu/maincpu.sv fixed, see this file's header",
                        $time, dut.u_core.u_cpu.rom_addr);
             $finish;
         end

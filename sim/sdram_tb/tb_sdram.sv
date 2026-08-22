@@ -26,6 +26,18 @@
 //      docs/phase1_sdram_map.md) -- not a specific magic number, just "small
 //      and doesn't vary with address," so this check isn't tied to exact
 //      RASCAS_DELAY/CAS_LATENCY constants that might reasonably change.
+//   5. Isolated reproduction of a real bug found in rtl/psikyo_top.sv
+//      integration (docs/ROADMAP.md's "Progress" -- KNOWN OPEN ISSUE):
+//      back-to-back single-port reads to DIFFERENT rows, issued with zero
+//      gap (the next req toggles the same cycle the previous ack toggle is
+//      observed -- exactly what a round-robin arbiter serving two always-
+//      pending clients naturally produces, per sim/psikyo_top_tb/
+//      tb_psikyo_top.sv's own traced failure). This does NOT need the
+//      arbiter or a second real client to reproduce -- a single port,
+//      driven directly, is enough, isolating the bug to sdram.sv/the SDR
+//      timing model itself. Runs many iterations (not just one pair),
+//      since the real failure was intermittent, not on the very first
+//      back-to-back pair.
 
 module tb_sdram;
 
@@ -208,8 +220,135 @@ module tb_sdram;
             $display("Case4 PASS: uncontended read latency small and fixed (%0d cycles) -- the actual point of the SDRAM pivot, see docs/phase1_sdram_map.md", cyc0);
         end
 
+        // ---- Case 5: back-to-back different-row reads, zero gap, single port ----
+        begin
+            logic [63:0] rowA_exp, rowB_exp, got5;
+            int          cyc5;
+            int          fail_iter;
+            int          fail_count;
+
+            rowA_exp = 64'h4444_3333_2222_1111;
+            rowB_exp = 64'h8888_7777_6666_5555;
+            fail_iter = -1;
+            fail_count = 0;
+
+            chip.poke_word_addr(24'h000000, 16'h1111);
+            chip.poke_word_addr(24'h000001, 16'h2222);
+            chip.poke_word_addr(24'h000002, 16'h3333);
+            chip.poke_word_addr(24'h000003, 16'h4444);
+            // row differs from 24'h000000's (bit 16 set -- see this file's
+            // header, "Case 5"): word_addr[16:9] is the chip model's own
+            // folded row field, matching sdram.sv's real a[22:10] row split.
+            chip.poke_word_addr(24'h010000, 16'h5555);
+            chip.poke_word_addr(24'h010001, 16'h6666);
+            chip.poke_word_addr(24'h010002, 16'h7777);
+            chip.poke_word_addr(24'h010003, 16'h8888);
+
+            for (int i = 0; i < 200; i++) begin
+                do_read(0, 24'h000000, got5, cyc5);
+                if (got5 !== rowA_exp) begin
+                    fail_count++;
+                    if (fail_iter == -1) fail_iter = i;
+                end
+                do_read(0, 24'h010000, got5, cyc5);
+                if (got5 !== rowB_exp) begin
+                    fail_count++;
+                    if (fail_iter == -1) fail_iter = i;
+                end
+            end
+
+            if (fail_count > 0) begin
+                errors++;
+                $display("FAIL Case5: %0d/%0d back-to-back different-row reads corrupted, first at iteration %0d",
+                           fail_count, 400, fail_iter);
+            end else begin
+                $display("Case5 PASS: 400 back-to-back different-row reads, all correct");
+            end
+        end
+
+        // ---- Case 6: two REAL independent ports (0 and 1), both
+        // continuously re-requesting different-row content, each checking
+        // its OWN data every iteration -- Case 5 used one port re-issuing
+        // quickly, which passed; this is the closer match to
+        // sim/psikyo_top_tb/tb_psikyo_top.sv's actual failing topology
+        // (two genuinely independent requestors on the shared controller,
+        // sdram.sv's own STATE_IDLE priority chain arbitrating between them
+        // every cycle, not one port serialized by a single task call) --
+        // sim/sdram_arbiter5_tb/tb_sdram_arbiter5.sv's own Case 2 already
+        // checks simultaneous multi-client correctness, but only for a
+        // handful of requests, not a sustained hundreds-of-iterations loop.
+        begin
+            logic [63:0] pA_exp, pB_exp;
+            int          failA, failB, first_fail;
+
+            pA_exp = 64'h4444_3333_2222_1111;
+            pB_exp = 64'h8888_7777_6666_5555;
+            failA = 0; failB = 0; first_fail = -1;
+
+            chip.poke_word_addr(24'h020000, 16'h1111);
+            chip.poke_word_addr(24'h020001, 16'h2222);
+            chip.poke_word_addr(24'h020002, 16'h3333);
+            chip.poke_word_addr(24'h020003, 16'h4444);
+            chip.poke_word_addr(24'h030000, 16'h5555);
+            chip.poke_word_addr(24'h030001, 16'h6666);
+            chip.poke_word_addr(24'h030002, 16'h7777);
+            chip.poke_word_addr(24'h030003, 16'h8888);
+
+            addr0 = 24'h020000; wrl0 = 0; wrh0 = 0;
+            addr1 = 24'h030000; wrl1 = 0; wrh1 = 0;
+
+            for (int i = 0; i < 1000; i++) begin
+                logic [63:0] got0, got1;
+                req0 = ~ack0;
+                req1 = ~ack1;
+                // Capture each port's dout INSIDE its own branch, the
+                // instant ITS OWN ack toggles -- dout0/dout1/dout2 are all
+                // the same shared `dout` register (`assign dout0 = dout;`
+                // etc, sdram.sv itself), not independently latched per
+                // port, so a caller MUST sample on its own valid/ack cycle,
+                // never later (a subsequent port's transaction overwrites
+                // the shared register). Case 6's first version read dout0/
+                // dout1 only after BOTH forked branches (i.e. both ports)
+                // had finished -- a real testbench bug, not an RTL one: by
+                // then port1's transaction had already overwritten the
+                // shared dout, so dout0 was showing port1's data. Real
+                // consumers (sdram_phy.sv's rdata, sdram_narrow_bridge.sv's
+                // data) already follow this same-cycle-capture contract
+                // correctly; this was this test's own mistake.
+                fork
+                    begin
+                        do @(posedge clk); while (ack0 !== req0);
+                        got0 = dout0;
+                    end
+                    begin
+                        do @(posedge clk); while (ack1 !== req1);
+                        got1 = dout1;
+                    end
+                join
+                if (got0 !== pA_exp) begin
+                    failA++;
+                    if (first_fail == -1) begin
+                        first_fail = i;
+                        $display("DIAG Case6 iter=%0d got0=%h expected=%h got1=%h expected=%h", i, got0, pA_exp, got1, pB_exp);
+                    end
+                end
+                if (got1 !== pB_exp) begin
+                    failB++;
+                    if (first_fail == -1) first_fail = i;
+                end
+            end
+
+            if (failA > 0 || failB > 0) begin
+                errors++;
+                $display("FAIL Case6: port0 wrong %0d/1000, port1 wrong %0d/1000, first at iteration %0d",
+                           failA, failB, first_fail);
+            end else begin
+                $display("Case6 PASS: 1000 iterations, two independent ports continuously contending, all correct");
+            end
+        end
+
         if (errors == 0)
-            $display("PASS: tb_sdram -- burst-4 read, byte-lane write, multi-port, and latency all correct");
+            $display("PASS: tb_sdram -- burst-4 read, byte-lane write, multi-port, latency, and back-to-back different-row reads all correct");
         else
             $display("FAIL: %0d error(s)", errors);
 

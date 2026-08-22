@@ -363,6 +363,26 @@ module maincpu #(
     // ROM reads: real req/valid handshake -- see sound_cpu_sngkace.sv's
     // header for the full derivation of why a level-tracked rom_pending
     // flag (not a same-cycle edge-detector) is what makes this safe.
+    //
+    // rom_pending clears on `!is_rom_access` (the CPU has actually moved
+    // off this bus cycle), NOT on `rom_valid` -- a real, found bug: clearing
+    // on rom_valid's one-cycle pulse let rom_pending drop to 0 while
+    // is_rom_access was STILL true (as_n stays low for the rest of this
+    // bus cycle after DTACK releases, same "registered bus-control
+    // outputs" reasoning this module's own header documents for AS/UDS/
+    // LDS/RW), so rom_req fired a second, spurious request for data the
+    // CPU had already latched -- harmless in isolation (same address, same
+    // answer), but under real SDRAM contention (rtl/memory/psikyo_sdram_top.sv,
+    // sim/psikyo_top_tb/tb_psikyo_top.sv's own KNOWN OPEN ISSUE) another
+    // Port 2 client can win that spurious request's arbitration slot,
+    // overwrite the shared dout register (rtl/memory/sdram/sdram.sv's
+    // dout0/dout1/dout2 are literally the same signal, not independently
+    // latched per client -- confirmed in isolation by
+    // sim/sdram_tb/tb_sdram.sv's Case 6), and dtack_n -- driven straight
+    // from rom_valid -- glitches low-high-low right as cpu_data is still
+    // combinationally live from mem_active_rd, corrupting what TG68K.C
+    // samples. Holding rom_pending through the whole bus cycle suppresses
+    // the spurious re-request entirely.
     logic rom_pending;
 
     always_ff @(posedge clk or posedge reset) begin
@@ -370,7 +390,7 @@ module maincpu #(
             rom_pending <= 1'b0;
         end else begin
             if (is_rom_access && !rom_pending) rom_pending <= 1'b1;
-            else if (rom_valid)                   rom_pending <= 1'b0;
+            else if (!is_rom_access)               rom_pending <= 1'b0;
         end
     end
 
