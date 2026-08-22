@@ -202,10 +202,32 @@ module psikyo_sdram_top (
     );
 
     // c2: maincpu program fetch -- 16-bit word client, cpu_rom_addr is a WORD address.
+    //
+    // Real, previously-undetected bug found here (not caught by
+    // sim/psikyo_sdram_top_tb/tb_psikyo_sdram_top.sv, which only checked
+    // this port against sdram_narrow_bridge.sv's OWN self-consistent
+    // convention, not against what a real 68020 program actually needs --
+    // caught instead by sim/psikyo_top_tb/tb_psikyo_top.sv running a real
+    // downloaded program, whose PC ended up executing address 0x800
+    // instead of 0x8, a byte-swapped word): sdram_narrow_bridge.sv packs
+    // 16-bit words little-endian (its own header: "EVEN byte address...
+    // LOW byte, ODD... HIGH byte") -- correct for spritelut
+    // (`ROM_REGION16_LE`, docs/phase1_video_engine.md's "LUT ROM format"),
+    // but WRONG for maincpu's 68020 program ROM, which is plain
+    // `ROM_REGION` (big-endian, matching every 68k program ROM this
+    // project has downloaded so far -- see sim/maincpu_tb/gen_rom_hex.py's
+    // own big-endian packing). Fixed by swapping the two bytes right here,
+    // at the maincpu-specific seam, rather than touching
+    // sdram_narrow_bridge.sv itself (still correct as-is for spritelut's
+    // genuinely little-endian content, and for audiocpu's WORD_BYTES=1
+    // single-byte fetches, which have no endianness question at all).
+    logic [15:0] cpu_rom_data_le;
+    assign cpu_rom_data = {cpu_rom_data_le[7:0], cpu_rom_data_le[15:8]};
+
     sdram_narrow_bridge #(.WORD_BYTES(2)) u_cpu_bridge (
         .clk(clk), .reset(reset),
         .req(cpu_rom_req), .addr(MAINCPU_BASE + {5'd0, cpu_rom_addr, 1'b0}),
-        .valid(cpu_rom_valid), .data(cpu_rom_data),
+        .valid(cpu_rom_valid), .data(cpu_rom_data_le),
         .g_req(c2_req), .g_addr(c2_addr), .g_valid(c2_valid), .g_data(c2_data)
     );
 

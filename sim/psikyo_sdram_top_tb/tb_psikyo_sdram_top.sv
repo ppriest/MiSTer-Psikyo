@@ -196,7 +196,13 @@ module tb_psikyo_sdram_top;
         cpu_rom_addr = 19'd0; cpu_rom_req = 1;
         @(posedge clk);
         while (!cpu_rom_valid) @(posedge clk);
-        check16(cpu_rom_data, 16'hDDCC, "cpu_rom_data");
+        // Big-endian: byte0 (lower address) is the word's HIGH byte --
+        // maincpu's real 68020 program ROM convention, NOT
+        // sdram_narrow_bridge.sv's own little-endian packing (correct for
+        // spritelut's ROM_REGION16_LE content, wrong for maincpu's plain
+        // ROM_REGION content) -- see psikyo_sdram_top.sv's u_cpu_bridge
+        // comment for the real bug this was found fixing.
+        check16(cpu_rom_data, 16'hCCDD, "cpu_rom_data");
         cpu_rom_req = 0;
 
         dl_write_byte(AUDIOCPU_BASE + 25'd0, 8'hEE);
