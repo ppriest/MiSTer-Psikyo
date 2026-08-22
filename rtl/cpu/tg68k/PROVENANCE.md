@@ -92,3 +92,55 @@ General technique note: report-based bus tracing in a process with bare `sensiti
 `rising_edge(clk)` can catch signals mid-delta-cycle-transition and show misleading values.
 Sampling via `wait until rising_edge(clk); wait for 1 ns;` (small settle delay after the edge)
 before reading any signal was the reliable fix, used throughout this testbench.
+
+## Phase 1 integration (`rtl/cpu/maincpu.sv`): uninitialized-signal crash, found and fixed
+
+Building the real address-decode/DTACK wrapper (`rtl/cpu/maincpu.sv`) against a genuine
+program (not the Phase 0 spike's short, deliberate 4-instruction test) surfaced a severe issue
+the spike never could: ModelSim crashed outright (SIGSEGV, then cascading multi-GB memory
+allocation failures) after a sustained run, even reduced to the sharpest possible isolation
+(pure VHDL, the spike's own trivial zero-wait DTACK, a constant-NOP or tight `BRA.S`-self-loop
+ROM, no address decode, no RAM regions at all).
+
+Root cause, confirmed by instrumented log analysis (not guessed): the crashing runs' `'X'`-in-
+arithmetic-operand ALU warnings were not triggered by anything at the eventual crash timestamp
+— they occurred continuously, on every single clock edge, starting from simulation time 0 and
+never clearing, even well after reset completed. This matches a publicly reported upstream
+issue (github.com/TobiFlex/TG68K.C/issues/21, "uninitialised signals in arithmetic") whose
+reporter identified the same class of signal and whose thread confirms the maintainer's
+position: real hardware zero-power-ups these registers, so upstream deliberately doesn't add
+simulation-only initializers ("initialization will require more logic").
+
+Fix applied here (simulation-fidelity only, not an algorithm change — matches
+`rtl/memory/sdram/PROVENANCE.md`'s precedent for the same class of fix): explicit `:= '0'` /
+`:= (others => '0')` initializers added to every previously-uninitialized `std_logic`/
+`std_logic_vector` signal declaration in both `TG68K_ALU.vhd` (rotate/divide/barrel-shift/
+bit-field internals — matches the reported issue's own subset almost exactly) and
+`TG68KdotC_Kernel.vhd` (110 signals — the microcode/state-machine layer, which also needed the
+same treatment; the public issue only covered the ALU, but the same crash pattern persisted
+after fixing just that, so the kernel's own declarations were audited and fixed the same way).
+Confirmed load-bearing, not just plausible: reverting either file's initializers reproduces the
+crash; with both applied, every isolation test (pure VHDL and mixed SV/VHDL) runs the same
+40,000-cycle workload cleanly in ~1-2 seconds, matching the Phase 0 spike's own baseline.
+
+Once past the crash, `sim/maincpu_tb/tb_maincpu.sv`'s Case 1 (real ROM req/valid fetch, all 6
+BRAM regions -- sprite RAM/palette/tilemap VRAM x2/video regs/work RAM -- the 32-bit input-port
+read, and the sound-latch write) passed cleanly on the first real run: the address decode and
+DTACK generation logic itself (`rtl/cpu/maincpu.sv`, built the same way
+`rtl/sound/sound_cpu_sngkace.sv`'s req/valid conversion was) is verified correct.
+
+**Still open**: Case 2 (the held-autovectored level-4 vblank IRQ) does not yet pass. Signal
+tracing confirmed the interrupt request, recognition, IPL encoding, and the IACK bus cycle
+itself (address `0xFFFFFFF8`, correctly encoding level 4) all execute correctly, and the CPU
+correctly computes the vector *offset* to push into the exception frame's format word
+(`0x0070`, matching vector 28 = level 4's real autovector number — vector 24 is "Spurious
+Interrupt", a different exception entirely; levels 1-7 map to vectors 25-31, a real arithmetic
+mistake in this test's first version, since fixed). But the CPU's actual vector-table *fetch*
+address is `0x00000000`, not `0x70` — meaning the offset computed for the stack-frame bookkeeping
+word and the address actually used to fetch the handler pointer are evidently two separate
+code paths in the kernel, and only one is currently correct. Not yet root-caused past that
+point; needs a further, narrower dig into `TG68KdotC_Kernel.vhd`'s exception/vector-fetch
+microcode (search for where `trap_vector`/vector vs. VBR is combined into a memory address,
+distinct from where `IPL_vec`/the format-word offset is computed) rather than the
+uninitialized-signal class of fix that resolved the crash. Does not block using
+`rtl/cpu/maincpu.sv` for non-interrupt-driven top-level integration work in the meantime.

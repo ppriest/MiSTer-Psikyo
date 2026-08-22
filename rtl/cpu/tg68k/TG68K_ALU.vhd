@@ -92,115 +92,132 @@ architecture logic of TG68K_ALU is
 	signal opaddsub			: bit;
 	signal c_in					: std_logic_vector(3 downto 0);
 	signal flag_z				: std_logic_vector(2 downto 0);
-	signal set_Flags			: std_logic_vector(3 downto 0);	--NZVC
-	signal CCRin				: std_logic_vector(7 downto 0);
-	signal last_Flags1		: std_logic_vector(3 downto 0);	--NZVC
-    
---BCD
-	signal bcd_pur				: std_logic_vector(9 downto 0);
-	signal bcd_kor				: std_logic_vector(8 downto 0);
-	signal halve_carry		: std_logic;
-	signal Vflag_a				: std_logic;
-	signal bcd_a_carry		: std_logic;
-	signal bcd_a				: std_logic_vector(8 downto 0);
-	signal result_mulu		: std_logic_vector(127 downto 0);
-	signal result_div			: std_logic_vector(63 downto 0);
-	signal result_div_pre	: std_logic_vector(31 downto 0);
-	signal set_mV_Flag		: std_logic;
-	signal V_Flag				: bit;
-	
-	signal rot_rot				: std_logic;
-	signal rot_lsb				: std_logic;
-	signal rot_msb				: std_logic;
-	signal rot_X				: std_logic;
-	signal rot_C				: std_logic;
-	signal rot_out				: std_logic_vector(31 downto 0);
-	signal asl_VFlag			: std_logic;
-	signal bit_bits			: std_logic_vector(1 downto 0);
-	signal bit_number			: std_logic_vector(4 downto 0);
-	signal bits_out			: std_logic_vector(31 downto 0);
-	signal one_bit_in			: std_logic;
-	signal bchg					: std_logic;
-	signal bset					: std_logic;
-	
-	signal mulu_sign			: std_logic;
-	signal mulu_signext		: std_logic_vector(16 downto 0);
-	signal muls_msb			: std_logic;
-	signal mulu_reg			: std_logic_vector(63 downto 0);
-	signal FAsign				: std_logic;
-	signal faktorA				: std_logic_vector(31 downto 0);
-	signal faktorB				: std_logic_vector(31 downto 0);
-	
-	signal div_reg				: std_logic_vector(63 downto 0);
-	signal div_quot			: std_logic_vector(63 downto 0);
-	signal div_ovl				: std_logic;
-	signal div_neg				: std_logic;
-	signal div_bit				: std_logic;
-	signal div_sub				: std_logic_vector(32 downto 0);
-	signal div_over			: std_logic_vector(32 downto 0);
-	signal nozero				: std_logic;
-	signal div_qsign			: std_logic;
-	signal dividend			: std_logic_vector(63 downto 0);
-	signal divs					: std_logic;
-	signal signedOP			: std_logic;
-	signal OP1_sign			: std_logic;
-	signal OP2_sign			: std_logic;
-	signal OP2outext			: std_logic_vector(15 downto 0);
+	signal set_Flags			: std_logic_vector(3 downto 0) := (others => '0');	--NZVC
+	signal CCRin				: std_logic_vector(7 downto 0) := (others => '0');
+	signal last_Flags1		: std_logic_vector(3 downto 0) := (others => '0');	--NZVC
 
-	signal in_offset			: std_logic_vector(5 downto 0);
-	signal datareg				: std_logic_vector(31 downto 0);
-	signal insert				: std_logic_vector(31 downto 0);
-	signal bf_datareg			: std_logic_vector(31 downto 0);
-	signal result				: std_logic_vector(39 downto 0);
-	signal result_tmp			: std_logic_vector(39 downto 0);
-	signal unshifted_bitmask: std_logic_vector(31 downto 0);
-	signal bf_set1				: std_logic_vector(39 downto 0);
-	signal inmux0				: std_logic_vector(39 downto 0);
-	signal inmux1				: std_logic_vector(39 downto 0);
-	signal inmux2				: std_logic_vector(39 downto 0);
-	signal inmux3				: std_logic_vector(31 downto 0);
-	signal shifted_bitmask	: std_logic_vector(39 downto 0);
-	signal bitmaskmux0		: std_logic_vector(37 downto 0);
-	signal bitmaskmux1		: std_logic_vector(35 downto 0);
-	signal bitmaskmux2		: std_logic_vector(31 downto 0);
-	signal bitmaskmux3		: std_logic_vector(31 downto 0);
-	signal bf_set2				: std_logic_vector(31 downto 0);
-	signal shift				: std_logic_vector(39 downto 0);
-	signal bf_firstbit		: std_logic_vector(5 downto 0);
-	signal mux					: std_logic_vector(3 downto 0);
-	signal bitnr				: std_logic_vector(4 downto 0);
-	signal mask					: std_logic_vector(31 downto 0);
-	signal mask_not_zero		: std_logic;
-	signal bf_bset				: std_logic;
-	signal bf_NFlag			: std_logic;
-	signal bf_bchg				: std_logic;
-	signal bf_ins				: std_logic;
-	signal bf_exts				: std_logic;
-	signal bf_fffo				: std_logic;
-	signal bf_d32				: std_logic;
-	signal bf_s32				: std_logic;
-	signal index				: std_logic_vector(4 downto 0);
+--BCD
+	signal bcd_pur				: std_logic_vector(9 downto 0) := (others => '0');
+	signal bcd_kor				: std_logic_vector(8 downto 0) := (others => '0');
+	signal halve_carry		: std_logic := '0';
+	signal Vflag_a				: std_logic := '0';
+	signal bcd_a_carry		: std_logic := '0';
+	signal bcd_a				: std_logic_vector(8 downto 0) := (others => '0');
+	signal result_mulu		: std_logic_vector(127 downto 0) := (others => '0');
+	signal result_div			: std_logic_vector(63 downto 0) := (others => '0');
+	signal result_div_pre	: std_logic_vector(31 downto 0) := (others => '0');
+	signal set_mV_Flag		: std_logic := '0';
+	signal V_Flag				: bit := '0';
+
+	-- Explicit initial values below (this whole declarative region, rot_rot
+	-- through bs_X) are a simulation-fidelity fix, not an upstream
+	-- algorithm change -- see rtl/cpu/tg68k/PROVENANCE.md. Real hardware
+	-- zero-power-ups these registers; plain ModelSim simulation leaves
+	-- them 'U' otherwise, which propagates as a permanent 'X' through this
+	-- ALU's arithmetic (rotate/divide/barrel-shift/bit-field) datapaths
+	-- from simulation time 0 and never clears, even after reset --
+	-- confirmed the hard way (crashed ModelSim with SIGSEGV + memory
+	-- exhaustion after the sustained warning volume from continuous
+	-- per-cycle X propagation exhausted available memory), matching a
+	-- publicly reported upstream issue
+	-- (github.com/TobiFlex/TG68K.C/issues/21) whose reporter identified
+	-- the same class of signal (their fix covered a subset of these; this
+	-- covers the whole declarative region rather than trying to guess
+	-- which subset is sufficient, since the fix is zero-risk -- it only
+	-- affects the value before the first real write, which every one of
+	-- these signals receives during normal operation regardless).
+	signal rot_rot				: std_logic := '0';
+	signal rot_lsb				: std_logic := '0';
+	signal rot_msb				: std_logic := '0';
+	signal rot_X				: std_logic := '0';
+	signal rot_C				: std_logic := '0';
+	signal rot_out				: std_logic_vector(31 downto 0) := (others => '0');
+	signal asl_VFlag			: std_logic := '0';
+	signal bit_bits			: std_logic_vector(1 downto 0) := (others => '0');
+	signal bit_number			: std_logic_vector(4 downto 0) := (others => '0');
+	signal bits_out			: std_logic_vector(31 downto 0) := (others => '0');
+	signal one_bit_in			: std_logic := '0';
+	signal bchg					: std_logic := '0';
+	signal bset					: std_logic := '0';
+
+	signal mulu_sign			: std_logic := '0';
+	signal mulu_signext		: std_logic_vector(16 downto 0) := (others => '0');
+	signal muls_msb			: std_logic := '0';
+	signal mulu_reg			: std_logic_vector(63 downto 0) := (others => '0');
+	signal FAsign				: std_logic := '0';
+	signal faktorA				: std_logic_vector(31 downto 0) := (others => '0');
+	signal faktorB				: std_logic_vector(31 downto 0) := (others => '0');
+
+	signal div_reg				: std_logic_vector(63 downto 0) := (others => '0');
+	signal div_quot			: std_logic_vector(63 downto 0) := (others => '0');
+	signal div_ovl				: std_logic := '0';
+	signal div_neg				: std_logic := '0';
+	signal div_bit				: std_logic := '0';
+	signal div_sub				: std_logic_vector(32 downto 0) := (others => '0');
+	signal div_over			: std_logic_vector(32 downto 0) := (others => '0');
+	signal nozero				: std_logic := '0';
+	signal div_qsign			: std_logic := '0';
+	signal dividend			: std_logic_vector(63 downto 0) := (others => '0');
+	signal divs					: std_logic := '0';
+	signal signedOP			: std_logic := '0';
+	signal OP1_sign			: std_logic := '0';
+	signal OP2_sign			: std_logic := '0';
+	signal OP2outext			: std_logic_vector(15 downto 0) := (others => '0');
+
+	signal in_offset			: std_logic_vector(5 downto 0) := (others => '0');
+	signal datareg				: std_logic_vector(31 downto 0) := (others => '0');
+	signal insert				: std_logic_vector(31 downto 0) := (others => '0');
+	signal bf_datareg			: std_logic_vector(31 downto 0) := (others => '0');
+	signal result				: std_logic_vector(39 downto 0) := (others => '0');
+	signal result_tmp			: std_logic_vector(39 downto 0) := (others => '0');
+	signal unshifted_bitmask: std_logic_vector(31 downto 0) := (others => '0');
+	signal bf_set1				: std_logic_vector(39 downto 0) := (others => '0');
+	signal inmux0				: std_logic_vector(39 downto 0) := (others => '0');
+	signal inmux1				: std_logic_vector(39 downto 0) := (others => '0');
+	signal inmux2				: std_logic_vector(39 downto 0) := (others => '0');
+	signal inmux3				: std_logic_vector(31 downto 0) := (others => '0');
+	signal shifted_bitmask	: std_logic_vector(39 downto 0) := (others => '0');
+	signal bitmaskmux0		: std_logic_vector(37 downto 0) := (others => '0');
+	signal bitmaskmux1		: std_logic_vector(35 downto 0) := (others => '0');
+	signal bitmaskmux2		: std_logic_vector(31 downto 0) := (others => '0');
+	signal bitmaskmux3		: std_logic_vector(31 downto 0) := (others => '0');
+	signal bf_set2				: std_logic_vector(31 downto 0) := (others => '0');
+	signal shift				: std_logic_vector(39 downto 0) := (others => '0');
+	signal bf_firstbit		: std_logic_vector(5 downto 0) := (others => '0');
+	signal mux					: std_logic_vector(3 downto 0) := (others => '0');
+	signal bitnr				: std_logic_vector(4 downto 0) := (others => '0');
+	signal mask					: std_logic_vector(31 downto 0) := (others => '0');
+	signal mask_not_zero		: std_logic := '0';
+	signal bf_bset				: std_logic := '0';
+	signal bf_NFlag			: std_logic := '0';
+	signal bf_bchg				: std_logic := '0';
+	signal bf_ins				: std_logic := '0';
+	signal bf_exts				: std_logic := '0';
+	signal bf_fffo				: std_logic := '0';
+	signal bf_d32				: std_logic := '0';
+	signal bf_s32				: std_logic := '0';
+	signal index				: std_logic_vector(4 downto 0) := (others => '0');
 --	signal i						: integer range 0 to 31;
 --	signal i						: integer range 0 to 31;
 --	signal i						: std_logic_vector(5 downto 0);
 
-	signal hot_msb				: std_logic_vector(33 downto 0);
-	signal vector				: std_logic_vector(32 downto 0);
-	signal result_bs			: std_logic_vector(65 downto 0);
-	signal bit_nr				: std_logic_vector(5 downto 0);
-	signal bit_msb				: std_logic_vector(5 downto 0);
-	signal bs_shift			: std_logic_vector(5 downto 0);
-	signal bs_shift_mod		: std_logic_vector(5 downto 0);
-	signal asl_over			: std_logic_vector(32 downto 0);
-	signal asl_over_xor		: std_logic_vector(32 downto 0);
-	signal asr_sign			: std_logic_vector(32 downto 0);
-	signal msb					: std_logic;  
-	signal ring					: std_logic_vector(5 downto 0);
-	signal ALU					: std_logic_vector(31 downto 0);
-	signal BSout				: std_logic_vector(31 downto 0);
-	signal bs_V					: std_logic;  
-	signal bs_C					: std_logic;  
-	signal bs_X					: std_logic;  
+	signal hot_msb				: std_logic_vector(33 downto 0) := (others => '0');
+	signal vector				: std_logic_vector(32 downto 0) := (others => '0');
+	signal result_bs			: std_logic_vector(65 downto 0) := (others => '0');
+	signal bit_nr				: std_logic_vector(5 downto 0) := (others => '0');
+	signal bit_msb				: std_logic_vector(5 downto 0) := (others => '0');
+	signal bs_shift			: std_logic_vector(5 downto 0) := (others => '0');
+	signal bs_shift_mod		: std_logic_vector(5 downto 0) := (others => '0');
+	signal asl_over			: std_logic_vector(32 downto 0) := (others => '0');
+	signal asl_over_xor		: std_logic_vector(32 downto 0) := (others => '0');
+	signal asr_sign			: std_logic_vector(32 downto 0) := (others => '0');
+	signal msb					: std_logic := '0';
+	signal ring					: std_logic_vector(5 downto 0) := (others => '0');
+	signal ALU					: std_logic_vector(31 downto 0) := (others => '0');
+	signal BSout				: std_logic_vector(31 downto 0) := (others => '0');
+	signal bs_V					: std_logic := '0';
+	signal bs_C					: std_logic := '0';
+	signal bs_X					: std_logic := '0';  
 
 
 BEGIN
