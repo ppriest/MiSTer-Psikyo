@@ -636,6 +636,62 @@ actually testbench mistakes, documented so they aren't re-investigated).
   code. This closes the last open item ("Instantiate the result inside `Psikyo.sv`/`emu.sv`")
   from "Next steps" item 1 below.
 
+- **First full Quartus compile (place-and-route, not just Analysis & Synthesis): a real
+  `.sof`/`.rbf` now exists**, and two genuine bugs were found and fixed getting there, neither
+  visible to `quartus_map` alone:
+  1. **Illegal PLL phase shift.** `quartus_fit` rejected `rtl/pll/pll_0002.v`'s
+     `SDRAM_CLK` phase_shift1 (`-3000 ps`, the value flagged as an unverified starting point
+     when the PLL was first configured) outright — negative phase shifts aren't legal for this
+     PLL configuration at all, only `0ps` and positive values in ~132.275ps steps are. Fixed by
+     converting to the equivalent positive phase (period − 3000ps, rounded to the nearest legal
+     step Quartus itself reported: `8598 ps`). Still not independently hardware-tuned.
+  2. **A pathological synthesized divider was the single worst timing-closure offender in the
+     whole design.** With the PLL fix in place, the Fitter produced a `.sof`/`.rbf` but with
+     -5.862ns worst-case setup slack at `clk_sys` (85.909091MHz) — Timing requirements not met.
+     `report_timing`'s worst path traced straight through
+     `sprite_display_list_walker.sv`'s `sprite_index <= sram_data % 16'd768;`: Quartus
+     synthesizes a non-power-of-2 modulo as a slow generic iterative divider
+     (`Mod0|auto_generated|divider`), which dominated the path's entire delay. Replaced with an
+     explicit 7-stage conditional-subtraction chain (the standard technique for modulo by a
+     compile-time constant — subtracts decreasing power-of-2 multiples of 768 when they fit),
+     kept at the full 16-bit input range on purpose (matches MAME's own `sprite %= 0x300`
+     applied to the raw display-list word with no prior masking, per this module's own header —
+     didn't assume a narrower real range without evidence). Same one-cycle combinational timing,
+     no interface change, so no regression risk to the module's own testbench or
+     `sprite_render_engine`'s integration test (both re-verified, still pass). Cut worst-case
+     setup slack to -1.096ns — an 81% reduction, confirming this was indeed the dominant
+     offender. A smaller, more ordinary timing gap remains (a 6-logic-level path through
+     `sprite_record_decode.sv`'s Y-position adder into `sprite_render_engine`'s `fb_y` register)
+     — not chased further this pass, since closing it safely would mean pipelining inside the
+     sprite render engine's per-column state machine, a materially bigger and riskier change than
+     the divider fix was. Tracked as a known open item; the design still produces a working
+     `.sof`/`.rbf`, just without full timing closure yet.
+
+- **jt10's SSG (jt49) verified for the first time, closing a real vendoring gap.** Building
+  jt10's first-ever testbench found that `jt12_top.v` instantiates a module named `jt49` (the
+  YM2610's embedded AY-3-8910-compatible SSG channel) that simply didn't exist anywhere in this
+  repo — `rtl/sound/jt10/PROVENANCE.md`'s original vendoring pass had excluded jt12's own
+  `jt49/` submodule as "scaffolding," which was a mistake, not a safe trim; jt10 couldn't even
+  elaborate without it. Fixed by vendoring `rtl/sound/jt49/` separately (own `PROVENANCE.md`),
+  commit `47301ed` at github.com/jotego/jt49, GPL-3.0 (same posture as jt10 itself). With it in
+  place, the full jt10/jt12_top dependency tree compiles clean under ModelSim (0 errors, 0
+  warnings) — the first of jt10's `PROVENANCE.md` "Status" checkboxes to close.
+
+  `sim/jt10_tb/tb_jt10_ssg.sv` then verifies the SSG as a real audio-domain functional test, not
+  just a compile check: drives channel A through jt10's real CPU register-write protocol, and
+  checks the generated square wave's period on the real `psg_A` output against a frequency
+  formula derived directly from `jt12_div.v`/`jt49_cen.v`/`jt49_div.v`'s actual clock-divider
+  chain (not assumed from a datasheet) — exact match across two independent period values
+  (16384 and 8192 clk cycles) plus their 2:1 ratio. First run failed at exactly half the
+  expected value in both cases; a real bug, but in the testbench's own measurement window
+  (spanned a half-period, not a full one), not in jt49 — the exact 2x factor and preserved 2:1
+  ratio between the two cases were what pointed at a measurement bug rather than a real one.
+  FM channel and ADPCM-A/B ROM interface verification remain explicitly out of scope for this
+  pass (FM synthesis correctness needs its own dedicated pass, not a token check) — tracked in
+  `rtl/sound/jt10/PROVENANCE.md`, including a real `jt10_acc.v` port-width warning found in
+  passing and not yet root-caused. jt10 itself is still not wired into `Psikyo.sv` (`ym_din`
+  tied to `0`) — that's "Next steps" item 2 below.
+
 - **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
   layout previously used a tightly-packed per-game concatenation (flagged provisional in each
   header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
@@ -643,12 +699,28 @@ actually testbench mistakes, documented so they aren't re-investigated).
   `audiocpu`@`0x200000`/`0x040000`, `sprites`@`0x240000`/`0x800000`,
   `tiles`@`0xA40000`/`0x200000`, `ymsnd:adpcma`@`0xC40000`/`0x100000`,
   `ymsnd:adpcmb`@`0xD40000`/`0x080000`, `spritelut`@`0xDC0000`/`0x040000`), padded with
-  `<part repeat="0xNNNN"> FF</part>` filler (matching the precedent in
+  `<part repeat="0xNNNN">FF</part>` filler (matching the precedent in
   rmonic79/Arcade-Raiden_MiSTer's own `.mra` files) wherever a set's actual content is smaller
   than its region's reservation. Every file's total padding cross-checked against hand
   computation before committing. This closes the ROM-layout half of the "not yet consumed by
-  any RTL" caveat every file carried — the DIP status-bit-position half is still provisional,
-  pending the top-level integration item above.
+  any RTL" caveat every file carried — the DIP status-bit-position half is no longer provisional,
+  see "`Psikyo.sv` top-level built" above (`dsw_in = status[47:16]`).
+
+  **Clone-set `zip=` fixed for split-romset compatibility, header comments trimmed.** Every
+  clone `.mra` under `_alternatives/` only listed its own zip (e.g. `zip="sngkace.zip"`) — fine
+  for a merged romset, but wrong for a split one, where the clone's own zip only holds what
+  differs from its parent (most of these clones share nearly everything but maincpu/audiocpu
+  with their parent, per each file's own region notes) and the shared content simply wouldn't be
+  found. Fixed by listing both, pipe-separated, parent second (`sngkace/sngkacea/samuraiak` →
+  `+samuraia.zip`, `gunbirdj/gunbirdk` → `+gunbird.zip`, `btlkroadk` → `+btlkroad.zip`) —
+  `releases/sync-mame-roms.sh`'s own `zip=` parsing already anticipated pipe-separated values,
+  so this aligns the `.mra` files with tooling written for it. Separately, every file's header
+  `<!-- -->` comment block had grown into multi-paragraph prose mostly restating facts already
+  visible elsewhere in the file (the parent relationship is now in `zip=` itself; per-region
+  notes already sit inline next to the ROM parts they describe) — trimmed to just the legal
+  notice and genuinely non-obvious facts, and dropped every file's stale `<about
+  comment="...not yet verified against a built core"/>` attribute (no longer true, and was never
+  more than a duplicate of this document's own history).
 
 Every RTL module so far has been verified in ModelSim against an independently-computed
 reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
@@ -838,8 +910,20 @@ See "Progress" above for current status. Immediate next items, in order:
      bring-up — see "Component reuse map" above.
    - The DDRAM stack (`ddram_phy`/`ddram_arbiter`/`ddram_download`) remains built and available
      but is no longer Phase 1's critical path (see `docs/phase1_ddram_map.md`'s header note).
-2. Sound subsystem: a real jt10 verification pass (audio-domain, not just compile-clean — see
-   `rtl/sound/jt10/PROVENANCE.md`) before actually wiring it into either sound CPU wrapper's YM
-   I/O chip-select bus; ADPCM-A/B ROM banking once jt10 itself is trusted; and applying the
-   samuraia/sngkace ADPCM-A bit 6/7 swap (see the open item above) during ROM download.
-3. DE10-nano black-box bring-up once a build exists.
+   - **Timing closure: not yet complete.** The first full Quartus compile (see "Progress" above
+     — "First full Quartus compile") produces a real `.sof`/`.rbf` but still has -1.096ns
+     worst-case setup slack after fixing the dominant offender (a synthesized mod-768 divider).
+     The remaining gap is a smaller, more ordinary arithmetic path in
+     `sprite_record_decode.sv`/`sprite_render_engine.sv` — needs a real pipelining pass, not
+     chased yet since it risks disturbing the render engine's per-column state machine timing.
+2. Sound subsystem: **SSG (jt49) verified** (see "Progress" above — "jt10's SSG (jt49) verified
+   for the first time"). Still needed before wiring jt10 into either sound CPU wrapper's YM I/O
+   chip-select bus: FM channel and ADPCM-A/B ROM interface verification (audio-domain, not just
+   compile-clean — tracked in `rtl/sound/jt10/PROVENANCE.md`, including an unresolved
+   `jt10_acc.v` port-width warning found in passing); ADPCM-A/B ROM banking once jt10 itself is
+   fully trusted; and applying the samuraia/sngkace ADPCM-A bit 6/7 swap (see the open item
+   above) during ROM download.
+3. DE10-nano black-box bring-up — an `.rbf` now exists (`output_files/Psikyo.rbf`, not yet
+   committed to `releases/` — see the timing-closure caveat above before treating it as
+   release-quality). Real hardware bring-up is otherwise gated on the JTAG-reachability open
+   item above.
