@@ -2,10 +2,27 @@
 // rtl/memory/psikyo_sdram_top.sv (the SDRAM backend) -- both modules were
 // built with matching ROM port shapes specifically so this step would be a
 // straight port-to-port connection, not new logic (docs/ROADMAP.md's Next
-// steps). What's still missing before this reaches Psikyo.sv/emu.sv: the
-// sound CPU (audiocpu_rom_* and the sound-latch handshake are exposed here
-// but unconnected -- no sound CPU wrapper is wired in yet) and the
-// HPS/DIP/CRT_Offset glue that belongs in Psikyo.sv itself, one level up.
+// steps) -- plus the board-appropriate sound CPU wrapper
+// (rtl/sound/sound_cpu_sngkace.sv or sound_cpu_gunbird.sv, selected by
+// BOARD_GUNBIRD, same parameter psikyo_core.sv already uses), whose
+// req/valid ROM port and sound-latch handshake were built to match
+// psikyo_core.sv's own latch_data/latch_write output and
+// psikyo_sdram_top.sv's audiocpu_rom_* port directly. What's still missing
+// before this reaches Psikyo.sv/emu.sv: jt10 (YM2610) itself -- the sound
+// CPU's ym_* chip-select bus is exposed at this module's boundary,
+// unconnected, since jt10 hasn't had its own audio-domain verification
+// pass yet (docs/ROADMAP.md's Next steps) -- and the HPS/DIP/CRT_Offset
+// glue that belongs in Psikyo.sv itself, one level up.
+//
+// audiocpu_rom_addr's width: sound_cpu_sngkace.sv/sound_cpu_gunbird.sv
+// both expose a 17-bit rom_addr (already the flattened {bank,addr[14:0]}
+// physical byte address across the whole banked ROM window, confirmed
+// against real bankswitch source in docs/ROADMAP.md's sound-subsystem
+// notes), zero-extended by 1 bit to match psikyo_sdram_top.sv's 18-bit
+// audiocpu_rom_addr port (sized for the full 256KB audiocpu SDRAM
+// region, docs/phase1_sdram_map.md's address map -- sngkace/gunbird's
+// actual ROM content is smaller than that reservation, same padding
+// convention the .mra files already use).
 //
 // Two separate reset domains, not one shared `reset` -- found necessary by
 // a real failure, not designed in speculatively: `psikyo_sdram_top.sv`
@@ -55,17 +72,13 @@ module psikyo_top #(
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
 
-    // Sound latch handshake -- to a sound CPU wrapper, not instantiated here.
-    output logic [7:0]  latch_data,
-    output logic         latch_write,
-
-    // audiocpu program fetch -- passed straight through to
-    // psikyo_sdram_top.sv's client-shaped port; a future sound CPU wrapper
-    // (not yet wired, one level up from here) drives the request side.
-    input  logic         audiocpu_rom_req,
-    input  logic [17:0] audiocpu_rom_addr,
-    output logic         audiocpu_rom_valid,
-    output logic [7:0]  audiocpu_rom_data,
+    // Sound chip (YM2610) bus -- to jt10, not instantiated here yet.
+    output logic         ym_cs,
+    output logic [1:0]  ym_addr,
+    output logic         ym_rd,
+    output logic         ym_wr,
+    output logic [7:0]  ym_dout,
+    input  logic [7:0]  ym_din,
 
     // Video output.
     output logic [8:0]  hcnt,
@@ -94,6 +107,14 @@ module psikyo_top #(
     logic [63:0] sp_gfxrom_data;
     logic [15:0] sp_lut_data;
 
+    logic [7:0]  latch_data;
+    logic         latch_write;
+
+    logic         audiocpu_rom_req_raw;
+    logic [16:0] audiocpu_rom_addr_raw;
+    logic         audiocpu_rom_valid;
+    logic [7:0]  audiocpu_rom_data;
+
     // Core reset: plain reset OR active download -- see module header.
     logic core_reset;
     assign core_reset = reset | ioctl_download;
@@ -115,6 +136,39 @@ module psikyo_top #(
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb)
     );
+
+    // Board-appropriate sound CPU -- sngkace/samuraia/btlkroad/gunbird all
+    // share this same T80+req/valid-ROM wrapper shape, differing only in
+    // which of the two wrappers matches their memory map (docs/ROADMAP.md's
+    // sound-subsystem notes). Held quiescent by core_reset for the same
+    // reason maincpu.sv is -- nothing useful to do with a partially-loaded
+    // ROM, and it shares the audiocpu SDRAM region with the download path.
+    generate
+        if (BOARD_GUNBIRD) begin : g_sound_gunbird
+            sound_cpu_gunbird u_sound (
+                .clk(clk), .reset(core_reset),
+                .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
+                .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
+                .latch_data(latch_data), .latch_write(latch_write),
+                .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
+                .ym_dout(ym_dout), .ym_din(ym_din)
+            );
+        end else begin : g_sound_sngkace
+            sound_cpu_sngkace u_sound (
+                .clk(clk), .reset(core_reset),
+                .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
+                .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
+                .latch_data(latch_data), .latch_write(latch_write),
+                .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
+                .ym_dout(ym_dout), .ym_din(ym_din)
+            );
+        end
+    endgenerate
+
+    logic         audiocpu_rom_req;
+    logic [17:0] audiocpu_rom_addr;
+    assign audiocpu_rom_req  = audiocpu_rom_req_raw;
+    assign audiocpu_rom_addr = {1'b0, audiocpu_rom_addr_raw};
 
     psikyo_sdram_top u_sdram (
         .clk(clk), .reset(reset), .init(init),

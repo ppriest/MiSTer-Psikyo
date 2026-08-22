@@ -16,6 +16,27 @@
 // tb_psikyo_core.sv's own scope). Held in reset throughout the download,
 // matching real MiSTer core sequencing (core held in reset while HPS
 // loads ROM content).
+//
+// **KNOWN OPEN ISSUE, committed deliberately still failing as reproducible
+// evidence (same posture docs/ROADMAP.md's DDRAM-throughput test used) --
+// do not loosen this test's checks to force a pass; find the real bug
+// instead.** This test PASSED cleanly before rtl/psikyo_top.sv gained the
+// sound CPU (rtl/sound/sound_cpu_sngkace.sv), which now contends with
+// maincpu for the same Port 2 SDRAM arbiter. With that contention live,
+// maincpu's SDRAM read granule capture (rtl/memory/sdram/sdram.sv's
+// `dout[15:0/31:16/...] <= SDRAM_DQ`) intermittently captures X, even
+// though the arbiter's own astate/sel show one cleanly-serialized
+// transaction throughout with no overlap at the arbiter level -- the
+// corruption is happening below the arbiter, inside sdram.sv/the SDR
+// timing model itself. Root cause not yet found; suspected a real SDR
+// SDRAM timing constraint (e.g. tRP, row precharge-to-activate) that
+// single-client testing (sim/sdram_arbiter5_tb/, sim/port2_sdram_tb/)
+// never stressed, since sdram.sv issues no explicit PRECHARGE and relies
+// entirely on auto-precharge with zero enforced gap between two clients'
+// back-to-back transactions -- but this is a hypothesis, not confirmed.
+// sim/psikyo_top_tb/tb_psikyo_top_sound_smoke.sv still passes (the sound
+// CPU wiring itself elaborates and runs correctly with synthetic all-zero
+// ROM content, which doesn't happen to trigger this contention pattern).
 module tb_psikyo_top;
 
     logic clk = 0;
@@ -34,13 +55,11 @@ module tb_psikyo_top;
     logic         ioctl_wait;
 
     logic [31:0] p1p2_in, dsw_in, coin_in;
-    logic [7:0]  latch_data;
-    logic         latch_write;
 
-    logic         audiocpu_rom_req;
-    logic [17:0] audiocpu_rom_addr;
-    logic         audiocpu_rom_valid;
-    logic [7:0]  audiocpu_rom_data;
+    logic         ym_cs, ym_rd, ym_wr;
+    logic [1:0]  ym_addr;
+    logic [7:0]  ym_dout;
+    logic [7:0]  ym_din;
 
     logic [8:0]  hcnt, vcnt;
     logic         hblank, vblank, hsync, vsync;
@@ -62,15 +81,13 @@ module tb_psikyo_top;
         .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
         .ioctl_wait(ioctl_wait),
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
-        .latch_data(latch_data), .latch_write(latch_write),
-        .audiocpu_rom_req(audiocpu_rom_req), .audiocpu_rom_addr(audiocpu_rom_addr),
-        .audiocpu_rom_valid(audiocpu_rom_valid), .audiocpu_rom_data(audiocpu_rom_data),
+        .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
+        .ym_dout(ym_dout), .ym_din(ym_din),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb)
     );
 
-    assign audiocpu_rom_req = 1'b0;
-    assign audiocpu_rom_addr = 18'd0;
+    assign ym_din = 8'h00;
 
     sdram_chip_model chip (
         .clk(clk),
@@ -84,6 +101,35 @@ module tb_psikyo_top;
     int errors = 0;
     int match_count = 0;
     int match_hcnt, match_vcnt;
+
+    // KNOWN OPEN ISSUE (see this file's header): once the sound CPU
+    // (rtl/sound/sound_cpu_sngkace.sv) started contending for the same
+    // Port 2 SDRAM arbiter maincpu uses, this test began failing --
+    // maincpu's SDRAM read granule capture (rtl/memory/sdram/sdram.sv's
+    // `dout[15:0/31:16/...] <= SDRAM_DQ`) intermittently captures X while
+    // the OTHER client's request is simultaneously pending, even though
+    // the arbiter's own astate/sel show a single, cleanly-serialized
+    // transaction throughout (no overlap at the arbiter level). Root cause
+    // not yet found -- suspected a real SDR SDRAM timing constraint
+    // (e.g. tRP, row precharge-to-activate) that single-client testing
+    // never stressed, given sdram.sv issues no explicit PRECHARGE and
+    // relies entirely on auto-precharge with zero enforced gap between
+    // back-to-back transactions, but this is not confirmed. This monitor
+    // flags the failure the moment it reproduces, for whoever picks this
+    // back up.
+    // Bails out immediately once the known issue reproduces, rather than
+    // letting the run continue toward the same memory-exhaustion crash
+    // rtl/cpu/tg68k/PROVENANCE.md's own investigation hit under sustained
+    // X propagation (real, observed here too if this monitor doesn't stop
+    // the run early) -- every future run of this test fails fast and
+    // clearly instead of hanging for minutes before crashing ModelSim.
+    always @(posedge clk) begin
+        if (dut.u_core.u_cpu.rom_valid && $isunknown(dut.u_core.u_cpu.rom_data)) begin
+            $display("FAIL: KNOWN ISSUE reproduced at t=%0t -- maincpu ROM read returned X (cpu_rom_addr=%h), see this file's header",
+                       $time, dut.u_core.u_cpu.rom_addr);
+            $finish;
+        end
+    end
 
     // Same do/while fix sim/psikyo_sdram_top_tb/tb_psikyo_sdram_top.sv
     // found necessary -- see that testbench's header for the race this
