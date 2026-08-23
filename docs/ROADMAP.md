@@ -9,723 +9,89 @@ Tengai — the genuine PCB sets; bootleg boards are explicitly out of scope, see
 proven open MiSTer components where they exist and building custom RTL for the two Psikyo-specific
 video ASICs (tilemap + zoom-sprite engine) that have no existing FPGA implementation anywhere.
 
-This doc is the outcome of reading the full `psikyo.cpp`/`psikyo_v.cpp` driver and surveying the
-MiSTer-devel/jotego/atrac17 ecosystems for reusable IP. It is a **roadmap document**, not RTL —
-per your direction, actual Verilog/Quartus work starts in a dedicated follow-up session once
-Phase 0 is scoped. Decisions below reflect your answers: narrow game scope first (and, per your
-follow-up, drop the bootleg boards entirely — they're variant hardware that would only add
-complexity without adding real coverage), commit to TG68K.C for the CPU, simulate the PIC
-protection (matching MAME) with a real YMF278B core.
+Decisions: narrow game scope first, bootleg boards dropped entirely (variant hardware, no real
+coverage benefit), TG68K.C for the CPU, simulated PIC protection (matching MAME) with a real
+YMF278B core for Phase 2.
 
-## Progress (kept current — last updated 2026-08-22, commit `ecafaab`)
+For detailed, cross-cutting technical findings (Quartus-vs-ModelSim divergences, SDRAM/DDRAM
+gotchas, testbench pitfalls, real-hardware bring-up technique) see
+**[`docs/LESSONS_LEARNED.md`](LESSONS_LEARNED.md)** — that doc is where debugging war stories and
+"how we found bug X" narratives live now; this file stays focused on current status and what's
+next. Per-component vendoring/provenance detail lives in each module's own `PROVENANCE.md`
+(`rtl/cpu/tg68k/`, `rtl/memory/sdram/`, `rtl/sound/jt10/`, `rtl/sound/jt49/`).
 
-**Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code
-correctly in ModelSim (including 68020-only opcodes: MULU.L, DIVU.L, scaled-index addressing,
-BFEXTU), and synthesizes/fits cleanly on the real Cyclone V (2,788/41,910 ALMs). See
-`rtl/cpu/tg68k/PROVENANCE.md` for the debugging notes (two false-alarm "core bugs" that were
-actually testbench mistakes, documented so they aren't re-investigated).
+## Progress (kept current — last updated 2026-08-22)
 
-**Phase 1 — SH201B/KA302C hardware: in progress**, on branch `phase1-sh201b-ka302c`.
+**Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code correctly
+in ModelSim, synthesizes/fits cleanly on real Cyclone V (2,788/41,910 ALMs).
 
-- Memory map documented (`docs/phase1_memory_map.md`) — shared `psikyo_map`, sprite/palette/
-  tilemap VRAM layout, sound CPU maps including gunbird's non-power-of-two bank window.
-- Video engine design documented (`docs/phase1_video_engine.md`), iteratively extended as each
-  piece gets built — this is the working spec the RTL below is implemented against.
-- **Tilemap engine**: combinational stages (`tilemap_addrgen`, `tile_row_decode`,
-  `tilemap_coord`, `tile_cell_decode`) and the sequential scanline sequencer
-  (`tilemap_line_engine.sv`, one instance per layer) all built and verified. This is the first
-  complete vertical slice of the video pipeline (VRAM → pixel stream).
-- **Sprite engine: RTL complete.** Architecture documented (`docs/phase1_video_engine.md`,
-  "Sprite frame renderer: architecture") — unlike the tilemap engine's just-in-time per-scanline
-  approach, sprites render into a full double-buffered 320×224 frame buffer once per frame,
-  decoupled from pixel-clock timing, because inter-sprite overlap resolution and the display
-  list's size make a real-time per-scanline walk impractical. Every module built and verified:
-  `sprite_zoom_lut`, `sprite_record_decode`, `sprite_pos_transform`, `sprite_subtile_step`,
-  `sprite_zoom_src_index` (combinational front end); `sprite_display_list_walker`
-  (flow-controlled display-list walk, mod-768 index folding, 0xFFFF termination) and
-  `sprite_record_fetch` (per-sprite attribute fetch); `sprite_render_engine`
-  (`docs/phase1_video_engine.md`, "Sprite render engine: pipeline design") — the top-level FSM
-  chaining all of the above into the full per-sprite pipeline (display-list walk → attribute
-  fetch → per-subtile position → spritelut ROM → per-row gfx ROM fetch → per-column pixel
-  write), with screen clipping and live transparent-pen handling, integration-tested against 4
-  cases (basic placement, flip_x pixel mirroring, multi-tile flip grid ordering, transparent
-  pen) with independently-latencied ROM models to rule out timing-dependent bugs; and
-  `sprite_frame_buffer` — the double-buffered 320×224 memory behind the render engine's write
-  port, with a combined swap+clear action (`frame_swap`) so a caller can't forget to clear the
-  newly-selected render bank before writing into it, and a read port for the compositor.
-  End-to-end tested (swap/clear → write → swap → readback, confirming untouched pixels correctly
-  read as absent). Nothing structural left to build in the sprite pipeline itself — remaining
-  work is wiring it into the rest of the core.
-- **Compositor: built and verified** (`compositor.sv`) — combines the two live tilemap-layer
-  pixel streams with `sprite_frame_buffer`'s output into a resolved palette index and xRGB_555
-  RGB, per the priority-mask table and per-layer transparent-pen logic derived in
-  `docs/phase1_video_engine.md` ("Compositor: backdrop, transparent-pen, and palette lookup") —
-  including reproducing a real MAME quirk where the backdrop color always follows layer 0's
-  transparent-pen bit regardless of which layer is actually enabled (dead fallback code in the
-  driver itself). Entirely combinational, no clock. 12-case testbench PASS, including the subtle
-  priority-mask edge case where a "behind"-priority sprite still shows through when neither
-  tilemap layer drew anything.
-- Real Psikyo MAME ROM zips (`roms/`, gitignored — never commit ROM dumps, see the legal note
-  below) are now available locally for samuraia/gunbird/btlkroad/s1945/tengai — fully-merged
-  MAME romsets (all game code, sound, and gfx ROMs in one zip per game, not split parent/clone
-  sets). Useful both for eventual `.mra`/ROM-loader work and, sooner, for pulling real gfx ROM
-  content into simulation testbenches instead of synthetic test patterns.
-  **Legal note**: these ROMs are not, and never will be, committed to this repo, and are not
-  distributed by this project in any form. Anyone running this core is responsible for either
-  dumping ROMs from hardware they own or otherwise holding appropriate legal rights to them —
-  documented in [`Readme.md`](../Readme.md) as the low-risk default for this project.
-- **Sound subsystem: started.** T80 (Z80, `rtl/cpu/t80/`) and jt10 (YM2610, `rtl/sound/jt10/`)
-  vendored, licenses/provenance documented (T80: BSD-style, low risk — it's the de facto
-  standard MiSTer-devel Z80 core, not a single-option risk like TG68K.C. jt10: GPL-3.0, a real
-  copyleft posture worth having noted explicitly rather than glossed over). T80 boot-spike
-  verified (`sim/t80_spike/`) — resets, fetches from address 0, executes opcode fetch/immediate
-  fetch/memory write/I/O write/HALT correctly, matching the classic Z80 bus protocol this
-  project's memory-map wiring depends on. jt10 is vendored but **deliberately not yet
-  verified** — FM synthesis correctness needs real audio-domain verification (e.g. VGM playback
-  comparison), a much bigger undertaking than a boot spike, tracked honestly as not-done rather
-  than claimed on a token compile check. Confirmed directly from `psikyo.cpp`'s ROM_START blocks
-  that jt10's ADPCM-A/B ROM interfaces are load-bearing for Phase 1 (sngkace: ADPCM-A;
-  gunbird: ADPCM-A+B), not optional — sound-side SDRAM/ROM banking will need to cover them.
-  `sound_cpu_sngkace.sv` wires T80se up against sngkace's actual sound CPU memory/IO map
-  (fixed/RAM/banked ROM regions, bank register, sound-latch/NMI handshake), with the bank's
-  physical-ROM mapping confirmed from source (`sound_bankswitch_w<0>`) rather than assumed. YM
-  I/O is exposed as an external chip-select bus, not yet wired to jt10 (same "prove the trusted
-  piece before the risky one" ordering as T80-before-jt10). The real open question here —
-  generating correct WAIT_n for T80 against this project's synchronous 1-cycle ROM/RAM — was
-  worked out from a real reference (NeoGeo_MiSTer's Z80 wiring) and then verified empirically in
-  simulation rather than trusted from derivation alone; both test scenarios (straight-line
-  ROM/RAM/bank exercise, and a dedicated NMI-handshake scenario) PASS.
-  `sound_cpu_gunbird.sv` is the gunbird/btlkroad variant (confirmed via the `GAME()` driver
-  table that Battle K-Road shares gunbird's exact machine config/sound map, so one module covers
-  both) — different RAM size/location (512B at 0x8000-0x81FF vs sngkace's 2KB at
-  0x7800-0x7FFF), different I/O port layout (bank select at 0x00, YM2610 at 0x04-0x07), and a
-  different bank-select shift (`(data>>4)&0x03` vs sngkace's `data&0x03`). Its banked window
-  (0x8200-0xFFFF, 0x7E00 bytes — not a power of two) turns out to collapse to the exact same
-  clean `{bank, addr[14:0]}` concatenation sngkace uses, confirmed algebraically against the
-  real `m_audiobank->configure_entries(0, 4, base+0x200, 0x8000)` call rather than assumed —
-  documented in the module header. Same two-scenario testbench structure as sngkace's, with the
-  banked read deliberately targeting the window's first address (0x8200) to confirm the
-  boundary math holds exactly at the edge; both scenarios PASS.
-- **`.mra` files: done for all four Phase 1 parent games plus every MAME clone set**
-  (`releases/`, clones under `releases/_alternatives/`) — built directly from each game's
-  `ROM_START`/`INPUT_PORTS_START` blocks in `psikyo.cpp` (region names, file sizes, offsets,
-  CRC32s, and real per-game DIP differences — e.g. btlkroad repurposes gunbird's Lives/Bonus
-  Life DSW bits for Blood Effects/Handicap/Debug instead, confirmed from source rather than
-  assumed additive). Built out of roadmap order at your direction (skipped ahead of the sound
-  subsystem/SDRAM items below).
+**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road): RTL
+complete for sngkace-layout boards, real hardware bring-up underway.** Branch `phase1-sh201b-ka302c`.
 
-  **Parent sets** (top level of `releases/`, one per MAME `GAME()` parent — confirmed against
-  the driver table, not assumed from title similarity): Samurai Aces (World) `samuraia`,
-  Gunbird (World) `gunbird`, Battle K-Road `btlkroad`.
+Built and verified (ModelSim + real Quartus synthesis, each with its own testbench — see git
+history for individual commits):
 
-  **Clone sets** (`releases/_alternatives/`, matching the convention seen in other MiSTer
-  arcade release repos e.g. rmonic79/Arcade-Raiden_MiSTer): Sengoku Ace (Japan, set 1)
-  `sngkace`, Sengoku Ace (Japan, set 2) `sngkacea`, Samurai Aces (Korea?) `samuraiak` — all
-  three clones of `samuraia`, confirmed via the `GAME()` table (sngkace was initially placed
-  at the top level by mistake, since it's a genuinely different program ROM rather than a
-  region-DIP variant — caught on review and moved); Gunbird (Japan) `gunbirdj`, Gunbird
-  (Korea) `gunbirdk` — clones of `gunbird`, sharing a Region-less input port block distinct
-  from the parent's; Battle K-Road (Korea) `btlkroadk` — clone of `btlkroad`, same DIP layout
-  but a different Region default (Korea vs. the parent's Japan). Several clones have real ROM
-  differences beyond just program content worth remembering: samuraiak and gunbirdk both have
-  double-size maincpu ROMs (0x100000 vs. 0x80000) vs. their parents.
+- Memory map (`docs/phase1_memory_map.md`), video engine design (`docs/phase1_video_engine.md`).
+- Tilemap engine (`tilemap_line_engine.sv` + combinational stages) and zoom sprite engine
+  (`sprite_render_engine.sv`, `sprite_frame_buffer.sv`, `sprite_display_list_walker.sv`, etc.) —
+  full display-list walk → attribute fetch → zoom/position → spritelut → gfx fetch → pixel write
+  pipeline, double-buffered.
+- Compositor (`compositor.sv`) — resolves both tilemap layers + sprite frame buffer into palette
+  index and xRGB_555, matching MAME's priority/transparent-pen/backdrop rules.
+- Sound subsystem: T80 (Z80) + jt10 (YM2610) vendored; `sound_cpu_sngkace.sv`/
+  `sound_cpu_gunbird.sv` wrap T80 against each board's real memory/IO map with verified req/valid
+  ROM timing (see LESSONS_LEARNED.md's T80 section). jt10's SSG (jt49) channel verified as a real
+  audio-domain functional test. **Not yet done**: FM channel + ADPCM-A/B verification, and jt10
+  itself is not wired into the sound CPU's YM I/O bus yet (`ym_din` tied to 0).
+- `.mra` files done for all 4 Phase 1 parent games + every MAME clone set (`releases/`,
+  `releases/_alternatives/`), built directly from each game's `ROM_START`/`INPUT_PORTS_START`
+  blocks, using the finalized SDRAM address map and generic DIP status-bit convention
+  (`dsw_in = status[47:16]`).
+- SDRAM backend (`rtl/memory/psikyo_sdram_top.sv`): burst-4 `sdram.sv` (Sorgelig reference,
+  extended — see `rtl/memory/sdram/PROVENANCE.md`), 3 dedicated ports (tilemap layer 0/1) +
+  5-way arbitrated port (sprite gfxrom/spritelut/maincpu/audiocpu/HPS download). Verified via a
+  real HPS-download-then-read round trip through all 6 client ports, and under sustained
+  maincpu+audiocpu contention (0 pixel mismatches). DDRAM stack (`ddram_phy`/`ddram_arbiter`/
+  `ddram_download`) was tried first, found unsuitable for this traffic's latency budget, and is
+  no longer Phase 1's critical path — kept, not deleted, since its arbiter design was reused
+  directly for the SDRAM arbiters (see `docs/phase1_ddram_map.md`'s header note).
+- `rtl/cpu/maincpu.sv`: 68EC020 wrapper — address decode + DTACK for the full `psikyo_map`
+  (ROM via req/valid, all 6 BRAM regions, input ports, sound latch, held-autovectored vblank IRQ).
+  Verified: ROM fetch, all BRAM regions, input-port read, sound-latch write all PASS
+  (`sim/maincpu_tb/tb_maincpu.sv`, Case 1). **Known open issue**: vblank IRQ (Case 2) — vector
+  *offset* is correct but vector-table *fetch* address comes out wrong; narrowed but not resolved,
+  tracked in `rtl/cpu/tg68k/PROVENANCE.md`. Does not block top-level integration.
+- `rtl/psikyo_core.sv` (video+CPU) and `rtl/psikyo_top.sv` (+ SDRAM backend + sound CPU) —
+  full board assembly, verified end-to-end: a real CPU program downloaded through the actual HPS
+  path lands the expected pixel in the compositor's `rgb` output
+  (`sim/psikyo_top_tb/tb_psikyo_top.sv`, full regression PASSES).
+- `Psikyo.sv` top-level: instantiates the full chain against `hps_io`, a real PLL
+  (`clk_sys` = 85.909091MHz, 12:1 `ce_pix` divider), real video output. **Synthesizes cleanly
+  under real Quartus 17.0**: 0 errors, 22382 logic cells, 1349 RAM segments, 3 PLLs, 39 DSP
+  elements. First full place-and-route (`.sof`/`.rbf`) also complete; timing closure is close but
+  not final — see "Open items" below. Ships with `BOARD_GUNBIRD` fixed to `1'b0` (sngkace
+  layout only); a gunbird/btlkroad build needs its own top-level parameter value.
 
-  Two things are explicitly provisional and flagged as such in every file: the ROM region
-  concatenation order is this project's own SDRAM-blob layout choice (not yet consumed by any
-  RTL, since SDRAM integration doesn't exist yet — may change once it does), and the DIP
-  `<dip bits="...">` status-bit positions are a placeholder scheme (game DIPs starting at
-  status bit 16) not yet verified against real core `.sv` `status[]` wiring, for the same
-  reason.
-- **DDRAM integration: started.** Design doc `docs/phase1_ddram_map.md` covers the real
-  MiSTer `DDRAM_*` protocol (verified against a working reference core,
-  MiSTer-devel/TSConf_MiSTer's `ddram.sv`, not derived from memory) and this project's fixed
-  address map (one flat layout shared by every Phase 1 game, sized off the largest real
-  content across all parent *and* clone sets — differs from, and will eventually replace, the
-  tightly-packed per-game layout the `.mra` files currently use, which every one of them
-  already flags as provisional). Confirms directly against the built RTL that
-  `tilemap_line_engine`/`sprite_render_engine`'s gfxrom/spritelut ports are already req/valid
-  latency-agnostic (no redesign needed); `sound_cpu_sngkace`/`gunbird`'s ROM ports were NOT at
-  the time this was written (flagged as an open item) but have since been converted too — see
-  the "sound-CPU ROM ports converted to req/valid" entry above.
-  `rtl/memory/ddram_phy.sv` — the single-port req/valid wrapper around the real `DDRAM_*`
-  handshake — is built and verified (`sim/ddram_phy_tb/`, two independently-parameterized
-  read-latency models, 6 and 13 cycles, to rule out latency-dependent bugs). Two real bugs
-  found and fixed: an RTL gating bug (`DDRAM_RD`/`DDRAM_WE` not gated by `!DDRAM_BUSY` in the
-  combinational assign, caught via review before simulating) and a genuine testbench race
-  (`while (busy) @(posedge clk)` checked on the same simulation time step as the edge that
-  might update `busy`, an NBA race that manifested as an apparent total deadlock rather than
-  an obvious mismatch — documented in the testbench header as a lesson for future testbenches
-  in this project).
-  `rtl/memory/ddram_arbiter.sv` routes the four already-req/valid ports (tilemap layer 0/1
-  gfxrom, sprite gfxrom, sprite spritelut) plus an HPS download-write port onto that one
-  `ddram_phy` port — rotating-pointer round robin among the four read consumers (fairness:
-  whoever's served rotates to the back), download always wins immediately (only active
-  pre-gameplay). Verified as a real integration test (actual `ddram_phy`+`ddram_model`, not
-  stand-ins) across 4 cases including a real round-robin-fairness check (not just "does it
-  work with one consumer"). Real bug found via the testbench: an early version treated every
-  request port as a one-shot pulse, but checking directly against `sprite_render_engine.sv`
-  showed `gfxrom_req`/`lut_req` are actually HELD until their `valid` pulse — a one-shot
-  request arriving while the arbiter is busy elsewhere is silently lost. Fixed by making every
-  request port (including the download path) a hold-until-acknowledged contract, documented
-  explicitly in the module header, including what it implies for the not-yet-built HPS
-  `ioctl_download` wrapper (likely needs `ioctl_wait` backpressure to translate hps_io's real
-  one-shot `ioctl_wr` into this convention). Not yet built: the HPS-facing wrapper itself, and
-  converting the sound CPU wrappers' ROM ports to req/valid so they can join this arbiter too.
+**Real hardware bring-up: CPU confirmed booting and fetching ROM on the DE10-nano
+(2026-08-22).** First hardware test failed silently (misplaced `.rbf`, a deployment issue not an
+RTL bug — see LESSONS_LEARNED.md). After fixing that, the screen stayed black; root-caused via a
+VGA-color-override debug build to a genuine, two-part Quartus synthesis bug in TG68K.vhd's
+RESET/HALT open-collector handling (Quartus resolves the shared tri-state net as a broken selector
+instead of true wired-AND — full writeup in LESSONS_LEARNED.md's TG68K.C section). Fixed with a new
+`ext_force_run`/`effective_reset` signal pair in `TG68K.vhd`, wired from `maincpu.sv`. Confirmed
+working via a sequence of debug-color hardware screenshots (cyan → red → green, each color proving
+one more stage of the fix), then verified clean after removing all debug instrumentation: full
+ModelSim regression re-passes (`tb_maincpu`, `tb_psikyo_core_smoke`, `tb_psikyo_core`,
+`tb_psikyo_top` all PASS) and a fresh hardware rebuild/deploy is in progress to confirm on real
+silicon with the actual game screen (not a debug color).
 
-  **Resolved: sound-CPU ROM ports converted to req/valid**, both `sound_cpu_sngkace.sv` and
-  `sound_cpu_gunbird.sv`. A first attempt (see git history) hit a real, reproducible bug —
-  against a req/valid ROM model with 5-cycle latency, `LD A,(0x8000)` (a 3-byte opcode whose own
-  memory-read M-cycle follows two operand-fetch M-cycles) corrupted the accumulator, with no
-  memory access to `0x8000` visible anywhere in the trace — and was reverted rather than land a
-  known-broken change, with the note that a proper T80-internal T-state waveform trace was
-  needed, not more blind top-level signal-log reading.
+`scripts/mister_hw_test.py` — a maintained deploy/launch/screenshot automation tool for this
+hardware-bring-up loop (SCP the `.rbf`, launch a `.mra` via the MiSTer Remote API, pull a
+screenshot back) — see the script's own docstring/`--help` for usage.
 
-  This second attempt was designed directly from `T80.vhd`/`T80se.vhd`'s actual RTL (read, not
-  re-derived from memory or guessed): `T80.vhd`'s state machine freezes `TState` at 2 for as long
-  as `WAIT_n` reads 0 (resampled every cycle, no separate edge logic); `T80se.vhd` captures
-  `DI_Reg <= DI` on the exact edge `TState=2 and WAIT_n=1` is first true; and — the key fact the
-  first attempt's "race in back-to-back M-cycles" suspicion didn't have — `RD_n`/`MREQ_n` are
-  registered outputs that default to `1` every cycle and are only pulled low by a matching
-  `TState` condition, so there IS always a real one-cycle gap (T3) between the end of one read
-  M-cycle and the start of the next, even within one multi-byte instruction. Given that gap is
-  real, the new design ties ROM-read `WAIT_n` to a plain combinational level
-  (`is_rom_read = mem_active_rd && !is_ram`, glitch-free by construction since `mreq_n`/`rd_n`
-  can't toggle mid-M-cycle) combined with a level-tracked `rom_pending` flag (set when a fresh
-  `is_rom_read` window opens, cleared on `rom_valid`) — structurally unable to miss a transition
-  the way a same-cycle edge-detector can. RAM/I/O/writes keep the original fixed one-wait-cycle
-  scheme unchanged, explicitly scoped out via `!is_rom_read`, so nothing about their
-  already-verified behavior was touched.
-
-  **Confirmed, not just re-derived**: re-ran the exact same `LD A,(0x8000)` (sngkace) and
-  `LD A,(0x8200)` (gunbird, its own equivalent case, already present in that testbench) scenarios
-  against a real 5-cycle-latency req/valid ROM model, with real T80-internal M-cycle/T-state
-  tracing (hierarchical reference into `u_cpu.u0`'s `MCycle`/`TState`, the actual signals
-  `T80se.vhd`'s architecture exposes — not reconstructed from external bus signals). Both games'
-  traces show all 4 M-cycles of the instruction (3 fetch + 1 banked read) with exactly one clean
-  `rom_req` pulse each, `wait_n` dropping and returning at the right edges, and the correct byte
-  (`0xC3`/`0xC7`) landing in the accumulator — this is the actual "T80-internal T-state waveform
-  trace" the first attempt's revert note flagged as necessary. Both testbenches PASS in full
-  (address decode, banking, RAM, sound-latch/NMI handshake, and the ROM port).
-
-  `rtl/memory/ddram_download.sv` bridges hps_io's real ROM-download interface (checked
-  directly against `sys/hps_io.sv`'s port list — `ioctl_download`/`ioctl_index`/`ioctl_wr`/
-  `ioctl_addr`/`ioctl_dout`/`ioctl_wait`) into `ddram_arbiter`'s hold-until-acknowledged
-  `dl_req` contract, closing the gap flagged when the arbiter was built. Confirmed from source
-  that hps_io itself doesn't interpret `ioctl_wait` at all — it's wired straight to `HPS_BUS`
-  and enforced on the HPS/Linux side with real round-trip latency, so this module holds
-  `ioctl_wait` continuously (not a same-cycle handshake) from accepting a byte until ready for
-  the next, the standard safe pattern. Only `ioctl_index==0` is accepted (the only rom index
-  any of the nine `.mra` files use). Verified as a real integration test (chained through the
-  actual arbiter/phy/model, with a test-side sender that genuinely respects `ioctl_wait`
-  pacing) across 3 cases. **This closes out the DDRAM transport-layer work** (`ddram_phy` →
-  `ddram_arbiter` → `ddram_download`, all built and verified) — what's left is instantiating
-  this stack in the actual top-level `emu.sv`/core module alongside the video/sound engines
-  and TG68K.C, which is top-level integration work, not more transport-layer RTL.
-- **DDRAM → SDRAM pivot.** After confirming the DDRAM throughput failure below with
-  `tb_video_pipeline_ddram.sv`, researched the right fix rather than immediately patching the
-  arbiter, and found the DDRAM transport itself was the wrong backend for this traffic — not
-  something to patch, something to replace. Full evidence trail and the active design now live in
-  `docs/phase1_sdram_map.md`; short version: MiSTer's own developer docs describe `DDRAM_*` as for
-  "non-critical time purposes" with latency that "can be way longer" than the typical ~20
-  cycles (unbounded worst case, not just high average case — a real problem for a hard per-tile
-  fetch budget no matter how the average-case cycle math comes out), recommend `SDRAM_*` for
-  lower, bounded latency, and cite real graphics cores doing exactly that; a real reference
-  controller (Sorgelig's `sdram.sv`, vendored into dozens of MiSTer-devel arcade cores including
-  `Arcade-Jackal_MiSTer`, fetched and read directly) gives 3 independent ports at a fixed ~6-7
-  cycles; and this project's own original roadmap ("Component reuse map", written before any RTL
-  existed) already specified `SDRAM ctrl` and "SDRAM tile/sprite ROM banking" for Phase 1 — this
-  session's DDRAM stack was itself the deviation, now being corrected back, not a new direction.
-  Also found and recorded honestly (not hidden to make the DDRAM number look worse than it is):
-  the failing test's specific "26 cycles > 16-cycle budget" number is partly a testbench-fidelity
-  artifact (`ce_pix` tied to `1'b1`, i.e. system clock == pixel clock 1:1, unlike a real
-  Template_MiSTer-style core that runs `clk_sys` far faster and gates pixel-domain logic with a
-  real `ce_pix` divider) — doesn't change the pivot decision (the unbounded-worst-case argument
-  above is independent of that number), but is tracked as a real testbench gap to fix regardless
-  (see "Next steps").
-  `ddram_phy`/`ddram_arbiter`/`ddram_download` are not deleted — the request/ack round-robin
-  arbiter design they proved out is reused directly for the new SDRAM arbiters — but they're off
-  the Phase 1 critical path; `docs/phase1_ddram_map.md` carries a header note to that effect.
-  Genuine new RTL still needed, not a copy-paste: `docs/phase1_sdram_map.md`'s "The 64-bit granule
-  problem" — Sorgelig's reference controller has no burst support (single 16-bit word per
-  transaction, confirmed by reading the read-side FSM directly, not assumed), so fetching a
-  64-bit tile-row granule needs a real burst-4-read extension to the controller, verified against
-  a behavioral SDR chip model that actually decodes `nRAS`/`nCAS`/`nWE`/`SDRAM_A` command
-  sequencing rather than a black-box latency stub.
-
-  **Burst-4 controller: built and verified.** `rtl/memory/sdram/sdram.sv` (`PROVENANCE.md` in the
-  same directory documents every change from the vendored upstream reference in detail) — mode
-  register burst length set to 4, `dout` widened to 64 bits, four-cycle read-capture sequence
-  replacing the single-word capture. `sim/sdram_tb/tb_sdram.sv` + `sim/sdram_tb/sdram_chip_model.sv`
-  (a real command-decoding behavioral MT48LC16M16 model, not a latency stub) cover burst-4 read
-  assembly, byte-lane write masking, two simultaneous ports, and a latency-bound sanity check — 4/4
-  PASS. Real bugs found and fixed along the way, not just syntax porting: (1) the row/column
-  address split had to be **swapped** from upstream's `row=low-bits/col=high-bits` — upstream never
-  bursts, so the split was arbitrary there, but a hardware burst auto-increments the *column*, so
-  four consecutive word addresses (one granule) must land at four consecutive columns of the *same*
-  row, not four different rows — caught when three of four burst lanes came back reading unrelated,
-  unwritten memory; (2) the chip model initially ignored the `DQML`/`DQMH` byte-lane write mask
-  entirely (always wrote the full 16 bits), caught by the byte-masking test case clobbering the
-  untouched byte lane instead of preserving it; (3) a genuine off-by-one in the burst-read CAS
-  timing (dropped upstream's own `+1` registration-delay margin when computing the first
-  read-capture cycle), caught by the first burst word capturing high-impedance garbage instead of
-  real data. Also fixed, unrelated to the burst logic: two real Verilog-to-SystemVerilog
-  compilation-mode differences (forward-referenced `mode`/`reset`/`MODE_NORMAL` before their
-  declarations, and procedural assignment directly to an `inout` net) and two simulation-fidelity
-  gaps (uninitialized `state`/`ack0..2` registers reading `X` in ModelSim instead of the `0` real
-  hardware powers up with, silently wedging the whole state machine) — all documented in
-  `PROVENANCE.md`. `sdram_phy.sv` (req/valid wrapper for one physical port) and
-  `sdram_arbiter2.sv` (2-way round-robin, same hold-until-ack design as `ddram_arbiter`) are
-  also built.
-
-  **Direct measurement, not just design intent**: `sim/video_pipeline_tb/tb_video_pipeline_sdram.sv`
-  re-runs the exact dual-tilemap-layer scenario `tb_video_pipeline_ddram.sv` confirmed failing
-  (954/954 mismatches, 100%) against the real SDRAM stack. First attempt (both layers sharing one
-  arbitrated port, matching the port-grouping table as first drafted): 370/954 (39%) — a large
-  real improvement, not a full fix. Root cause: that grouping put the two consumers *proven* to
-  contend simultaneously onto the same port. Rewired to give each layer its own dedicated
-  physical port (no arbiter at all between them — `docs/phase1_sdram_map.md`'s port-grouping
-  table revised accordingly): 189/954 (20%) — real, but still not a full fix.
-
-  **Residual 20% root-caused and fixed, not just measured.** "Dedicated ports" only separates
-  the address/data *buses* — `sdram.sv`'s read-capture pipeline (`state`/`dout`/`ram_req`) is a
-  single shared resource across all 3 logical ports (one physical chip, one data bus). Since
-  both tilemap layers run off identical `line_start`/`h_active` timing, they request in
-  near-lockstep; instrumenting layer 1's real per-tile `gfxrom_req`→`gfxrom_valid` latency showed
-  a bimodal split — ~15 cycles nominal (fits the 16-cycle budget), but ~22 or ~35 cycles on
-  roughly 1-in-5 tiles when layer 0's simultaneous request won arbitration. With only 1 tile ever
-  banked ahead of display, each such stall was an immediate miss (1-in-5 ≈ the measured 20%).
-  Fix: widened `tilemap_line_engine`'s prefetch from a fixed 2-entry ping-pong to a parameterized
-  `PREFETCH_DEPTH`-entry ring buffer (module interface unchanged, `fetch_target`/`display_sel`
-  generalized from a toggle bit to a modulo-N pointer); `PREFETCH_DEPTH=8` gives enough
-  absorption to ride out these stalls. **Confirmed clean: 0/12720 mismatches over 40 sustained
-  lines** (widened from the original 3-line check specifically to give the stall many chances to
-  recur) — re-verified against every existing consumer of `tilemap_line_engine`
-  (`tilemap_line_engine_tb`, `tb_video_pipeline`, `tb_video_pipeline_compositor`), no regressions.
-  This is a real fix for the exact contention pattern tested, not a formal guarantee against every
-  possible contention pattern — the single-shared-pipeline constraint is real hardware (one SDR
-  SDRAM chip), and a deeper buffer works around it rather than removing it; a genuinely faster,
-  independently-clocked fetch domain (real CDC) or a pipelined/overlapping SDRAM controller
-  remain the architecturally "correct" long-term fix, tracked as a known limitation, not urgent.
-
-  Also found and recorded as a genuine, useful negative result along the way: tried a realistic
-  ~1-in-14 `ce_pix` divider (matching a real `clk_sys`/pixel-clock ratio) instead of `1'b1`, and
-  it made things dramatically worse (12426/13356) because `tilemap_line_engine` has no `ce_pix`
-  input — it's a single-clock-domain design (`clk` == pixel clock throughout), not a
-  fast-clock-plus-`ce_pix` one. `ce_pix=1'b1` in these testbenches is therefore the *correct*
-  model of the current RTL, not a simplification — see `docs/phase1_sdram_map.md`'s "Verification
-  results" for the full writeup.
-- **Port 2 (sprite gfxrom + spritelut + maincpu + audiocpu + download): built and measured.**
-  `sdram_arbiter5.sv` (5-way, direct reuse of `ddram_arbiter`'s design) and
-  `sdram_narrow_bridge.sv` (new: extracts a 16-bit word or 8-bit byte from `sdram.sv`'s 64-bit
-  granule, needed since only sprite gfxrom is naturally granule-shaped — spritelut/maincpu/
-  audiocpu are narrower) are both built and verified against the real SDRAM transport, not stubs
-  (`sim/sdram_arbiter5_tb/`, `sim/sdram_narrow_bridge_tb/`).
-
-  **Real bug found and fixed, not just measured: gfx ROM byte order.** Wiring the real
-  `sprite_render_engine` through this stack with genuinely non-uniform gfx ROM content
-  (`sim/port2_sdram_tb/tb_port2_sdram.sv`) immediately failed with scrambled pixels.
-  `sdram.sv`'s burst-4 capture packs bytes in ordinary ascending-address order (confirmed against
-  `tb_sdram.sv`'s own passing test), but `tilemap_line_engine.sv`/`sprite_render_engine.sv` both
-  assume the opposite (MAME's MSB-first `gfx_16x16x4_packed_msb` format, correct and already
-  unit-tested against synthetic ROM models using that same convention) — neither side was wrong
-  on its own, the mismatch was only at the untested seam between them. Every prior SDRAM video
-  test (`tb_video_pipeline_sdram.sv`) used uniform all-zero ROM content, which is
-  byte-order-invariant, so this never showed up before. Fixed with a new adapter,
-  `rtl/memory/gfxrom_byte_reorder.sv`, inserted at the `sdram.sv`-to-gfxrom-consumer seam (NOT a
-  change to `sdram.sv`, which is still correct and relied on as-is by `sdram_narrow_bridge.sv`'s
-  ordinary little-endian word/byte consumers) — confirmed load-bearing by temporarily bypassing
-  it and reproducing the exact predicted scrambled-pixel failures, then restoring it. Retrofitted
-  into `tb_video_pipeline_sdram.sv` too (a no-op there given uniform data, but closes a real
-  coverage gap so the wrong-but-passing wiring pattern doesn't get copied into real top-level
-  integration). See `docs/phase1_sdram_map.md`'s "Port 2: built and measured" for the full writeup.
-
-  **Contention measurement**: one real 16×16 sprite through the full stack — baseline
-  `frame_done` 514 cycles, with synthetic continuous-pressure `maincpu`+`audiocpu` traffic
-  contending on the same arbiter throughout, 736 cycles (~43% slower), correctness unaffected in
-  both cases (0 pixel mismatches). `maincpu`/`audiocpu` are synthetic (no real CPU wrapper RTL
-  exists yet, see "Next steps" below) but modeled as worst-case continuous back-to-back requests,
-  same reasoning as the tilemap contention test. HPS download deliberately left inactive
-  (doesn't overlap real gameplay); its absolute-priority behavior is covered separately.
-- **Top-level integration: started.** `rtl/video/video_timing.sv` — the raw H/V timing
-  generator — is built and verified: hcnt/vcnt raster counters, h_active/v_active/hblank/
-  vblank, hsync/vsync, and the `line_start`/`frame_start` pulses the video engines and
-  `sprite_frame_buffer`'s swap trigger need, matching the exact screen config confirmed from
-  `psikyo.cpp`'s `set_raw(14.318181_MHz_XTAL/2, 456, 0, 320, 262, 0, 224)` (not assumed).
-  hsync/vsync pulse width/position are explicitly flagged as this project's own RTL-level
-  design choice, since MAME's `set_raw()` only specifies blanking boundaries, not real sync
-  timing (it doesn't drive an analog CRT) — not claimed to match the original PCB. Verified
-  across 7 cases including a full two-frame walk. (Update: this is now instantiated for real
-  in `Psikyo.sv` — see "`Psikyo.sv` top-level built" below. What's still not done: the
-  CRT_Offset module and hiscore.v, both later-stage/polish items — see "Component reuse map".)
-
-  **Real integration test, plus a real (smaller) bug found and fixed**: wired `video_timing`
-  into a real `tilemap_line_engine` instance for the first time (`sim/video_pipeline_tb/`) —
-  confirmed the two modules' hcnt/vcnt/h_active/line_start conventions genuinely agree
-  (cross-checked against `docs/phase1_video_engine.md`'s own stated contract beforehand).
-  First attempt at this test reported an apparent sustained-operation `fetch_overrun`
-  starting around active line 2-3, initially written up here as an unresolved open item — that
-  turned out to be a **false alarm from the test's own methodology**, not a real problem:
-  `fetch_overrun` is sticky, and the very first active line after any reset is an unavoidable
-  cold-start case (`video_timing`'s reset always lands mid-active-line, no prior hblank to
-  prefetch in) — once that expected, understood cold start latches the sticky bit, it's
-  permanently indistinguishable from "a real overrun happened later" no matter how carefully
-  reset timing is arranged afterward (confirmed by direct experimentation — several
-  reset-sequencing approaches were tried, none worked, since the underlying condition is
-  genuinely met at that moment regardless of when reset releases). Fixed by not checking the
-  DUT's sticky output at all — independently replicating its own trigger condition
-  (`h_active && !buf_ready[display_sel]`) via hierarchical access instead, giving a true,
-  non-sticky per-cycle reading. With that fix, the test **genuinely PASSes**: detailed
-  cycle-by-cycle tracing across multiple lines showed completely healthy, steady-state
-  fetch/display interaction throughout — sustained multi-line/full-frame operation is
-  confirmed clean.
-
-  A real, independent, smaller bug WAS found and fixed along the way in
-  `tilemap_line_engine.sv`: the fetch FSM only acted on `line_start` from `S_IDLE`, inside
-  the state case statement — since the fetch FSM's last tile for a line can legitimately
-  still be in flight when the next line's `line_start` arrives (no structural guarantee fetch
-  always finishes strictly before display needs it), that pulse could be silently dropped
-  whenever the FSM wasn't already idle, permanently desyncing fetch from display for the rest
-  of the frame. Fixed by checking `line_start` before the state case, top priority in any
-  state (a new line always outranks finishing stale work for the old one). Re-verified against
-  `tilemap_line_engine`'s own pre-existing single-line testbench — still PASSes unchanged.
-  `tilemap_line_engine` can now be treated as verified for sustained real gameplay, not just
-  the narrower single-line scenario its original testbench covered.
-
-  **Extended one stage further**: `sim/video_pipeline_tb/tb_video_pipeline_compositor.sv`
-  wires `video_timing` driving BOTH tilemap layers into a real `compositor` instance
-  (sprites still tied off — that needs the DDRAM stack, a separate step). Distinct VRAM
-  content per layer makes the composited output distinguishable, letting the test verify
-  real compositor priority end-to-end (layer 1 wins when both draw; disabling layer 1
-  mid-stream correctly hands off to layer 0, proving it was genuinely live, not just unused
-  wiring). One real, understood pipeline-startup artifact found and excluded (not a bug):
-  `pixel_valid`'s registered one-cycle-ish latency from `h_active` means the first pixel or
-  two of every line legitimately sees neither layer valid yet and falls back to backdrop —
-  found via the test itself, excluded with a documented reason, not silently loosened.
-
-  **Extended once more, onto the real DDRAM transport** —
-  `sim/video_pipeline_tb/tb_video_pipeline_ddram.sv` routes both tilemap layers' gfxrom ports
-  through the actual `ddram_arbiter`/`ddram_phy` (not synthetic per-layer models) under
-  sustained operation. **This one genuinely fails, and correctly so** — not a false alarm this
-  time, but the first concrete confirmation of `docs/phase1_ddram_map.md`'s already-documented
-  "Known open item: throughput, not just correctness": with a realistic 10-cycle DDR model
-  latency, two consumers requesting a tile simultaneously (which the two tilemap layers
-  routinely do) forces the arbiter to fully serialize them, ~26 combined cycles against each
-  layer's 16-cycle-per-tile budget. Confirmed via tracing that this is the exact predicted
-  serialization mechanism, not a wiring bug. Committed deliberately still failing as
-  reproducible evidence for the eventual throughput pass (wider `ddram_phy` bursts and/or a
-  prefetch-ahead scheduling scheme) — do not loosen this test's checks to force a pass; fix the
-  underlying budget instead. What's left before the full raster path is proven: sprite output
-  (needs the DDRAM stack wired to `sprite_render_engine`/`sprite_frame_buffer`, which will make
-  the throughput picture worse, not better, before it's addressed).
-
-  **`rtl/cpu/maincpu.sv` built: the 68EC020 main-CPU wrapper.** Address decode + DTACK for the
-  full `psikyo_map` (`docs/phase1_memory_map.md`) over TG68K.C — ROM via the same req/valid
-  conversion `sound_cpu_sngkace.sv` established, all 6 BRAM regions (sprite RAM, palette,
-  tilemap VRAM0/1, video regs, work RAM), 32-bit input ports, sound latch, and a held-
-  autovectored level-4 vblank IRQ. Building it against a real program (not the Phase 0 spike's
-  4-instruction test) surfaced a severe ModelSim crash (SIGSEGV, then cascading multi-GB
-  allocation failures) that took a genuinely methodical investigation to root-cause — 4 levels
-  of isolation (pure-VHDL minimal repro, mixed SV/VHDL, minimal maincpu, full maincpu), ruling
-  out the mixed-language SV/VHDL boundary and address-progression as causes along the way, before
-  log-timestamp analysis showed `'X'`-in-arithmetic warnings occurring continuously from
-  simulation time 0 — matching a publicly known, still-open upstream issue
-  (github.com/TobiFlex/TG68K.C/issues/21, "uninitialised signals in arithmetic"). Fixed with
-  explicit zero initializers on every previously-uninitialized `std_logic`/`std_logic_vector`
-  signal in `TG68K_ALU.vhd` and `TG68KdotC_Kernel.vhd` (123 signals total) — simulation-fidelity
-  only, same precedent as `sdram.sv`'s own fix (`rtl/cpu/tg68k/PROVENANCE.md` has the full
-  writeup). Confirmed load-bearing and confirmed no regression against the Phase 0 spike, which
-  still passes identically (warnings dropped from hundreds of thousands to 14, all benign
-  time-0 settling). Three further real, permanent wiring bugs in `maincpu.sv` itself were found
-  and fixed along the way: HALT must track RESET (TG68K's internal reset is `RESET OR HALT`),
-  RESET/HALT are genuine open-collector nets needing `tri1` modeling (the core drives them
-  itself for self-reset), and VPA must be gated to IACK cycles only (tying it permanently low
-  also engages an alternate cycle-completion path for ordinary bus cycles).
-
-  Once past the crash, address decode/DTACK verified correct on the first real run: ROM fetch,
-  all 6 BRAM regions, the 32-bit input-port read, and the sound-latch write all PASS
-  (`sim/maincpu_tb/tb_maincpu.sv`, Case 1). **Still open**: the vblank IRQ (Case 2) doesn't yet
-  work — narrowed to a specific, understood point (the IACK cycle and the vector *offset* pushed
-  into the exception frame are both correct; the vector-table *fetch* address comes out as `0x0`
-  instead of `0x70`, suggesting two separate kernel code paths, only one currently correct) but
-  not yet resolved — tracked in `rtl/cpu/tg68k/PROVENANCE.md` with a concrete lead for next time.
-  Does not block using `maincpu.sv` for the rest of top-level integration in the meantime.
-
-  **`rtl/psikyo_core.sv` built: the first full video+CPU integration.** Wires `maincpu.sv`
-  against real shared memory -- two new small modules, `rtl/memory/dpram.sv` (generic true
-  dual-port word RAM, one CPU-facing R/W port plus one independent video-engine read port) and
-  `rtl/video/vreg_decode.sv` (decodes the vregs region into tilemap_line_engine's actual
-  mode/scroll/bank/rowscroll inputs plus the two layers' row-scroll table reads), plus
-  `rtl/video/spriteram_dbuf.sv` for sprite RAM specifically, since real hardware double-buffers
-  it (MAME's `buffered_spriteram32_device`, bulk-copied on vblank's rising edge,
-  docs/phase1_memory_map.md's "Sprite RAM layout") -- implemented as true ping-pong (2 dpram
-  banks, roles swapped on `frame_start`) rather than an actual copy, same pattern
-  `sprite_frame_buffer.sv` already uses on the sprite pipeline's *output* side. `vreg_decode.sv`
-  also picked up two control-word bits (`opaque`/`transpen_sel`) `compositor.sv` needed that
-  nothing had wired yet.
-
-  All of it -- `maincpu.sv`, the memory glue, `video_timing.sv`, both `tilemap_line_engine`
-  layers, `sprite_render_engine.sv` + `sprite_frame_buffer.sv`, `compositor.sv`, roughly 15
-  module instances -- is wired together in one new top module, `rtl/psikyo_core.sv`. Gfx/CPU ROM
-  content (the SDRAM stack's job) and the sound CPU/YM2610 stay external ports rather than being
-  duplicated here, same as the HPS/DIP/CRT_Offset glue that belongs in `Psikyo.sv` itself, one
-  level up (not yet touched). The one genuinely new piece of logic, not just wiring: the sprite
-  pipeline has two double buffers that must swap at *different* points in the frame --
-  `spriteram_dbuf` swaps immediately on `frame_start`, then one cycle later (once its own
-  `sprites_disable` output has caught up) conditionally kicks `sprite_render_engine`'s own
-  `frame_start`; the render engine's `frame_done` -- once rendering actually finishes, not at
-  `frame_start` -- drives `sprite_frame_buffer`'s swap, presenting the finished frame to the
-  compositor. Documented in the module header, including the open question of whether clear+
-  render always finishes before the next `frame_start` (a timing-budget measurement for later,
-  same "prove wiring first" approach already used for the SDRAM contention numbers above).
-
-  Verified two ways, both PASS from a clean build: `tb_psikyo_core_smoke.sv` elaborates the full
-  tree and runs 3 full frames (358k cycles) with no crash and no runaway X propagation, catching
-  wiring mistakes cheaply before investing in a real functional test (this DID catch one: a
-  `rd_y` port-width mismatch feeding `sprite_frame_buffer`, fixed before the smoke test was even
-  run). `tb_psikyo_core.sv` then runs a genuine CPU program (`test_video.s`, vasm-assembled) that
-  writes a tile into layer 0 VRAM, a palette entry, and layer 0's control register, and confirms
-  the expected color actually reaches the compositor's `rgb` output during real active-display
-  scanout -- the complete chain (CPU bus -> `maincpu.sv` -> vram0 -> `tilemap_line_engine` ->
-  `compositor` -> palette -> `rgb`) proven end to end, not just elaborated. First run of this
-  test failed (0 matches) -- root cause was the testbench's own `$readmemh` path being relative
-  to the wrong working directory, not an RTL bug; fixed and reran clean.
-
-  **`rtl/memory/psikyo_sdram_top.sv` built: the full SDRAM backend assembled.** Every piece
-  (`sdram.sv`, `sdram_phy.sv`, `sdram_arbiter5.sv`, `sdram_narrow_bridge.sv`,
-  `gfxrom_byte_reorder.sv`, `sdram_download.sv`) was already independently verified -- this
-  module is the concrete assembly `docs/phase1_sdram_map.md`'s "Arbiter architecture" table has
-  described since that doc was written: 3 `sdram_phy` instances on the chip's 3 raw ports
-  (dedicated tilemap layer 0/1 gfxrom on ports 0/1, everything else -- sprite gfxrom, spritelut,
-  maincpu, audiocpu, HPS download -- fanned out through `sdram_arbiter5` on port 2), with each
-  client's own local address convention (byte offsets for gfxrom, word addresses for
-  spritelut/maincpu, byte address for audiocpu) converted to an absolute SDRAM byte address by
-  adding the region's fixed base from the address map, so no client engine needs to know its own
-  placement in the flat map. Client-facing ports match `rtl/psikyo_core.sv`'s external ROM port
-  shapes directly -- built to be wired straight onto that module.
-
-  Verified with a real HPS-download-then-read round trip through all 6 client ports. Two real
-  bugs found and fixed, both in the testbench, not the RTL: (1) `sim/sdram_tb/
-  sdram_chip_model.sv` deliberately folds SDRAM row addresses to 8 bits (sized for what existing
-  tests exercise, not full 32MB capacity) -- writing all 7 widely-separated regions up front
-  before reading any of them let two regions alias to the same modeled storage; fixed by writing
-  and immediately reading back each region in turn instead. (2) A genuine testbench race, the
-  same class already documented in this project from `sim/ddram_phy_tb/`'s own history: `while
-  (ioctl_wait) @(posedge clk);`, checked in the same active-region delta as `sdram_download.sv`'s
-  own `always_ff` updating its state for that edge, can read `ioctl_wait` before its NBA update
-  commits and return before the real transaction starts -- silently dropped every other byte in a
-  back-to-back write sequence. Fixed by copying `sim/ddram_download_tb/tb_ddram_download.sv`'s
-  already-proven `do @(posedge clk); while (...);` pattern, which guarantees a full edge (and NBA
-  settle) before the first check.
-
-  **`rtl/psikyo_top.sv` built: video+CPU connected to the SDRAM backend, two real bugs found
-  doing it.** Connects `psikyo_core.sv` directly to `psikyo_sdram_top.sv` -- both were built
-  with matching ROM port shapes specifically so this would be a straight port-to-port
-  connection. Proving it with a real CPU program driven entirely through the HPS download path
-  (not a directly-poked ROM array, unlike every earlier integration test) surfaced two genuine
-  bugs neither module's own isolated testbench had caught:
-
-  1. **Two reset domains, not one.** The first version wired the same `reset` into both
-     `psikyo_core.sv` and `psikyo_sdram_top.sv`. Sequencing a download-then-run test the natural
-     way -- hold reset through the whole download -- silently discarded every downloaded byte
-     with no error, since `psikyo_sdram_top.sv`'s own req/valid wrappers (`sdram_download.sv`
-     included) were held in reset for that entire span too, exactly when they most need to be
-     live. Real MiSTer cores hold the CORE in reset during load while the SDRAM backend stays
-     operational -- `rtl/psikyo_top.sv` now does the same: `core_reset = reset | ioctl_download`
-     gates `psikyo_core.sv` only, while `psikyo_sdram_top.sv` keeps the plain `reset`.
-  2. **A real byte-order bug in `psikyo_sdram_top.sv`'s maincpu ROM path**, not caught by
-     `tb_psikyo_sdram_top.sv` because that test only checked the port against
-     `sdram_narrow_bridge.sv`'s own self-consistent little-endian convention, never against what
-     a real 68020 program needs. `sdram_narrow_bridge.sv` packs 16-bit words little-endian
-     (correct for spritelut, whose MAME `ROM_REGION16_LE` format genuinely is little-endian) but
-     maincpu's program ROM is plain `ROM_REGION` (big-endian, like every 68k program ROM this
-     project has downloaded so far). Undetected, this silently byte-swapped every fetched
-     instruction word -- caught only once a real downloaded program's PC ran off into address
-     `0x800` instead of `0x8`. Fixed with a byte swap at the maincpu-specific seam, not in
-     `sdram_narrow_bridge.sv` itself (still correct as-is for spritelut and for audiocpu's
-     byte-wide fetches, which have no endianness question). `tb_psikyo_sdram_top.sv`'s own
-     `cpu_rom_data` expectation updated to match.
-
-  Verified: `sim/psikyo_top_tb/tb_psikyo_top.sv` downloads `sim/psikyo_core_tb/test_video.s`'s
-  same program through the real HPS path into the real SDRAM stack and confirms the same
-  tile-origin pixel `tb_psikyo_core.sv` checked lands correctly -- the complete chain (HPS
-  download → `psikyo_sdram_top.sv` → `psikyo_core.sv` → compositor → `rgb`) proven for the first
-  time with a real backend, not a stub.
-
-  **Sound CPU wired in.** `rtl/psikyo_top.sv` now instantiates the board-appropriate sound CPU
-  wrapper (`sound_cpu_sngkace.sv`/`sound_cpu_gunbird.sv`, selected by the same `BOARD_GUNBIRD`
-  parameter `psikyo_core.sv` already uses) wired to `psikyo_core.sv`'s `latch_data`/`latch_write`
-  output and `psikyo_sdram_top.sv`'s `audiocpu_rom_*` port -- both already built to match this
-  wrapper's shapes directly. `latch_data`/`latch_write`/`audiocpu_rom_*` are no longer external
-  ports (now internal); the sound CPU's YM2610 chip-select bus (`ym_*`) is exposed instead, since
-  jt10 hasn't had its own audio-domain verification pass and isn't wired in yet.
-
-  **Found and fixed a real SDRAM read-corruption bug this wiring exposed** (not a wiring
-  mistake): the full video+CPU functional test (`tb_psikyo_top.sv`) briefly regressed --
-  genuinely contending against the sound CPU for the same Port 2 SDRAM arbiter, maincpu's own
-  SDRAM reads intermittently came back corrupted. Isolated without any CPU at all:
-  `sim/sdram_tb/tb_sdram.sv`'s new Case 6 (two independent ports continuously contending, 1000
-  iterations) first FAILED 100% of the time -- but the bug was in the TEST, not the RTL: `dout0`/
-  `dout1`/`dout2` are literally the same `dout` register in `sdram.sv`, not independently latched
-  per port, so a caller must sample on its own valid/ack cycle, never later. Fixing the test to
-  sample inside each fork branch at its own ack toggle made it pass cleanly, proving `sdram.sv`
-  and `sdram_arbiter5.sv` were never the bug (also ruling out the tRP/row-precharge-timing
-  hypothesis this investigation started with -- Case 5, 400 back-to-back different-row reads on
-  one port, never reproduced anything either). That pointed at the consumer: `rtl/cpu/maincpu.sv`'s
-  `rom_pending` flag cleared on `rom_valid`'s one-cycle pulse rather than on the CPU's own bus
-  cycle actually ending (`is_rom_access`, driven by `as_n`, held low for several more cycles after
-  DTACK releases in a real 68k bus cycle), letting `rom_req` fire a second, spurious request for
-  data the CPU had already latched -- harmless alone, but under real contention another client
-  could win that spurious request's arbitration slot and overwrite the shared `dout` register
-  before the CPU's bus cycle finished, while `dtack_n` glitched low-high-low, corrupting what
-  TG68K.C sampled. Fixed by holding `rom_pending` through the whole bus cycle (clearing on
-  `!is_rom_access` instead of `rom_valid`). Verified: `tb_maincpu.sv` Case 1 still passes (Case
-  2's pre-existing, unrelated vector-fetch issue unaffected); `tb_psikyo_core.sv`'s smoke and
-  functional tests still pass; `tb_psikyo_top_sound_smoke.sv` still passes both board variants;
-  `tb_psikyo_top.sv` passes again, the full HPS-download-to-pixel chain verified under genuine
-  maincpu+sound-CPU SDRAM contention for the first time. `tb_sdram.sv`'s Cases 5 and 6 stay as
-  permanent regression coverage no prior test provided (each Port 2 client's own data correctness
-  under a sustained, many-iteration contention loop, not just a single simultaneous round).
-
-  **Audiocpu's SDRAM byte order checked and confirmed fine.** The open question this same
-  investigation flagged -- whether `sdram_narrow_bridge.sv`'s WORD_BYTES=1 byte-wide fetch is
-  genuinely endianness-safe for the Z80 sound CPU, or just asserted so -- is now checked against
-  a real downloaded program, not just reasoned about. `sim/psikyo_top_tb/tb_psikyo_top_sound.sv`
-  downloads `sim/sound_cpu_sngkace_tb/tb_sound_cpu_sngkace.sv`'s own Scenario 1 program
-  byte-for-byte (fixed-region fetch, a bank-register write, then a banked-region fetch at
-  physical `0x10000`) through the real HPS path into the real SDRAM backend, with the banked
-  byte set to a distinctive value (`0xAB`) specifically so a byte-order bug would surface as a
-  wrong echoed value on the observable YM I/O bus, the same way maincpu's real bug surfaced as
-  its PC running off into the weeds. PASSES: byte-wide fetches really are packing-order-agnostic
-  here, no fix needed.
-
-- **`Psikyo.sv` top-level built: the full core instantiated, real Quartus synthesis verified.**
-  Replaces the untouched Template_MiSTer `emu.sv` skeleton with the real top-level module —
-  `psikyo_top.sv` (video+CPU+SDRAM+sound CPU, see above) wired against `hps_io` (joystick_0/1,
-  the `ioctl_*` ROM-download bus), a real PLL (`clk_sys` = 85.909091MHz = 14.31818MHz×6, an
-  exact 12:1 `ce_pix` divider and comfortable margin over `sdram.sv`'s ~85MHz `RASCAS_DELAY`
-  assumption; `SDRAM_CLK` driven from a second, phase-shifted PLL output rather than
-  `psikyo_top`'s own passthrough, matching `sdram.sv`'s documented policy of leaving real phase
-  generation to top-level integration — the `-3000ps` shift is a starting point, not yet
-  hardware-verified), and RGB555→RGB888 video output via MSB-bit-replication (not zero-padding).
-  Input-port bit layout confirmed directly from `psikyo.cpp` source (sngkace vs.
-  gunbird/btlkroad's differing coin/NMI bit placement, all-active-low convention) rather than
-  assumed, joystick_N convention confirmed against a real reference core; `dsw_in =
-  status[47:16]` is fully generic (matches every `.mra`'s own `bits="16,17,..."` convention
-  directly — no per-game RTL needed, closing the "DIP status-bit positions" open item the
-  `.mra` rework below and the `video_timing.sv` entry above both flagged as pending). Ships
-  with `BOARD_GUNBIRD` fixed to `1'b0` (sngkace layout — this project's Phase 1 entry point); a
-  gunbird/btlkroad build needs its own top-level parameter value, not yet built. jt10/YM2610
-  stays silent (`ym_din` tied to `0`) — unchanged from "Sound CPU wired in" above, still
-  pending its own audio-domain verification pass (see "Next steps").
-
-  **New verification method introduced here: real Quartus `quartus_map` synthesis**, not just
-  ModelSim. Running it against the actual project (`files.qip` rewritten with the complete real
-  source list, superseding the Template_MiSTer placeholder `mycore.v`/`lfsr.v`/`cos.sv`, now
-  deleted) found a real, Quartus-only bug no amount of simulation could have caught: Quartus
-  17.0's SystemVerilog elaborator rejects non-blocking assignments to block-local variables in
-  `sdram.sv`'s access-manager and initialization blocks, even with the `static` keyword
-  (confirmed empirically not a working fix, despite that exact pattern already existing
-  upstream and compiling fine under ModelSim) — `Error (10959): illegal assignment - automatic
-  variables can't have non-blocking assignments`. Fixed by moving `rfs_cnt`/`rfs`/`rfs2`/
-  `init_old` to module-level declarations, matching every other register in the file; purely a
-  declaration-scope change, full ModelSim regression re-verified with no behavior change (see
-  `rtl/memory/sdram/PROVENANCE.md`'s own writeup). With that fix, the entire RTL chain built
-  this session — `Psikyo.sv` → `psikyo_top.sv` → `psikyo_core.sv`/`psikyo_sdram_top.sv` → every
-  video/memory/sound/CPU module — synthesizes cleanly under real Quartus 17.0: 0 errors, 22382
-  logic cells, 1349 RAM segments, 3 PLLs, 39 DSP elements, zero warnings in the new top-level
-  code. This closes the last open item ("Instantiate the result inside `Psikyo.sv`/`emu.sv`")
-  from "Next steps" item 1 below.
-
-- **First full Quartus compile (place-and-route, not just Analysis & Synthesis): a real
-  `.sof`/`.rbf` now exists**, and two genuine bugs were found and fixed getting there, neither
-  visible to `quartus_map` alone:
-  1. **Illegal PLL phase shift.** `quartus_fit` rejected `rtl/pll/pll_0002.v`'s
-     `SDRAM_CLK` phase_shift1 (`-3000 ps`, the value flagged as an unverified starting point
-     when the PLL was first configured) outright — negative phase shifts aren't legal for this
-     PLL configuration at all, only `0ps` and positive values in ~132.275ps steps are. Fixed by
-     converting to the equivalent positive phase (period − 3000ps, rounded to the nearest legal
-     step Quartus itself reported: `8598 ps`). Still not independently hardware-tuned.
-  2. **A pathological synthesized divider was the single worst timing-closure offender in the
-     whole design.** With the PLL fix in place, the Fitter produced a `.sof`/`.rbf` but with
-     -5.862ns worst-case setup slack at `clk_sys` (85.909091MHz) — Timing requirements not met.
-     `report_timing`'s worst path traced straight through
-     `sprite_display_list_walker.sv`'s `sprite_index <= sram_data % 16'd768;`: Quartus
-     synthesizes a non-power-of-2 modulo as a slow generic iterative divider
-     (`Mod0|auto_generated|divider`), which dominated the path's entire delay. Replaced with an
-     explicit 7-stage conditional-subtraction chain (the standard technique for modulo by a
-     compile-time constant — subtracts decreasing power-of-2 multiples of 768 when they fit),
-     kept at the full 16-bit input range on purpose (matches MAME's own `sprite %= 0x300`
-     applied to the raw display-list word with no prior masking, per this module's own header —
-     didn't assume a narrower real range without evidence). Same one-cycle combinational timing,
-     no interface change, so no regression risk to the module's own testbench or
-     `sprite_render_engine`'s integration test (both re-verified, still pass). Cut worst-case
-     setup slack to -1.096ns — an 81% reduction, confirming this was indeed the dominant
-     offender. A smaller, more ordinary timing gap remains (a 6-logic-level path through
-     `sprite_record_decode.sv`'s Y-position adder into `sprite_render_engine`'s `fb_y` register)
-     — not chased further this pass, since closing it safely would mean pipelining inside the
-     sprite render engine's per-column state machine, a materially bigger and riskier change than
-     the divider fix was. Tracked as a known open item; the design still produces a working
-     `.sof`/`.rbf`, just without full timing closure yet.
-
-- **jt10's SSG (jt49) verified for the first time, closing a real vendoring gap.** Building
-  jt10's first-ever testbench found that `jt12_top.v` instantiates a module named `jt49` (the
-  YM2610's embedded AY-3-8910-compatible SSG channel) that simply didn't exist anywhere in this
-  repo — `rtl/sound/jt10/PROVENANCE.md`'s original vendoring pass had excluded jt12's own
-  `jt49/` submodule as "scaffolding," which was a mistake, not a safe trim; jt10 couldn't even
-  elaborate without it. Fixed by vendoring `rtl/sound/jt49/` separately (own `PROVENANCE.md`),
-  commit `47301ed` at github.com/jotego/jt49, GPL-3.0 (same posture as jt10 itself). With it in
-  place, the full jt10/jt12_top dependency tree compiles clean under ModelSim (0 errors, 0
-  warnings) — the first of jt10's `PROVENANCE.md` "Status" checkboxes to close.
-
-  `sim/jt10_tb/tb_jt10_ssg.sv` then verifies the SSG as a real audio-domain functional test, not
-  just a compile check: drives channel A through jt10's real CPU register-write protocol, and
-  checks the generated square wave's period on the real `psg_A` output against a frequency
-  formula derived directly from `jt12_div.v`/`jt49_cen.v`/`jt49_div.v`'s actual clock-divider
-  chain (not assumed from a datasheet) — exact match across two independent period values
-  (16384 and 8192 clk cycles) plus their 2:1 ratio. First run failed at exactly half the
-  expected value in both cases; a real bug, but in the testbench's own measurement window
-  (spanned a half-period, not a full one), not in jt49 — the exact 2x factor and preserved 2:1
-  ratio between the two cases were what pointed at a measurement bug rather than a real one.
-  FM channel and ADPCM-A/B ROM interface verification remain explicitly out of scope for this
-  pass (FM synthesis correctness needs its own dedicated pass, not a token check) — tracked in
-  `rtl/sound/jt10/PROVENANCE.md`, including a real `jt10_acc.v` port-width warning found in
-  passing and not yet root-caused. jt10 itself is still not wired into `Psikyo.sv` (`ym_din`
-  tied to `0`) — that's "Next steps" item 2 below.
-
-- **All nine `.mra` files reworked to the finalized DDRAM address map.** Every file's ROM
-  layout previously used a tightly-packed per-game concatenation (flagged provisional in each
-  header since before `docs/phase1_ddram_map.md`'s fixed-region layout existed); now every
-  file uses that real, fixed-region map (`maincpu`@`0x000000`/`0x200000`,
-  `audiocpu`@`0x200000`/`0x040000`, `sprites`@`0x240000`/`0x800000`,
-  `tiles`@`0xA40000`/`0x200000`, `ymsnd:adpcma`@`0xC40000`/`0x100000`,
-  `ymsnd:adpcmb`@`0xD40000`/`0x080000`, `spritelut`@`0xDC0000`/`0x040000`), padded with
-  `<part repeat="0xNNNN">FF</part>` filler (matching the precedent in
-  rmonic79/Arcade-Raiden_MiSTer's own `.mra` files) wherever a set's actual content is smaller
-  than its region's reservation. Every file's total padding cross-checked against hand
-  computation before committing. This closes the ROM-layout half of the "not yet consumed by
-  any RTL" caveat every file carried — the DIP status-bit-position half is no longer provisional,
-  see "`Psikyo.sv` top-level built" above (`dsw_in = status[47:16]`).
-
-  **Clone-set `zip=` fixed for split-romset compatibility, header comments trimmed.** Every
-  clone `.mra` under `_alternatives/` only listed its own zip (e.g. `zip="sngkace.zip"`) — fine
-  for a merged romset, but wrong for a split one, where the clone's own zip only holds what
-  differs from its parent (most of these clones share nearly everything but maincpu/audiocpu
-  with their parent, per each file's own region notes) and the shared content simply wouldn't be
-  found. Fixed by listing both, pipe-separated, parent second (`sngkace/sngkacea/samuraiak` →
-  `+samuraia.zip`, `gunbirdj/gunbirdk` → `+gunbird.zip`, `btlkroadk` → `+btlkroad.zip`) —
-  `releases/sync-mame-roms.sh`'s own `zip=` parsing already anticipated pipe-separated values,
-  so this aligns the `.mra` files with tooling written for it. Separately, every file's header
-  `<!-- -->` comment block had grown into multi-paragraph prose mostly restating facts already
-  visible elsewhere in the file (the parent relationship is now in `zip=` itself; per-region
-  notes already sit inline next to the ROM parts they describe) — trimmed to just the legal
-  notice and genuinely non-obvious facts, and dropped every file's stale `<about
-  comment="...not yet verified against a built core"/>` attribute (no longer true, and was never
-  more than a duplicate of this document's own history).
-
-Every RTL module so far has been verified in ModelSim against an independently-computed
-reference (not the RTL's own expressions), exhaustively or near-exhaustively over its realistic
-input domain — see individual module headers and commit messages for verification counts and
-any bugs (real or false-alarm) found along the way.
+Every RTL module has been verified in ModelSim against an independently-computed reference
+(exhaustively or near-exhaustively over its realistic input domain) — see individual module
+headers and commit messages for verification counts.
 
 ## Hardware reality (from the driver, not assumption)
 
@@ -738,9 +104,7 @@ different sound/protection configurations sharing one video architecture:
 | SH403/SH404 | Strikers 1945, Tengai | 68EC020 @16MHz | LZ8420M (Z80 core) @8MHz | YMF278B (OPL4) | PIC16C57 @4MHz — **but MAME runs it with `.set_disable()` and fully simulates the protection responses in C++** (`s1945_mcu_*` in psikyo.cpp), it never executes real PIC code |
 
 (Excluded: s1945bl/tengaibl bootlegs — different memory map, OKI M6295 audio instead of YM parts,
-no Z80/protection, extra sprite-buffer RAM copy behavior the real boards don't have. Genuinely
-different-enough hardware that folding it in would mean maintaining two divergent memory maps and
-video-vblank paths for no benefit to genuine-PCB accuracy.)
+no Z80/protection, extra sprite-buffer RAM copy behavior the real boards don't have.)
 
 Video hardware (PS2001B/PS3103/PS3204/PS3305, from `psikyo_v.cpp`) is identical across all of the
 above and is entirely custom — this is the real engineering content of the project:
@@ -761,169 +125,103 @@ above and is entirely custom — this is the real engineering content of the pro
 
 | Chip | Plan | Source |
 |---|---|---|
-| 68EC020 | **TG68K.C** (VHDL, only viable open 020 core) | github.com/TobiFlex/TG68K.C — known rough edges in 68EC020 mode; Phase 0 spike required before committing further |
-| Z80 (sound CPU) | **T80** (Daniel Wallner core) | embedded directly in dozens of MiSTer-devel arcade cores, e.g. Arcade-TaitoSystemSJ_MiSTer, Arcade-Raiden_MiSTer, Arcade-Galaga_MiSTer — drop-in, low risk |
-| YM2610 | **jt10** | github.com/jotego/jtcores (JTFRAME) — pull the module directly rather than adopting full JTFRAME, same way NeoGeo_MiSTer embeds it (Neo Geo's sound board is Z80+YM2610, making that core the best reference for the T80+jt10 wiring pattern) |
-| YMF278B (OPL4, Phase 2 only) | **No existing RTL core anywhere.** `ymfm` (github.com/aaronsgiles/ymfm, BSD) is MAME's own C++ model and the best spec/behavior reference, but it's software, not synthesizable. jtopl (jotego) only covers OPL2/3, not OPL4's wavetable+PCM extensions. This will need to be written from scratch against the ymfm reference — budget it as comparable in size to the 68020 CPU risk, not a footnote. | — |
-| PIC16C57 | **Not emulated as a CPU.** Reimplement the `s1945_mcu_*` state machine from psikyo.cpp directly as a small RTL FSM — this mirrors what MAME itself does (the PIC is `set_disable()`'d in MAME) | `psikyo.cpp:95-225` |
-| LZ8420M | Treat as T80-compatible (it's a Z80 core variant); confirm no divergent behavior is actually exercised before assuming full compatibility | — |
-| PS2001B/PS3103/PS3204/PS3305 (tilemap+sprite video) | **Custom RTL, no shortcut.** No FPGA implementation of these exists anywhere (checked). CAVE's zoom-sprite engine (Arcade-Cave_MiSTer) is the closest conceptual analog — 68K-era arcade hardware with double-buffered zoom sprites — but it's Chisel/Scala on a different build pipeline, so it's a *design reference only*, not code to port into a Quartus/Verilog project | `psikyo_v.cpp` (full file read) |
-| Top-level framework (HPS, SDRAM ctrl, OSD, raw video timing, MRA/ROM loader glue) | **MiSTer-devel/Template_MiSTer** — the official generic starting point for new cores (per your direction). It's not arcade-specific out of the box, so the arcade-side wiring (MRA-driven ROM loader, per-game DIP/status-bit layout, dual-tilemap+sprite video pipeline shape) should be cross-checked against an existing arcade core built the same way, e.g. rmonic79/Arcade-Raiden_MiSTer or atrac17/Toaplan2 — same era, same "shmup with zoom sprites + banked tile ROMs" shape | github.com/MiSTer-devel/Template_MiSTer (base), github.com/rmonic79/Arcade-Raiden_MiSTer, github.com/atrac17/Toaplan2 (arcade-wiring reference) |
-| CRT geometry adjustment | **CRT_Offset module** — standard MiSTer-devel video-timing helper letting users nudge H/V position and porch timing from the OSD, present in most arcade cores of this class | `sys/`-adjacent, wired at the raw video timing generator stage; confirm exact module name/path against a reference core (e.g. Raiden_MiSTer/Toaplan2) when the top-level timing generator is built |
-| DIP switches / controls | **Framework-standard status-bit/DIP mapping** — per-game DIP layout comes from each driver's `INPUT_PORTS_START`/DIP tables (already flagged in "Verification strategy" below as needing individual attention per game/region), exposed via the OSD status bits the same way every MiSTer arcade core does; controls mapped through the standard MiSTer input framework (`joystick`/`player_1`/`player_2` conventions), not a custom scheme | `psikyo.cpp` per-game `INPUT_PORTS_START` blocks; `sys/` input framework |
-| High score persistence | **hiscore.v** — standard MiSTer-devel high-score save/load module. Needs each game's high-score RAM region/format identified from the driver (or from MAME's own hiscore.dat entries if present for these games) before it can be wired up | github.com/MiSTer-devel (hiscore.v is a common, mostly-generic module across many arcade cores) — Phase 2/polish-stage item, not needed for initial bring-up |
+| 68EC020 | **TG68K.C** (VHDL, only viable open 020 core) | github.com/TobiFlex/TG68K.C |
+| Z80 (sound CPU) | **T80** (Daniel Wallner core) | embedded in dozens of MiSTer-devel arcade cores (Arcade-TaitoSystemSJ_MiSTer, Arcade-Raiden_MiSTer, Arcade-Galaga_MiSTer) |
+| YM2610 | **jt10** | github.com/jotego/jtcores (JTFRAME) — pulled directly, same pattern as NeoGeo_MiSTer |
+| YMF278B (OPL4, Phase 2 only) | **No existing RTL core anywhere.** `ymfm` (github.com/aaronsgiles/ymfm, BSD) is MAME's own C++ model, best spec/behavior reference but not synthesizable. jtopl only covers OPL2/3. Written from scratch against `ymfm` — comparable risk/size to the 68020 CPU. | — |
+| PIC16C57 | **Not emulated as a CPU.** Reimplement `s1945_mcu_*` from psikyo.cpp as a small RTL FSM (mirrors MAME's own `set_disable()` approach) | `psikyo.cpp:95-225` |
+| LZ8420M | Treat as T80-compatible; confirm no divergent behavior is actually exercised | — |
+| PS2001B/PS3103/PS3204/PS3305 (tilemap+sprite video) | **Custom RTL, no shortcut.** CAVE's zoom-sprite engine (Arcade-Cave_MiSTer) is a design reference only (Chisel/Scala, different pipeline), not portable code. | `psikyo_v.cpp` |
+| Top-level framework | **MiSTer-devel/Template_MiSTer**, cross-checked against rmonic79/Arcade-Raiden_MiSTer / atrac17/Toaplan2 for arcade-specific wiring | github.com/MiSTer-devel/Template_MiSTer |
+| CRT geometry adjustment | **CRT_Offset module** — standard MiSTer-devel helper, not yet wired in | confirm exact path against Raiden_MiSTer/Toaplan2 when built |
+| DIP switches / controls | Framework-standard status-bit/DIP mapping, per-game layout from `INPUT_PORTS_START` | `psikyo.cpp`, `sys/` |
+| High score persistence | **hiscore.v** — standard module, Phase 2/polish item | github.com/MiSTer-devel |
 
 ## Phased roadmap
 
-**Phase 0 — CPU spike (de-risk before committing to the full plan)**
-Stand up TG68K.C alone in a minimal Quartus 17.x project on the DE10-nano, boot it against a
-Psikyo ROM's POST/reset code, and confirm 68EC020-mode instruction coverage is sufficient. This
-is the one component with no fallback if it's broken — resolve first.
+**Phase 0 — CPU spike: complete** (see Progress above).
 
-**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road)**
-Simplest sound/protection config (Z80+YM2610, no MCU, no YMF278B) — proves out the full pipeline:
-TG68K.C integration, T80+jt10 sound subsystem, SDRAM tile/sprite ROM banking, and the from-scratch
-tilemap + zoom-sprite video engine (the hard part, and shared unchanged by every later phase).
-Exit criteria: all three games booting, correct sprite zoom/priority, correct tilemap
-size-switching and row-scroll, working `.mra` files for each region variant in the driver's
-input-port tables.
+**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road): RTL
+complete, hardware bring-up underway.** Exit criteria: all three games booting, correct sprite
+zoom/priority, correct tilemap size-switching and row-scroll, working `.mra` files for each region
+variant.
 
-**Phase 2 — SH403/SH404 hardware (Strikers 1945, Tengai)**
-Adds the simulated-PIC protection FSM and, the larger item, the from-scratch YMF278B core. Given
-the YMF278B has no existing implementation, treat "get real YMF278B audio correct" as its own
-sub-milestone with its own de-risking spike (start from `ymfm`'s C++ behavior as the golden
-reference), gated separately from the rest of Phase 2's bring-up. This is also the final phase —
-with bootlegs out of scope, Phase 2 closing out (region/DIP sweep, remaining `.mra` variants, save
-states if desired, final timing/accuracy passes) completes the project.
+**Phase 2 — SH403/SH404 hardware (Strikers 1945, Tengai): not started.** Adds the simulated-PIC
+protection FSM and the from-scratch YMF278B core (its own de-risking spike, gated separately from
+the rest of Phase 2). Final phase — closing it out (region/DIP sweep, remaining `.mra` variants,
+save states if desired, final timing/accuracy passes) completes the project.
 
 ## Verification strategy
 
-- **Simulation-first for the video engine**: the tilemap/sprite logic is complex enough (4 dynamic
-  tilemap geometries, per-line/per-tile rowscroll, LUT-indirected zoom sprites) that it should be
-  testbenched against known-good frame data pulled from MAME (`-debug`/frame dump or a custom MAME
-  trace) before ever touching hardware — this is standard practice for the CAVE/Toaplan2-class
-  cores this project is modeled on.
-- **Per-game `.mra` correctness**: build MRAs directly from each driver's `ROM_START` block and
-  `INPUT_PORTS_START`/DIP tables (region CONFNAME blocks differ per game — samuraia/sngkace/
-  gunbird/btlkroad/s1945 each have their own region-bit encoding, don't assume they match).
-- **Hardware bring-up**: DE10-nano + Quartus 17.x build per phase exit criteria above; A/B against
-  MAME frame-by-frame for sprite zoom curve accuracy and tilemap size-switch glitches (both
-  flagged as "not quite right" in the driver's own comments). With no PCB available, MAME is the
-  only ground truth this project has — treat matching it as the correctness bar, not real silicon.
+- **Simulation-first for the video engine**: testbenched against known-good/independently-derived
+  reference data before touching hardware, standard practice for CAVE/Toaplan2-class cores.
+- **Per-game `.mra` correctness**: built directly from each driver's `ROM_START`/
+  `INPUT_PORTS_START`/DIP tables — region encodings differ per game, never assumed to match.
+- **Hardware bring-up**: DE10-nano + Quartus 17.x build per phase exit criteria; A/B against MAME
+  frame-by-frame for sprite zoom curve accuracy and tilemap size-switch glitches (both flagged as
+  "not quite right" in the driver's own comments — with no PCB, MAME's own output is the accuracy
+  target, not real silicon behavior beyond what MAME itself gets right).
 
 ## Repository setup
 
-Dev repo lives at **`D:\Mister-Psikyo`**, a new local git repository (`git init`, no remote
-required) seeded from **MiSTer-devel/Template_MiSTer**. This is separate from the current working
-directory (`_Arcade` inside `meatcores-main`), which is your personal MiSTer *distribution* folder
-for prebuilt `.rbf`/`.mra` deployment, not a source tree — only the finished `.rbf`/`.mra` outputs
-get copied over to `_Arcade/cores` once builds are ready, the way your other cores already are.
+Dev repo: **`D:\Mister-Psikyo`**, local git repo (`origin` → github.com/ppriest/MiSTer-Psikyo.git),
+seeded from **MiSTer-devel/Template_MiSTer**. Separate from `_Arcade` (personal MiSTer
+distribution folder — only finished `.rbf`/`.mra` outputs get copied there, not a source tree).
+Convention: `develop` is the working branch, `master` only gets merges when explicitly asked.
 
-**Release artifacts** (once builds exist — not yet, still deep in RTL): the generated per-game
-`.mra` files plus the compiled `.rbf`, named `Arcade-Psikyo_{date}.rbf`, get committed into a
-`releases/` folder in this repo.
+**Release artifacts**: generated per-game `.mra` files plus the compiled `.rbf`, named
+`Arcade-Psikyo_{date}.rbf`, committed into `releases/`.
 
 ## Open items / assumptions to revisit
 
-- **No original Psikyo PCB** (confirmed) — this project is built purely from MAME source +
-  datasheets/chip documentation, with no genuine-hardware bus/video signals to capture as ground
-  truth. That makes **MAME's own emulated output the de facto accuracy target**, including its
-  acknowledged uncertainties: the driver's own comments flag the layer-enable bits, sprite zoom
-  curve, and tilemap size-switch behavior as "not quite right" / unverified, and there's no board
-  to resolve those beyond matching MAME's behavior as closely as possible.
-  Separately: **DE10-nano hardware bring-up is available** — copy `.rbf`/`.mra` over and launch
-  manually, and (as of 2026-08-21) a MiSTer is set up with a USB Blaster II-style cable to the
-  DE10-nano's JTAG port, meaning direct Quartus programming/debug should become possible in
-  addition to the copy-and-launch black-box flow. **Not yet reachable from this dev
-  environment**: `jtagconfig` reports "No JTAG hardware available" and no Blaster/FTDI device
-  shows up in Windows' device list on this machine — the cable may be connected to a different
-  machine than this session runs on, or not yet fully connected/drivers not installed. Revisit
-  (recheck `jtagconfig`) before assuming JTAG programming is actually usable from here.
-
-  **Reference for when JTAG bring-up actually starts**: danifunker/lbmactwo_MiSTer's
-  `docs/MISTER_HARDWARE_DEBUGGING.md` (github.com/danifunker/lbmactwo_MiSTer, a real DE10-nano
-  Cyclone V core) documents the practical workflow in useful detail — worth reading in full at
-  that point, not just this summary:
-  - **Programming**: JTAG chain has 2 devices (HPS at position 1, FPGA at position 2) — program
-    with `quartus_pgm -c 1 -m jtag -o "p;output_files/<name>.sof@2"` (the `@2` matters; wrong
-    device targets the HPS instead of the FPGA). `quartus_pgm --list`/`-a` to check detection.
-  - **In-system probing without rebuilding**: prefers Altera `altsource_probe` (ISSP) megafunction
-    instances over SignalTap for a design near its ALM budget — SignalTap costs block RAM/fit
-    margin, ISSP costs less and is read via a Tcl script (`quartus_stp_tcl -t script.tcl`) against
-    a running bitstream. Their design (~80% ALM with a lite 68881 FPU) caps out around 19 probes
-    before fit failures; each probe is deliberately kept read-only and 4-char-tagged.
-  - **Debugging patterns**: a free-running counter tied to a bus-cycle strobe (e.g. `_cpuAS`) that
-    stops advancing is how they detect a hung CPU; *shifting* (not constant) video noise between
-    screenshots indicates VRAM scanout reading stale data under SDRAM arbiter starvation, not a
-    fixed addressing bug — directly the same failure family as this project's own SDRAM
-    contention work (`docs/phase1_sdram_map.md`'s residual-throughput findings, and the real
-    byte-order bug `rtl/memory/gfxrom_byte_reorder.sv` fixed) — worth specifically checking for
-    both patterns (byte-order and arbiter starvation) once this project reaches real hardware,
-    since sim can't surface either on its own (their doc's own "sim vs. hardware" list names both
-    as things Verilator-only testing missed for them too).
-  - **MiSTer only auto-loads ROM index 0** — a second ROM region (their case: a declaration ROM)
-    needs baking into the bitstream via `$readmemh` if used, not relying on HPS download. Worth
-    checking against this project's own `.mra` region layout once top-level integration wires up
-    `ioctl_download` for real.
-  - Screenshot capture via the MiSTer Remote web API: `curl -s -X POST
-    http://<mister-ip>:8182/api/screenshots`.
-- **YMF278B de-risking spike** should probably happen early (maybe alongside Phase 0) rather than
-  right before Phase 2, given it's the other component with no existing shortcut — worth deciding
-  scheduling once Phase 1 is underway and its actual cost is clearer.
-- **Sprite frame-renderer throughput is still unbudgeted at the whole-frame/whole-game level,
-  though one real single-sprite data point now exists.** `sim/port2_sdram_tb/tb_port2_sdram.sv`
-  measured one real 16×16 (1 sub-tile) sprite against the actual SDRAM transport (not the ~4-cycle
-  synthetic ROM latency the rough math below assumed): 514 cycles alone, 736 under sustained
-  maincpu+audiocpu contention. Extrapolating that single-sub-tile cost across a worst-case
-  display list is still the open question — 1023 entries × up to 64 sub-tiles/entry (8×8-tile
-  sprites) would be far beyond one frame period at any realistic clock, but real games are
-  extremely unlikely to hit that theoretical worst case, and this hasn't been checked against
-  actual per-game sprite/sub-tile counts (no MAME frame trace pulled yet). Revisit once real
-  per-game numbers are known — may need a per-sub-tile cycle budget/drop-excess bound, a faster
-  render clock, or reduced ROM latency (e.g. wider on-chip gfx ROM bursts).
+- **Pause function, mapped to a controller button** — suspend the core (freeze `clk_sys`/`ce_pix`
+  gating or hold everything in a frozen state without losing it) so a single frame can be held
+  still on screen. Standard practice for bring-up — makes it far easier to capture a transient
+  visual glitch that would otherwise flash past in one frame. Not yet designed — needs a real
+  mechanism (likely gating `ce_pix`/frame-buffer swap rather than the CPU clock itself, so audio
+  doesn't also need to freeze/resume cleanly) and a status-bit/OSD or joystick-button mapping.
+- **No original Psikyo PCB** (confirmed) — MAME's own emulated output is the accuracy target,
+  including its acknowledged uncertainties (layer-enable bits, sprite zoom curve, tilemap
+  size-switch behavior all flagged "not quite right" in the driver itself).
+  DE10-nano hardware bring-up IS available and now underway (see Progress above) — a MiSTer is
+  set up with SSH access and (as of 2026-08-21) a USB Blaster II-style JTAG cable, though JTAG
+  itself isn't yet reachable from this dev environment (`jtagconfig` reports no hardware detected
+  here — recheck before assuming JTAG programming/probing is usable from this machine). See
+  LESSONS_LEARNED.md's "Real hardware bring-up" section for the working SSH/SCP/Remote-API deploy
+  flow already in use, and danifunker/lbmactwo_MiSTer's
+  `docs/MISTER_HARDWARE_DEBUGGING.md` for JTAG-specific technique (ISSP probing, JTAG chain
+  addressing) once that path opens up.
+- **YMF278B de-risking spike** should probably happen early (maybe alongside/soon after Phase 1
+  wraps) rather than right before Phase 2 — worth deciding scheduling once Phase 1 hardware
+  bring-up is further along.
+- **Sprite frame-renderer throughput is unbudgeted at the whole-frame/whole-game level.** One real
+  single-sprite data point exists (`sim/port2_sdram_tb/`: 514 cycles alone, 736 under sustained
+  contention) but extrapolating across a worst-case display list (1023 entries × up to 64
+  sub-tiles/entry) hasn't been checked against real per-game sprite/sub-tile counts. Revisit once
+  real per-game numbers are known.
 - **samuraia/sngkace ADPCM-A sample ROM needs a bit 6/7 swap not yet implemented anywhere.**
-  MAME's `init_sngkace()` (psikyo.cpp) applies `out[7]=in[6], out[6]=in[7]` to the entire
-  `ymsnd:adpcma` region for samuraia/samuraiak/sngkace/sngkacea ONLY — confirmed directly from the
-  driver's `GAME()` table, not gunbird/btlkroad despite identical sound hardware, and not either
-  Phase 2 game. This is a real ROM-mastering artifact (Samurai Aces/Sengoku Ace's audio will
-  decode as garbage without it), can't be expressed in `.mra` (byte-level format only, no
-  intra-byte bit permutation), and needs a per-game select signal to gate it correctly since it
-  must not apply to Gun Bird/Battle K-Road sharing the same core. Full writeup and RTL options in
-  `docs/phase1_memory_map.md`'s new "samuraia/sngkace ADPCM-A sample ROM: bit 6/7 swap" section —
-  belongs in the sound subsystem work below, most naturally as a download-time fixup alongside
-  `sdram_download.sv`.
+  MAME's `init_sngkace()` applies `out[7]=in[6], out[6]=in[7]` to the `ymsnd:adpcma` region for
+  samuraia/samuraiak/sngkace/sngkacea ONLY (not gunbird/btlkroad despite identical sound hardware).
+  Real ROM-mastering artifact, can't be expressed in `.mra` (byte-level only), needs a per-game
+  select signal. Full writeup in `docs/phase1_memory_map.md`; belongs alongside
+  `sdram_download.sv` as a download-time fixup.
+- **Timing closure not yet final.** First full place-and-route produces a working `.sof`/`.rbf`
+  but had residual negative setup slack after fixing the dominant offender (a synthesized mod-768
+  divider, see LESSONS_LEARNED.md). Remaining gap is a smaller arithmetic path in
+  `sprite_record_decode.sv`/`sprite_render_engine.sv` — needs a real pipelining pass, not yet
+  attempted since it risks disturbing the render engine's per-column state machine timing.
 
 ## Next steps
 
-See "Progress" above for current status. Immediate next items, in order:
-
-1. Top-level integration: **done for sngkace-layout boards.** `Psikyo.sv` (see "Progress"
-   above — "`Psikyo.sv` top-level built") now instantiates the full `rtl/psikyo_top.sv` chain
-   (`psikyo_core.sv` video+CPU, `psikyo_sdram_top.sv` SDRAM backend, board-appropriate sound CPU
-   wrapper) against `hps_io`, a real PLL, and real video output, with the whole chain verified
-   under real Quartus 17.0 synthesis (0 errors/warnings). DIP status-bit positions are resolved
-   generically (`dsw_in = status[47:16]`, matching every `.mra`'s own convention) — no longer an
-   open item. What's left:
-   - A `BOARD_GUNBIRD(1'b1)` build variant for gunbird/btlkroad (currently `Psikyo.sv` fixes
-     `BOARD_GUNBIRD` to `1'b0`/sngkace only).
-   - The CRT_Offset module and hiscore.v — both later-stage/polish, not needed for initial
-     bring-up — see "Component reuse map" above.
-   - The DDRAM stack (`ddram_phy`/`ddram_arbiter`/`ddram_download`) remains built and available
-     but is no longer Phase 1's critical path (see `docs/phase1_ddram_map.md`'s header note).
-   - **Timing closure: not yet complete.** The first full Quartus compile (see "Progress" above
-     — "First full Quartus compile") produces a real `.sof`/`.rbf` but still has -1.096ns
-     worst-case setup slack after fixing the dominant offender (a synthesized mod-768 divider).
-     The remaining gap is a smaller, more ordinary arithmetic path in
-     `sprite_record_decode.sv`/`sprite_render_engine.sv` — needs a real pipelining pass, not
-     chased yet since it risks disturbing the render engine's per-column state machine timing.
-2. Sound subsystem: **SSG (jt49) verified** (see "Progress" above — "jt10's SSG (jt49) verified
-   for the first time"). Still needed before wiring jt10 into either sound CPU wrapper's YM I/O
-   chip-select bus: FM channel and ADPCM-A/B ROM interface verification (audio-domain, not just
-   compile-clean — tracked in `rtl/sound/jt10/PROVENANCE.md`, including an unresolved
-   `jt10_acc.v` port-width warning found in passing); ADPCM-A/B ROM banking once jt10 itself is
-   fully trusted; and applying the samuraia/sngkace ADPCM-A bit 6/7 swap (see the open item
-   above) during ROM download.
-3. DE10-nano black-box bring-up — an `.rbf` now exists (`output_files/Psikyo.rbf`, not yet
-   committed to `releases/` — see the timing-closure caveat above before treating it as
-   release-quality). Real hardware bring-up is otherwise gated on the JTAG-reachability open
-   item above.
+1. **Confirm the RESET/HALT fix on real hardware with debug instrumentation fully removed** (in
+   progress — see Progress above) and commit that body of work.
+2. A `BOARD_GUNBIRD(1'b1)` build variant for gunbird/btlkroad (currently `Psikyo.sv` fixes
+   `BOARD_GUNBIRD` to `1'b0`/sngkace only).
+3. Sound subsystem: jt10 FM channel + ADPCM-A/B ROM interface verification (audio-domain, not
+   just compile-clean — tracked in `rtl/sound/jt10/PROVENANCE.md`, including an unresolved
+   `jt10_acc.v` port-width warning), then wire jt10 into the sound CPU's YM I/O bus and apply the
+   samuraia/sngkace ADPCM-A bit 6/7 swap during ROM download.
+4. Timing closure pass on `sprite_record_decode.sv`/`sprite_render_engine.sv` (see Open items).
+5. CRT_Offset module and hiscore.v — later-stage/polish, not needed for initial bring-up.
+6. Continue DE10-nano bring-up now that the CPU boots: verify actual gameplay/graphics rendering
+   correctness (not just "boots"), design/implement the Pause feature (see Open items).

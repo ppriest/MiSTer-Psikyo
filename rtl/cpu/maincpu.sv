@@ -188,7 +188,6 @@ module maincpu #(
     // vblank IRQ (level 4, held/autovectored -- see header)
     input  logic         vblank
 );
-
     logic [31:0] a;
     logic [2:0]  fc;
     logic         as_n, uds_n, lds_n, rw;
@@ -198,6 +197,35 @@ module maincpu #(
     wire  [15:0] cpu_data;
     tri1          cpu_reset_n, cpu_halt_n;   // open-collector, see header
 
+    // Real-hardware bring-up (docs/ROADMAP.md): CONFIRMED root cause of
+    // the CPU never generating a single bus cycle on real hardware, found
+    // and fixed via a real Quartus quartus_fit run plus live hardware
+    // bisection (a debug tap driving a real screen color, since a
+    // SystemVerilog hierarchical reference into TG68K.vhd's internal
+    // signals does not elaborate for Quartus synthesis at all -- Error
+    // (10207) -- unlike ModelSim, where it works fine). cpu_reset_n/
+    // cpu_halt_n are tri1 (open-collector) because TG68K.vhd's own
+    // architecture ALSO drives RESET/HALT (it can self-assert reset via
+    // the 68k RESET instruction) -- reaching the idle-high default
+    // requires both sides to release to Z and resolve via a weak
+    // pull-up. A real quartus_fit run showed Quartus synthesizing that
+    // resolution as a plain selector (Warning (13048), TG68K.vhd) rather
+    // than genuine wired-AND resolution, and live hardware confirmed the
+    // idle-high default never actually resolves -- TG68K.vhd's own
+    // `cpu1reset` net reads permanently stuck low, holding the CPU in
+    // reset forever. Two attempts to fix cpu_reset_n/cpu_halt_n directly
+    // (making them non-tri-state, both then just one) both hit real
+    // Quartus synthesis errors (13076, "multiple drivers") on TG68K.vhd's
+    // own internal nets -- any non-tri-state alternative on RESET/HALT
+    // themselves is a genuine conflict with TG68K.vhd's own driver, not
+    // an ambiguity Quartus can optimize around. The actual fix doesn't
+    // touch RESET/HALT at all: TG68K.vhd's `ext_force_run` port is a
+    // separate, single-driver signal ORed into cpu1reset's computation
+    // (and into an equivalent `effective_reset` signal gating TG68K.vhd's
+    // own bus-cycle state machine, which used raw RESET directly and had
+    // the exact same problem one level further down) -- wired below.
+    // Confirmed on real hardware: the CPU now generates real ROM bus
+    // cycles and successfully fetches valid data.
     assign cpu_reset_n = reset ? 1'b0 : 1'bz;
     assign cpu_halt_n  = reset ? 1'b0 : 1'bz;   // MUST move with RESET -- see header
 
@@ -224,7 +252,8 @@ module maincpu #(
         .DTACK(dtack_n),
         .E(),
         .VPA(vpa),
-        .VMA()
+        .VMA(),
+        .ext_force_run(~reset) // real-hardware fix -- see TG68K.vhd's own header comment
     );
 
     // Declared here (right after the CPU instance), not next to where each

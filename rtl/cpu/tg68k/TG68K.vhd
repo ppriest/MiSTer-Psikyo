@@ -49,10 +49,37 @@ entity TG68K is
       LDS           : out std_logic;
       RW            : out std_logic;
       DTACK         : in std_logic;
--- sync interface      
+-- sync interface
       E             : out std_logic;
       VPA           : in std_logic;
-      VMA           : out std_logic
+      VMA           : out std_logic;
+
+      -- Real-hardware fix (docs/ROADMAP.md, CONFIRMED on real hardware --
+      -- the CPU now generates real bus cycles). RESET/HALT are genuine
+      -- open-collector nets (this architecture's own driver below, PLUS
+      -- maincpu.sv's external one) needing tri-state resolution to reach
+      -- their idle-high default once both sides release. A real
+      -- quartus_fit run showed Quartus synthesizing that resolution as a
+      -- plain selector (Warning (13048)) rather than genuine wired-AND,
+      -- and a live hardware bisection (a temporary debug tap driving a
+      -- real screen color -- see git history if the technique is needed
+      -- again) confirmed the idle-high default never actually resolves --
+      -- cpu1reset read stuck low permanently, holding the CPU in reset
+      -- forever. Two attempts to fix this by making RESET/HALT's own
+      -- drivers non-tri-state hit real Quartus synthesis errors (13076,
+      -- "multiple drivers") on cpu1reset itself, then on the kernel's own
+      -- internal syncReset register -- this architecture's own driver on
+      -- RESET/HALT (below) means any non-tri-state alternative on the
+      -- same net is a genuine conflict, not just an ambiguity Quartus can
+      -- optimize around. Fixed instead with an entirely separate,
+      -- single-driver, non-tri-state signal ORed into cpu1reset's own
+      -- computation (below) -- doesn't touch RESET/HALT at all, so it
+      -- can't create a multi-driver conflict with this architecture's own
+      -- driver on those nets. Drive '1' whenever the caller wants normal
+      -- (not-reset) operation; has no effect during active reset (RESET/
+      -- HALT's own strong-0-vs-Z resolution during that window was never
+      -- the broken case -- only the idle/steady-state release was).
+      ext_force_run : in std_logic := '0'
    );
 end TG68K;
 
@@ -122,6 +149,19 @@ COMPONENT TG68KdotC_Kernel
    SIGNAL nResetOut   : std_logic;
    SIGNAL autovector  : std_logic;
    SIGNAL cpu1reset   : std_logic;
+   -- Real-hardware fix, part 2 (docs/ROADMAP.md): the ext_force_run fix
+   -- for cpu1reset only covers the kernel's own reset input -- this
+   -- architecture's OWN bus-cycle state machine below (S_state/as_s/
+   -- rw_s/... and the falling-edge as_e/rw_e/clkena_e/... pair) uses the
+   -- raw, still-tri-state-resolved `RESET` signal directly as an async
+   -- reset condition, completely separate from cpu1reset. If RESET is
+   -- stuck low (same root cause as cpu1reset was), this state machine
+   -- never leaves its own reset state, AS never asserts, and the CPU can
+   -- never start a single bus cycle -- even once the kernel itself is
+   -- correctly out of reset. Same fix, same reasoning: a new,
+   -- single-driver signal ORing in ext_force_run, not touching RESET's
+   -- own tri-state driver at all.
+   SIGNAL effective_reset : std_logic;
 
 
    type sync_state_t is (sync0, sync1, sync2, sync3, sync4, sync5, sync6, sync7, sync8, sync9);
@@ -136,7 +176,8 @@ BEGIN
    
    RESET <= '0' WHEN nResetOut='0' ELSE 'Z';
    HALT <=  '0' WHEN nResetOut='0' ELSE 'Z';
-   cpu1reset <= RESET OR HALT;
+   cpu1reset <= (RESET OR HALT) OR ext_force_run;  -- see ext_force_run's own header comment
+   effective_reset <= RESET OR ext_force_run;  -- see effective_reset's own declaration comment
 
 cpu1: TG68KdotC_Kernel 
    generic map(
@@ -211,9 +252,9 @@ cpu1: TG68KdotC_Kernel
       END IF;
    END PROCESS;
 
-PROCESS (CLK, RESET, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_s, lds_e)
+PROCESS (CLK, effective_reset, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_s, lds_e)
    BEGIN
-      IF RESET='0' THEN
+      IF effective_reset='0' THEN
          S_state <= "11";
          as_s <= '1';
          rw_s <= '1';
@@ -260,7 +301,7 @@ PROCESS (CLK, RESET, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_s, lds_e)
          END CASE;
       END IF;
       
-      IF RESET='0' THEN
+      IF effective_reset='0' THEN
          as_e <= '1';
          rw_e <= '1';
          uds_e <= '1';

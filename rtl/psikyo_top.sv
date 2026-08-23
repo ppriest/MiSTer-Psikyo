@@ -96,7 +96,15 @@ module psikyo_top #(
     output logic         vblank,
     output logic         hsync,
     output logic         vsync,
-    output logic [14:0] rgb
+    output logic [14:0] rgb,
+
+    // TEMPORARY DEBUG PATCH -- real-hardware bring-up tap, remove once the
+    // real-ROM black/purple-screen investigation (docs/ROADMAP.md) is
+    // resolved.
+    output logic         dbg_cpu_rom_req,
+    output logic         dbg_palette_wr,  // round 3: see rtl/psikyo_core.sv
+    output logic         dbg_vram_wr,     // round 3: see rtl/psikyo_core.sv
+    output logic         dbg_vregs_wr     // round 3: see rtl/psikyo_core.sv
 );
 
     logic         cpu_rom_req;
@@ -128,6 +136,9 @@ module psikyo_top #(
     logic core_reset;
     assign core_reset = reset | ioctl_download;
 
+    // TEMPORARY DEBUG PATCH -- see the dbg_cpu_rom_req port comment above.
+    assign dbg_cpu_rom_req = cpu_rom_req;
+
     psikyo_core #(.BOARD_GUNBIRD(BOARD_GUNBIRD)) u_core (
         .clk(clk), .ce_pix(ce_pix), .reset(core_reset),
         .cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
@@ -143,7 +154,9 @@ module psikyo_top #(
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
-        .hsync(hsync), .vsync(vsync), .rgb(rgb)
+        .hsync(hsync), .vsync(vsync), .rgb(rgb),
+        .dbg_palette_wr(dbg_palette_wr), .dbg_vram_wr(dbg_vram_wr),
+        .dbg_vregs_wr(dbg_vregs_wr)
     );
 
     // Board-appropriate sound CPU -- sngkace/samuraia/btlkroad/gunbird all

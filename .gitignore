@@ -40,7 +40,7 @@ c5_pin_model_dump.txt
 **/.DS_Store
 
 # ModelSim
-sim/**/work/
+work/
 transcript
 vsim.wlf
 modelsim.ini

@@ -91,7 +91,25 @@ module psikyo_core #(
     output logic         vblank,
     output logic         hsync,
     output logic         vsync,
-    output logic [14:0] rgb
+    output logic [14:0] rgb,
+
+    // TEMPORARY DEBUG PATCH -- real-hardware bring-up tap, remove once the
+    // real-ROM black/purple-screen investigation (docs/ROADMAP.md) is
+    // resolved. Round 2 (dbg_palette_wr/dbg_vram_wr/dbg_vregs_wr checking
+    // actual video-RAM writes) came back all-zero on real hardware even
+    // after ~20s of confirmed-sustained CPU execution (see Psikyo.sv's own
+    // header comment on this debug block for the full round-by-round
+    // history) -- surprising enough that round 3 repurposes these same 3
+    // wires (kept as-is to avoid replumbing) to check something upstream of
+    // video init entirely: is the CPU's own instruction stream actually
+    // progressing through the ROM, or stuck spinning in a narrow address
+    // range (e.g. near the vector table, consistent with the known-unresolved
+    // vblank-IRQ vector-fetch bug in rtl/cpu/tg68k/PROVENANCE.md), and has
+    // it ever written anything to plain work RAM at all (the most basic
+    // possible sign of real code execution, independent of video).
+    output logic         dbg_palette_wr,  // now: cpu_rom_addr ever > 0x2000 (8K)
+    output logic         dbg_vram_wr,     // now: cpu_rom_addr ever > 0x20000 (128K)
+    output logic         dbg_vregs_wr     // now: work RAM ever written
 );
 
     // ---- video timing ----
@@ -322,5 +340,10 @@ module psikyo_core #(
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
     );
+
+    // TEMPORARY DEBUG PATCH -- see port comments above (round 3).
+    assign dbg_palette_wr = (cpu_rom_addr > 19'h02000);
+    assign dbg_vram_wr    = (cpu_rom_addr > 19'h20000);
+    assign dbg_vregs_wr   = workram_cpu_wel | workram_cpu_weh;
 
 endmodule

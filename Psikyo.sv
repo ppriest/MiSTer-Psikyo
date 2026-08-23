@@ -250,8 +250,39 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.ym_dout(ym_dout), .ym_din(8'h00), // no jt10 yet -- see module header
 
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
-	.hsync(hsync), .vsync(vsync), .rgb(rgb)
+	.hsync(hsync), .vsync(vsync), .rgb(rgb),
+
+	.dbg_cpu_rom_req(dbg_cpu_rom_req),
+	.dbg_palette_wr(dbg_palette_wr), .dbg_vram_wr(dbg_vram_wr),
+	.dbg_vregs_wr(dbg_vregs_wr)
 );
+
+// TEMPORARY DEBUG PATCH -- real-hardware bring-up tap for the real-ROM
+// black/purple-screen investigation (docs/ROADMAP.md's "Next steps").
+// Round 1 (rom_req sustained-activity counter) confirmed the CPU boots and
+// keeps executing continuously (RED->GREEN). Round 2 (video-RAM write
+// activity: palette/VRAM/vregs) came back all-zero after ~20s of confirmed
+// execution -- surprising, since real game code should reach at least one
+// of those quickly. Round 3 (this build) checks further upstream: is the
+// CPU's own instruction stream progressing through the ROM address space at
+// all, or stuck spinning in a narrow low range (consistent with the
+// known-unresolved vblank-IRQ vector-fetch bug derailing it into the vector
+// table), and has it written anything to plain work RAM (the most basic
+// possible sign of real code execution). See rtl/psikyo_core.sv's own
+// header comment on these 3 wires for exactly what each now measures.
+wire dbg_cpu_rom_req, dbg_palette_wr, dbg_vram_wr, dbg_vregs_wr;
+reg dbg_palette_seen, dbg_vram_seen, dbg_vregs_seen;
+always @(posedge clk_sys) begin
+	if (reset) begin
+		dbg_palette_seen <= 1'b0;
+		dbg_vram_seen    <= 1'b0;
+		dbg_vregs_seen   <= 1'b0;
+	end else begin
+		if (dbg_palette_wr) dbg_palette_seen <= 1'b1;
+		if (dbg_vram_wr)    dbg_vram_seen    <= 1'b1;
+		if (dbg_vregs_wr)   dbg_vregs_seen   <= 1'b1;
+	end
+end
 
 assign CLK_VIDEO = clk_sys;
 assign CE_PIXEL = ce_pix;
@@ -264,9 +295,26 @@ assign VGA_VS = vsync;
 // zero-padding, which would darken max-brightness colors) -- rgb[14:10]=R,
 // rgb[9:5]=G, rgb[4:0]=B, MAME's own xRGB555 convention (R in the high
 // bits), matching docs/phase1_memory_map.md's "Palette format is xRGB_555".
-assign VGA_R = {rgb[14:10], rgb[14:12]};
-assign VGA_G = {rgb[9:5],   rgb[9:7]};
-assign VGA_B = {rgb[4:0],   rgb[4:2]};
+// TEMPORARY DEBUG PATCH -- overrides the real xRGB_555 output below with a
+// solid color reporting round 3's checks (see dbg_*_seen declarations
+// above and rtl/psikyo_core.sv's header comment): R=cpu_rom_addr ever left
+// the first 8K of ROM, G=cpu_rom_addr ever reached past 128K, B=work RAM
+// ever written. BLACK = CPU never leaves the first 8K of ROM at all despite
+// running continuously -- strong evidence of a genuine derail (e.g. stuck
+// executing near the vector table). RED-only = wanders past 8K but never
+// past 128K and never writes RAM -- still not real program flow. Any state
+// with B lit confirms real code execution regardless of the others.
+// Remove this whole block plus the dbg_* wiring above (rtl/psikyo_core.sv,
+// rtl/psikyo_top.sv, this file) once the real-ROM black/purple-screen
+// investigation (docs/ROADMAP.md) is resolved, restoring the plain
+// rgb-derived assigns beneath it as the only VGA_R/G/B drivers.
+assign VGA_R = dbg_palette_seen ? 8'hFF : 8'h00;
+assign VGA_G = dbg_vram_seen    ? 8'hFF : 8'h00;
+assign VGA_B = dbg_vregs_seen   ? 8'hFF : 8'h00;
+
+// assign VGA_R = {rgb[14:10], rgb[14:12]};
+// assign VGA_G = {rgb[9:5],   rgb[9:7]};
+// assign VGA_B = {rgb[4:0],   rgb[4:2]};
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;

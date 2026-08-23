@@ -22,7 +22,20 @@
 		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, two
 		     16-bit-wide ROMs word-swap-interleaved to reconstruct MAME's
 		     ROM_LOAD32_WORD_SWAP pairing (offset 0 = high word, offset 2 = low word).
-		     Actual content 0x80000; padded to the full reservation. -->
+		     Actual content 0x80000; padded to the full reservation.
+
+		     2026-08-23: briefly "corrected" this to swap 4-u127.bin/5-u126.bin based
+		     on a wrong mental model of the `map` attribute (assumed it picked which
+		     file supplies the high vs low word). Confirmed via
+		     github.com/MiSTer-devel/Main_MiSTer/wiki/Arcade-Roms-and-MRA-files that
+		     `map` actually reorders bytes WITHIN one part's own stream (e.g. map="10"
+		     swaps a byte pair), independent of file identity/order. Recomputing with
+		     the correct semantics against this file's ORIGINAL (unedited) pairing --
+		     u127 unswapped (map=01), u126 byte-pair-swapped (map=10), interleaved in
+		     listing order -- decodes the reset vector as SP=0xffff8000 (top of a
+		     high-address-mirrored work RAM region, a standard 68k idiom) and
+		     PC=0x00000400 (a clean, plausible code-entry address): this original
+		     pairing is correct. Reverted. -->
 		<interleave output="16">
 			<part name="4-u127.bin" crc="8c9911ca" map="01"/>
 			<part name="5-u126.bin" crc="d20c3ef0" map="10"/>
