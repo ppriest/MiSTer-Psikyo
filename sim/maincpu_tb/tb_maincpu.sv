@@ -114,13 +114,7 @@ module tb_maincpu;
             rom_valid  <= 1'b0;
         end else begin
             rom_valid <= 1'b0;
-            // rom_served matches the real bridge's handshake: once a held
-            // request has been serviced, do NOT re-accept it until req drops.
-            // Without this the model re-triggers a spurious second read the
-            // cycle rom_busy clears, because rom_valid is registered and the
-            // client cannot have dropped req yet.
-            if (!rom_req) rom_served <= 1'b0;
-            if (rom_req && !rom_busy && !rom_served) begin
+            if (rom_req && !rom_busy) begin
                 rom_busy <= 1'b1;
                 rom_cnt  <= 0;
             end else if (rom_busy) begin
@@ -128,21 +122,19 @@ module tb_maincpu;
                     rom_valid <= 1'b1;
                     rom_data  <= rom[rom_addr];
                     rom_busy  <= 1'b0;
-                    rom_served <= 1'b1;
                 end else begin
                     rom_cnt <= rom_cnt + 1;
                 end
             end
-            // Contract check, corrected 2026-08-23. This used to flag
-            // (rom_req && rom_busy) as a fault, i.e. it required req to be a
-            // one-cycle PULSE. That is backwards: rtl/memory/
-            // sdram_narrow_bridge.sv's documented client contract is HOLD req
-            // until the matching valid pulse, and every other consumer in the
-            // project does that. The model was encoding maincpu.sv's old
-            // pulsed behaviour rather than the real bridge's requirement.
-            // The genuine violation is dropping req before valid arrives.
-            if (rom_busy && !rom_req && !(rom_cnt == ROM_LATENCY - 1)) begin
-                $display("FAIL: rom_req deasserted before its valid arrived -- the bridge contract is hold-until-valid");
+            // Contract check. This was briefly "corrected" on 2026-08-23 to
+            // require a HELD req, on the strength of a hold-until-acknowledged
+            // comment in sdram_arbiter5.sv. That was wrong and the original
+            // check was right: rtl/memory/sdram_narrow_bridge.sv latches the
+            // request in B_IDLE and returns there on g_valid, so a req still
+            // asserted at that point immediately triggers ANOTHER granule
+            // read. The bridge wants a ONE-CYCLE PULSE. Reverted.
+            if (rom_req && rom_busy) begin
+                $display("FAIL: rom_req asserted while a previous ROM access was still in flight -- the bridge wants a one-cycle pulse");
                 errors++;
             end
         end

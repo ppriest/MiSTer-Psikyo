@@ -91,6 +91,13 @@ localparam CONF_STR = {
 	"-;",
 	"DIP;",
 	"-;",
+	"P1,Debug;",
+	"P1-;",
+	"P1O[56],Trace overlay,Off,On;",
+	"P1O[58:57],Trace source,CPU addr+data,CPU fetch addr,SpriteRAM wr,Palette wr;",
+	"P1O[62:59],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
+	"P1O[63],Re-arm capture,A,B;",
+	"-;",
 	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
 	"V,v",`BUILD_DATE
@@ -195,13 +202,7 @@ wire [31:0] p1p2_in = {
 // inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
 // exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
 // full derivation). Every other bit is unused by sngkace_input_r.
-wire [31:0] coin_in = {
-	8'hFF,                                    // bits 31:24 unused
-	nmi_pending,                                // bit 23
-	5'h1F,                                      // bits 22:18 unused
-	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
-	16'hFFFF                                    // bits 15:0 unused
-};
+// (declared further down, after the video timing wires it depends on)
 
 // DIP switches: status[47:16] passed straight through -- every .mra's own
 // <dip bits="16,...> entries already target this exact range (confirmed
@@ -210,10 +211,69 @@ wire [31:0] coin_in = {
 // per-game menu for whichever .mra is loaded.
 wire [31:0] dsw_in = status[47:16];
 
+// ---- debug tracer controls (rtl/debug/debug_tracer.sv) ----
+// Live from the OSD, so the capture window can be walked across a long boot
+// WITHOUT a rebuild -- that is the whole point of the module. status[55] is a
+// plain level whose CHANGE re-arms, so toggling it between A and B retriggers
+// capture without resetting the core and disturbing CPU state.
+// Bits placed in status[63:56] -- CFG byte 7 -- per docs/mister_framework_notes.md.
+// Two constraints, both learned the hard way:
+//   * The official docs state the classic O/o option syntax addresses bits
+//     0-63 ONLY (O = upper 32, o = lower 32, i.e. +32). Bits placed at 64-71
+//     were outside that window and the source select never responded.
+//   * This .mra declares FIVE <switches> bytes, and MRA switches consume
+//     8*N bits from status[16], so the DIP mechanism owns status[55:16] --
+//     even though the core only reads dsw_in = status[47:16]. Bits at 48-55
+//     were contested by it.
+// status[63:56] is above the DIP range and inside the documented window, and
+// still lands in a single CFG byte so all four controls are one byte write to
+// /media/fat/config/<core>.CFG:
+//   bit0 overlay, bits2:1 source, bits6:3 window, bit7 re-arm
+wire        dbg_overlay = status[56];
+wire [1:0] dbg_src     = status[58:57];
+wire [3:0] dbg_window  = status[62:59];
+wire        dbg_rearm   = status[63];
+wire [23:0] dbg_pixel;
+
 ///////////////////////   VIDEO   ///////////////////////////////
 
 wire [8:0] hcnt, vcnt;
 wire        hblank, vblank, hsync, vsync;
+
+// COIN port (sngkace-only): COIN1 = bit16, COIN2 = bit17, both
+// IP_ACTIVE_LOW; bit23 is MAME's z80_nmi_r() (IP_ACTIVE_HIGH, not
+// inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
+// exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
+// full derivation).
+//
+// BIT 0 IS A VBLANK STATUS FLAG, ACTIVE LOW (0 while in vblank). It used to
+// be tied high with the rest of bits 15:0, which hung the boot: on hardware
+// the CPU sat forever in
+//     000436: move.l $c00008.l, D0
+//     00043C: addq.w #1, $fffe0000.l      (a timeout counter)
+//     000442: andi.l #$1, D0
+//     000448: bne    $436                 <- spins while bit 0 is SET
+// which MAME executes too, but MAME's falls through to 00044A and then
+// copies 0x800 longs from $fffee000 to $400000 -- a sprite-RAM DMA, which is
+// exactly the thing you time to vertical blanking. So the poll is "wait for
+// vblank", and a permanently-set bit 0 means it never arrives.
+//
+// Inferred from the code's behaviour and MAME's execution path rather than
+// read out of psikyo.cpp's INPUT_PORTS (not available locally), so treat the
+// exact bit position as verified-by-experiment, not by source.
+//
+// This sits below the video wires purely because it uses vblank. Feeding a
+// psikyo_top output back into one of its inputs is safe here: vblank is
+// derived from the video counters, never from coin_in, so there is no
+// combinational loop.
+wire [31:0] coin_in = {
+	8'hFF,                                    // bits 31:24 unused
+	nmi_pending,                                // bit 23
+	5'h1F,                                      // bits 22:18 unused
+	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
+	15'h7FFF,                                   // bits 15:1 unused
+	~vblank                                     // bit 0 = VBLANK, active low
+};
 wire [14:0] rgb;
 wire        nmi_pending;
 
@@ -250,7 +310,10 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.ym_dout(ym_dout), .ym_din(8'h00), // no jt10 yet -- see module header
 
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
-	.hsync(hsync), .vsync(vsync), .rgb(rgb)
+	.hsync(hsync), .vsync(vsync), .rgb(rgb),
+
+	.dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_pixel(dbg_pixel)
 );
 
 assign CLK_VIDEO = clk_sys;
@@ -264,9 +327,14 @@ assign VGA_VS = vsync;
 // zero-padding, which would darken max-brightness colors) -- rgb[14:10]=R,
 // rgb[9:5]=G, rgb[4:0]=B, MAME's own xRGB555 convention (R in the high
 // bits), matching docs/phase1_memory_map.md's "Palette format is xRGB_555".
-assign VGA_R = {rgb[14:10], rgb[14:12]};
-assign VGA_G = {rgb[9:5],   rgb[9:7]};
-assign VGA_B = {rgb[4:0],   rgb[4:2]};
+// Normal path is the real xRGB_555 picture. When the OSD's "Trace overlay"
+// is on, the debug tracer's captured entry for this scanline is driven
+// instead -- decode it with scripts/decode_debug_screenshot.py --mode
+// scanline. No rebuild is needed to switch, so instrumentation no longer
+// costs a 12-minute round trip.
+assign VGA_R = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
+assign VGA_G = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
+assign VGA_B = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;

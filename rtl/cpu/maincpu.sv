@@ -331,9 +331,22 @@ module maincpu #(
 
     assign cpu_clkena = cpu_ce && (!mem_needed || acc_ready);
 
-    // ROM req is HELD until its valid arrives, matching
-    // rtl/memory/sdram_narrow_bridge.sv's hold-until-acknowledged contract.
-    assign rom_req = mem_needed && !is_write && is_rom && !acc_ready;
+    // ROM req is a ONE-CYCLE PULSE, not a held level.
+    //
+    // rtl/memory/sdram_narrow_bridge.sv latches the request in B_IDLE
+    // (`if (req) begin word_sel <= addr[2:1]; bstate <= B_WAIT; end`) and
+    // returns to B_IDLE once g_valid arrives. If req is still asserted then,
+    // it immediately re-enters B_WAIT and issues ANOTHER granule read, and
+    // keeps doing so until req drops -- burning SDRAM bandwidth and making
+    // cpu_rom_valid pulse repeatedly for a single CPU access.
+    //
+    // An earlier version of this rewrite held req, on the strength of a
+    // hold-until-acknowledged comment in sdram_arbiter5.sv, and "fixed" the
+    // testbench to accept that. The bridge's own state machine is the
+    // authority and it wants a pulse; the old pre-rewrite maincpu pulsed it
+    // too. Restored.
+    logic rom_req_sent;
+    assign rom_req = mem_needed && !is_write && is_rom && !acc_ready && !rom_req_sent;
 
     // ---- read mux (BRAM + input ports; ROM comes via rom_data) ----
     logic [15:0] read_mux;
@@ -352,14 +365,17 @@ module maincpu #(
 
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
-            acc_ready <= 1'b0;
-            acc_data  <= 16'h0000;
-            acc_ph    <= 2'd0;
+            acc_ready    <= 1'b0;
+            acc_data     <= 16'h0000;
+            acc_ph       <= 2'd0;
+            rom_req_sent <= 1'b0;
         end else if (cpu_clkena) begin
             // CPU has consumed this access; arm for the next one
-            acc_ready <= 1'b0;
-            acc_ph    <= 2'd0;
+            acc_ready    <= 1'b0;
+            acc_ph       <= 2'd0;
+            rom_req_sent <= 1'b0;
         end else if (mem_needed && !acc_ready) begin
+            if (rom_req) rom_req_sent <= 1'b1;   // one pulse per access
             if (acc_ph != 2'd3) acc_ph <= acc_ph + 2'd1;
             if (is_rom && !is_write) begin
                 // SDRAM latency dominates; rom_req is held until valid

@@ -84,3 +84,12 @@ sim/**/*.hex
 # Copyrighted MAME ROM dumps used for local bring-up/verification -- never
 # committed, regardless of subdirectory.
 roms/
+
+# Ad-hoc hardware capture scratch. Screenshots pulled off the MiSTer and their
+# decoded traces pile up fast during bring-up; the ones worth keeping are named
+# and committed under debug/ explicitly. scripts/decode_trace.py writes every
+# decode to debug/captures/ keyed by capture type and settings, so those persist
+# locally as a comparison record without entering the repo.
+/*.png
+/*.txt
+debug/captures/

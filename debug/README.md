@@ -35,6 +35,32 @@ jumping to `0xCD1280` after correctly fetching the reset vector from addresses
 right and the *data* coming back from SDRAM was wrong — which is a completely different
 bug from the one being chased at the time.
 
+## Expected boot appearance (from MAME)
+
+At boot samuraia shows a **self-test screen**: a solid blue background with four lines of
+text rendered vertically (the game is rotated):
+
+```
+Work RAM OK
+Obj RAM OK
+BG RAM OK
+Palette RAM OK
+```
+
+This matters for interpreting hardware captures:
+
+- **A plain blue screen is CORRECT** as far as it goes -- blue is the self-test background, not
+  a freeze or a failure colour. Psikyo titles are known for blue backgrounds/gradients. Do not
+  read a static blue screen as "hung".
+- What a blue-only screen means is that the **text is not rendering**, i.e. the tilemap/sprite
+  path is at fault, not necessarily the CPU.
+- The self-test itself exercises every RAM region, so if the CPU reaches it there MUST be
+  writes to work RAM, sprite ("Obj") RAM, tilemap ("BG") RAM and palette RAM. Tracing those
+  writes distinguishes "CPU never got this far" from "CPU is fine, rendering is broken" -- two
+  completely different halves of the system.
+- Boot to this screen takes about **10 seconds** on real hardware. Anything much longer is a
+  stall, not slow progress.
+
 ## Capturing the equivalent from real hardware
 
 There is no JTAG on this setup yet, so hardware traces come from the VGA debug-tap
