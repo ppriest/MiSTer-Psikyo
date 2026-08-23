@@ -155,10 +155,30 @@
 	     INPUT_PORTS_START(samuraia)'s "P1_P2"/"COIN" ports. 3 buttons/player. -->
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
-	<switches default="FF,FF,FD,FF,FF">
-		<!-- byte0 (status bits 0-7), byte1 (bits 8-15): reserved for standard OSD
-		     options, not game DIPs - psikyo.cpp's own DSW word leaves these bits
-		     unused ("these depends by the games", i.e. no function on this title). -->
+	<switches default="FD,FF,FF">
+		<!-- The <switches> bytes start at status[16]: byte0 -> status[23:16],
+		     byte1 -> status[31:24]. Psikyo.sv feeds those straight into the upper
+		     half of the 32-bit DSW long the CPU reads at $C00004, which is where
+		     MAME puts every DIP (its lower 16 bits are IP_ACTIVE_LOW/unused).
+		     The <dip bits="..."> values below are therefore MAME's own bit
+		     numbers, unmodified.
+
+		     Defaults match MAME's PORT_DIPNAME defaults exactly:
+		       byte0 = FD -> Flip Off, Demo Sounds ON (bit17=0), Difficulty
+		               Normal, 3 Lives, Bonus 400K, Service Mode OFF (bit23=1)
+		       byte1 = FF -> Coin Slot Shared, Coin A 1C 1C, Coin B 1C 1C,
+		               2C Start/1C Continue Off
+		       byte2 = FF -> Region World (status[39:32] feeds the DSW's LOW
+		               byte, which samuraia uses as its region jumper:
+		               ff=World ef=USA and Canada df=Korea bf=Hong Kong
+		               7f=Taiwan)
+
+		     This was "FF,FF,FD,FF,FF" (five bytes), written on the assumption
+		     that the bytes began at status[0] with two reserved ones. They do
+		     not, so the 0xFD landed on status[39:32] and the real DIP bytes came
+		     out as FF,FF - which forced Demo Sounds Off and, combined with the
+		     separate status[47:16] offset bug in Psikyo.sv, left Service Mode
+		     unreachable from the OSD. -->
 
 		<dip name="Flip Screen" bits="16" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="17" ids="On,Off"/>

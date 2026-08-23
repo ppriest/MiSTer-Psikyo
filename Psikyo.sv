@@ -204,12 +204,40 @@ wire [31:0] p1p2_in = {
 // full derivation). Every other bit is unused by sngkace_input_r.
 // (declared further down, after the video timing wires it depends on)
 
-// DIP switches: status[47:16] passed straight through -- every .mra's own
-// <dip bits="16,...> entries already target this exact range (confirmed
-// against the built releases/*.mra files), so no per-game RTL is needed
-// here; the CONF_STR's "DIP;" entry is what makes the OSD show the right
-// per-game menu for whichever .mra is loaded.
-wire [31:0] dsw_in = status[47:16];
+// DIP switches -> the 32-bit value the CPU reads at $C00004.
+//
+// MAME's psikyo DSW port (psikyo.cpp, PORT_START("DSW") /* c00004 -> c00007 */)
+// puts every DIP in the UPPER half of that long and leaves the lower half
+// unused:
+//     PORT_BIT( 0x0000ffff, IP_ACTIVE_LOW, IPT_UNUSED )
+//     0x00010000 Flip Screen      0x00020000 Demo Sounds
+//     0x000c0000 Difficulty       0x00300000 Lives
+//     0x00400000 Bonus Life       0x00800000 PORT_SERVICE_DIPLOC "SW2:8"
+//     0x01000000 Coin Slot        0x0e000000 Coin A
+//     0x70000000 Coin B           0x80000000 2C Start, 1C Continue
+//
+// This used to be `status[47:16]`, which mapped .mra bit 16 onto dsw_in[0] --
+// EVERY DIP LANDED 16 BITS LOW, in the half MAME defines as unused. The OSD
+// menu items therefore did nothing, and the bit the game actually reads as
+// Service Mode (dsw_in[23]) was driven by status[39], a bit no menu entry
+// touched: with a default-ish .CFG that bit is 0 and PORT_SERVICE is
+// ACTIVE_LOW, so the board came up stuck in Service Mode.
+//
+// The .mra's <dip bits="..."> entries already use MAME's own bit numbers
+// (16..31), so aligning them is just a matter of feeding status[31:16] into
+// the upper half.
+//
+// The LOW BYTE is not spare -- it is the region/country jumper. samuraia's
+// ports carry PORT_CONFNAME( 0x000000ff, 0x000000ff, Region ) with
+// ff=World, ef=USA & Canada, df=Korea, bf=Hong Kong, 7f=Taiwan (sngkace
+// overrides that same byte to IPT_UNKNOWN, which is why it looks unused if
+// you only read the sngkace block). It comes from the .mra's third
+// <switches> byte, status[39:32]. Tying it high would silently lock every
+// board to World.
+//
+// Byte 1 (dsw_in[15:8]) genuinely is unused and reads back as 1s, matching
+// MAME's IP_ACTIVE_LOW default for undefined bits.
+wire [31:0] dsw_in = {status[31:16], 8'hFF, status[39:32]};
 
 // ---- debug tracer controls (rtl/debug/debug_tracer.sv) ----
 // Live from the OSD, so the capture window can be walked across a long boot
@@ -312,7 +340,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
@@ -332,9 +360,26 @@ assign VGA_VS = vsync;
 // instead -- decode it with scripts/decode_debug_screenshot.py --mode
 // scanline. No rebuild is needed to switch, so instrumentation no longer
 // costs a 12-minute round trip.
-assign VGA_R = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
-assign VGA_G = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
-assign VGA_B = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
+// The overlay is PARTIAL: it takes the top 32 scanlines (the two tilemap
+// VRAM dump bands) and the bottom 8 (the control echo), and leaves rows
+// 32..215 showing the real picture.
+//
+// It used to replace the whole frame, which made the dump nearly useless for
+// comparison work: a VRAM dump is only meaningful against a KNOWN screen, and
+// with the picture hidden there was no way to tell which screen the game was
+// on when the dump was taken. Comparing such a dump against a MAME dump of a
+// named screen is guesswork -- the first attempt matched ~90%, which turned
+// out to be nothing but the zero cells agreeing.
+//
+// Rows 0..31 of the picture ARE corrupted while dumping, because those are
+// exactly the scanlines whose tilemap read ports get borrowed (see
+// rtl/psikyo_core.sv). That is a fair trade: the remaining 184 rows identify
+// the screen unambiguously, in the same screenshot as the data.
+wire overlay_here = dbg_overlay && ((vcnt < 9'd32) || (vcnt >= 9'd216));
+
+assign VGA_R = overlay_here ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
+assign VGA_G = overlay_here ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
+assign VGA_B = overlay_here ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
