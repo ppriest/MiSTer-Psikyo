@@ -35,10 +35,32 @@
 		     listing order -- decodes the reset vector as SP=0xffff8000 (top of a
 		     high-address-mirrored work RAM region, a standard 68k idiom) and
 		     PC=0x00000400 (a clean, plausible code-entry address): this original
-		     pairing is correct. Reverted. -->
-		<interleave output="16">
-			<part name="4-u127.bin" crc="8c9911ca" map="01"/>
-			<part name="5-u126.bin" crc="d20c3ef0" map="10"/>
+		     pairing is correct. Reverted.  <<< THAT CONCLUSION WAS ALSO WRONG,
+		     superseded by the note immediately below.
+		     2026-08-23 (second correction, this one verified): the block below
+		     used to be <interleave output="16"> with u127 map="01" and u126
+		     map="10". Those digits do NOT mean "swap the byte pair within this
+		     part" -- that reading was wrong. Each digit is an OUTPUT BYTE LANE
+		     (leftmost = highest byte) and its VALUE selects which input byte of
+		     that part feeds the lane, with 0 meaning "this part does not supply
+		     this lane". Confirmed against working MiSTer MRAs using both a
+		     4-part output="64" form (map="00000021"/"00002100"/... ) and a
+		     4-part output="32" form (map="1000"/"0100"/"0010"/"0001").
+		     So map="01"+map="10" at output="16" produced a BYTE-level
+		     interleave, word = {u126[i] high, u127[i] low}, which decodes the
+		     reset vector as SP=0x00ff80ff -- a corrupt, odd stack pointer --
+		     even though PC=0x00000400 comes out correct. On real hardware that
+		     boots and executes correctly from 0x400 and then dies at the first
+		     stack operation.
+		     MAME uses ROM_LOAD32_WORD_SWAP: u127 supplies the high 16-bit word
+		     of each long, u126 the low word, each word byte-swapped. As
+		     output="32" byte lanes that is u127 -> bytes 3,2 in order ("12")
+		     and u126 -> bytes 1,0 swapped ("21"). Decodes SP=0xffff8000
+		     PC=0x00000400, matching sim/psikyo_top_tb/gen_real_rom.py, which is
+		     the image the ModelSim real-ROM boot test runs from successfully. -->
+		<interleave output="32">
+			<part name="4-u127.bin" crc="8c9911ca" map="1200"/>
+			<part name="5-u126.bin" crc="d20c3ef0" map="0021"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -51,14 +73,35 @@
 		     Actual content 0x200000 (this family's sprites region is the smallest of
 		     any Phase 1 game - gunbird's needs the full 0x700000); padded to the
 		     full reservation. -->
-		<part name="u14.bin" crc="00a546cb"/>
+		     MAME loads this with ROM_LOAD16_WORD_SWAP, i.e. every 16-bit word is
+		     byte-swapped into the region, and rtl/video/tile_row_decode.sv was
+		     verified against THAT layout (MAME's gfx_16x16x4_packed_msb). Loading
+		     the file raw here left the whole sprites region byte-pair-swapped
+		     relative to what the decoder expects -- at 4bpp each byte is 2 pixels,
+		     so every group of 4 pixels in a tile row came out transposed, which on
+		     real hardware looked like structured-but-scrambled sprites. map="21"
+		     replicates the WORD_SWAP (digits are output byte lanes, value = which
+		     input byte feeds that lane, so 21 = swapped pair; confirmed against
+		     working MiSTer MRAs using the same idiom at output="64"). -->
+		<interleave output="16">
+			<part name="u14.bin" crc="00a546cb" map="21"/>
+		</interleave>
 		<part repeat="0x600000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - tilemap layer 0+1 graphics, 2
 		     ROMs concatenated (not interleaved with each other). Exact fit, no
 		     padding needed. -->
-		<part name="u34.bin" crc="e6a75bd8"/>
-		<part name="u35.bin" crc="c4ca0164"/>
+		     Both are ROM_LOAD16_WORD_SWAP in MAME -- same reasoning as the sprites
+		     region above, so each gets its own map="21" interleave. They are
+		     CONCATENATED, not interleaved with each other (u34 at region 0x000000,
+		     u35 at 0x100000), hence two separate single-part blocks rather than one
+		     two-part block. -->
+		<interleave output="16">
+			<part name="u34.bin" crc="e6a75bd8" map="21"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u35.bin" crc="c4ca0164" map="21"/>
+		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - YM2610 ADPCM-A sample
 		     ROM. Exact fit, no padding needed. -->

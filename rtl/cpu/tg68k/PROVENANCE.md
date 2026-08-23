@@ -129,18 +129,21 @@ read, and the sound-latch write) passed cleanly on the first real run: the addre
 DTACK generation logic itself (`rtl/cpu/maincpu.sv`, built the same way
 `rtl/sound/sound_cpu_sngkace.sv`'s req/valid conversion was) is verified correct.
 
-**Still open**: Case 2 (the held-autovectored level-4 vblank IRQ) does not yet pass. Signal
-tracing confirmed the interrupt request, recognition, IPL encoding, and the IACK bus cycle
-itself (address `0xFFFFFFF8`, correctly encoding level 4) all execute correctly, and the CPU
-correctly computes the vector *offset* to push into the exception frame's format word
-(`0x0070`, matching vector 28 = level 4's real autovector number — vector 24 is "Spurious
-Interrupt", a different exception entirely; levels 1-7 map to vectors 25-31, a real arithmetic
-mistake in this test's first version, since fixed). But the CPU's actual vector-table *fetch*
-address is `0x00000000`, not `0x70` — meaning the offset computed for the stack-frame bookkeeping
-word and the address actually used to fetch the handler pointer are evidently two separate
-code paths in the kernel, and only one is currently correct. Not yet root-caused past that
-point; needs a further, narrower dig into `TG68KdotC_Kernel.vhd`'s exception/vector-fetch
-microcode (search for where `trap_vector`/vector vs. VBR is combined into a memory address,
-distinct from where `IPL_vec`/the format-word offset is computed) rather than the
-uninitialized-signal class of fix that resolved the crash. Does not block using
-`rtl/cpu/maincpu.sv` for non-interrupt-driven top-level integration work in the meantime.
+**RESOLVED (2026-08-23): Case 2 now passes, and TG68K.C's interrupt handling was never at
+fault.** This entry previously recorded the level-4 autovector vblank IRQ as an open CPU
+microcode bug, on the basis that "the CPU's actual vector-table *fetch* address is `0x00000000`,
+not `0x70`". That reading was wrong. A bus trace shows the CPU fetching from `0x00000070` and
+`0x00000072` exactly as it should -- `0x00000000` was the *data* it read back from that address,
+not the address it read from, and it then correctly jumped to the (zero) pointer it found.
+
+The vector table had been zeroed by the testbench itself. `sim/maincpu_tb/tb_maincpu.sv` wrote
+the vector-28 entry (`rom[0x38]`/`rom[0x39]`) BEFORE its `$readmemh` of the assembled program.
+That image is contiguous from byte `0x8` past the ISR at `org $100`, so it spans byte `0x70` and
+filled the `0x70`-`0xFF` gap with zeroes, silently overwriting the entry. Reordering the two
+statements makes Case 2 pass with no RTL change whatsoever.
+
+Lesson worth keeping: an exception that jumps to a plausible-looking wrong address is far more
+often a zeroed/overwritten vector table than broken exception microcode -- and when reading a bus
+trace, be certain which column is address and which is data before concluding the CPU computed an
+address wrongly. Both `rtl/cpu/maincpu.sv` and interrupt-driven integration work are cleared for
+use.

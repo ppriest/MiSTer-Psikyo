@@ -20,7 +20,7 @@ gotchas, testbench pitfalls, real-hardware bring-up technique) see
 next. Per-component vendoring/provenance detail lives in each module's own `PROVENANCE.md`
 (`rtl/cpu/tg68k/`, `rtl/memory/sdram/`, `rtl/sound/jt10/`, `rtl/sound/jt49/`).
 
-## Progress (kept current — last updated 2026-08-22)
+## Progress (kept current — last updated 2026-08-23)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code correctly
 in ModelSim, synthesizes/fits cleanly on real Cyclone V (2,788/41,910 ALMs).
@@ -57,10 +57,13 @@ history for individual commits):
   directly for the SDRAM arbiters (see `docs/phase1_ddram_map.md`'s header note).
 - `rtl/cpu/maincpu.sv`: 68EC020 wrapper — address decode + DTACK for the full `psikyo_map`
   (ROM via req/valid, all 6 BRAM regions, input ports, sound latch, held-autovectored vblank IRQ).
-  Verified: ROM fetch, all BRAM regions, input-port read, sound-latch write all PASS
-  (`sim/maincpu_tb/tb_maincpu.sv`, Case 1). **Known open issue**: vblank IRQ (Case 2) — vector
-  *offset* is correct but vector-table *fetch* address comes out wrong; narrowed but not resolved,
-  tracked in `rtl/cpu/tg68k/PROVENANCE.md`. Does not block top-level integration.
+  Verified: ROM fetch, all BRAM regions, input-port read, sound-latch write **and the held
+  level-4 autovectored vblank IRQ** all PASS (`sim/maincpu_tb/tb_maincpu.sv`, Cases 1 and 2).
+  The vblank IRQ was recorded here for a long time as a known open CPU bug ("vector-table fetch
+  address comes out wrong"); that was a misreading of a bus trace. **Resolved 2026-08-23: the
+  fetch address was always correct (`0x70`) — the testbench's own `$readmemh` was overwriting the
+  vector table after it had been installed.** See `rtl/cpu/tg68k/PROVENANCE.md`. No RTL change was
+  needed. Interrupt-driven integration is cleared for use.
 - `rtl/psikyo_core.sv` (video+CPU) and `rtl/psikyo_top.sv` (+ SDRAM backend + sound CPU) —
   full board assembly, verified end-to-end: a real CPU program downloaded through the actual HPS
   path lands the expected pixel in the compositor's `rgb` output
@@ -68,8 +71,9 @@ history for individual commits):
 - `Psikyo.sv` top-level: instantiates the full chain against `hps_io`, a real PLL
   (`clk_sys` = 85.909091MHz, 12:1 `ce_pix` divider), real video output. **Synthesizes cleanly
   under real Quartus 17.0**: 0 errors, 22382 logic cells, 1349 RAM segments, 3 PLLs, 39 DSP
-  elements. First full place-and-route (`.sof`/`.rbf`) also complete; timing closure is close but
-  not final — see "Open items" below. Ships with `BOARD_GUNBIRD` fixed to `1'b0` (sngkace
+  elements. First full place-and-route (`.sof`/`.rbf`) also complete. **Timing closure was NOT
+  achieved for a long time and this was not noticed** — see the 2026-08-23 root-cause note below;
+  always read `output_files/Psikyo.sta.summary`, never trust "Fitter was successful". Ships with `BOARD_GUNBIRD` fixed to `1'b0` (sngkace
   layout only); a gunbird/btlkroad build needs its own top-level parameter value.
 
 **Real hardware bring-up: CPU confirmed booting and fetching ROM on the DE10-nano
@@ -84,6 +88,34 @@ one more stage of the fix), then verified clean after removing all debug instrum
 ModelSim regression re-passes (`tb_maincpu`, `tb_psikyo_core_smoke`, `tb_psikyo_core`,
 `tb_psikyo_top` all PASS) and a fresh hardware rebuild/deploy is in progress to confirm on real
 silicon with the actual game screen (not a debug color).
+
+**Root cause of the "CPU boots but reads garbage" symptom found (2026-08-23): the design did not
+close timing.** After the RESET/HALT fix the CPU ran on real hardware but never wrote video or work
+RAM, while an identical real-ROM ModelSim run wrote work RAM within microseconds. Six rounds of
+VGA-colour-override debug builds narrowed it to ROM words read back wrong ~51% of the time,
+deterministically and *identically* at two different SDRAM_CLK phase shifts. That pointed at the
+memory interface, and a full audit cleared it: all 38 SDRAM pin assignments verified identical
+across `Psikyo.qsf`, the vendor `sys/sys.tcl`, and the post-fit `.pin` file; `SDRAM_DQ` confirmed
+fully IOE-registered (16/16 in/out/OE); `sdram.sv`'s burst-4 adaptation reviewed against upstream
+and found sound.
+
+The actual cause was in `output_files/Psikyo.sta.summary`, which nothing in the build flow forces
+you to read: **the `clk_sys` domain had −8.879 ns setup slack and −21,031 ns TNS, with an Fmax of
+48.74 MHz against an 85.909091 MHz clock.** Every one of the 50 worst-slack paths in the whole
+design was inside `TG68KdotC_Kernel` — nothing else failed timing at all. TG68K.C was free-running
+at `clk_sys` because the architecture has no clock-enable input of its own, which was both 5.4x the
+real board's 16 MHz 68EC020 and far beyond what the core can physically close.
+
+Fixed by adding an `ext_clkena` port to `TG68K.vhd` that gates *every* clocked process in the
+architecture (not just the kernel — the bus state machine's one-cycle `clkena_e` pulse would
+otherwise be lost on cycles the gated kernel sleeps through), driven from `maincpu.sv` by an exact
+Bresenham 176/945 enable = 16.000 MHz. This required latching the ROM read path (`rom_data_l`/
+`rom_ready` in `maincpu.sv`), because `sdram_narrow_bridge` returns a one-cycle `valid` with
+combinational data and a CPU stepping every ~5.4 cycles would miss it. `Psikyo.sdc` gained matching
+`set_multicycle_path` constraints. Validated in ModelSim against the real `samuraia` ROM: same
+first work-RAM write (`addr=c07e`), same vblank-IRQ time, with the CPU proportionally further back
+in its program — exactly the expected 16 MHz behaviour. Full writeup in LESSONS_LEARNED.md's new
+"Static timing analysis" section.
 
 `scripts/mister_hw_test.py` — a maintained deploy/launch/screenshot automation tool for this
 hardware-bring-up loop (SCP the `.rbf`, launch a `.mra` via the MiSTer Remote API, pull a

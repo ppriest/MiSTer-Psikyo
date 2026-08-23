@@ -6,8 +6,135 @@ behaviors likely to recur. Organized by topic, not chronology. For the blow-by-b
 lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/`,
 `rtl/sound/jt10/`, `rtl/sound/jt49/`).
 
+## Static timing analysis (check this FIRST on any hardware-vs-simulation divergence)
+
+- **Quartus reports "Fitter was successful" on a design that grossly fails timing. Nothing in the
+  default build flow fails, warns loudly, or blocks the `.rbf`.** This project shipped an `.rbf`
+  whose main clock domain had **−8.879 ns setup slack and −21,031 ns TNS** — thousands of failing
+  endpoints, a worst path nearly twice the clock period — while every log line said "successful"
+  and "0 errors". The only place it shows up is `output_files/<rev>.sta.summary` /
+  `<rev>.sta.rpt`, which nothing forces you to open.
+- **The single highest-value number is the Fmax Summary.** `emu|pll|...divclk : 48.74 MHz` against
+  an 85.909091 MHz clock is instantly diagnostic and needs no path analysis to interpret. Read it
+  before doing *anything* else when hardware and simulation disagree.
+- **This failure mode looks exactly like a memory-corruption bug, and will send you chasing one.**
+  The symptom set was: boots but reads back wrong data; ~51% of golden-ROM comparisons mismatch;
+  perfectly reproducible across power cycles; completely unaffected by SDRAM_CLK phase shift; and
+  100% correct in ModelSim with identical ROM data. Every one of those is *also* what a timing
+  failure produces — deterministic because placement is fixed per-`.rbf`, phase-independent
+  because the failing paths are internal fabric logic that the external memory clock never
+  touches, and invisible in RTL simulation because simulation has no propagation delay. Days were
+  spent on SDRAM pin audits, PLL phase sweeps, and controller review, all of which came back
+  clean, before the timing report was opened.
+- **Rule of thumb: "correct in ModelSim, wrong on hardware, reproducible, and insensitive to
+  interface tuning" is a timing violation until proven otherwise.** Interface tuning (clock phase,
+  drive strength, IOE registers) only moves *external* margins by a fraction of a clock period. If
+  a change of that size makes no difference at all, the problem is almost certainly not at the
+  interface.
+- **Getting the actual failing paths requires a `quartus_sta` Tcl run** — the default `.sta.rpt`
+  contains only summaries, and the "Timing Closure Recommendations" panel is HTML-only and
+  therefore empty in the plain-text export. See `sta_failing_paths.tcl` in the repo root:
+
+  ```tcl
+  project_open Psikyo -revision Psikyo
+  create_timing_netlist
+  set_operating_conditions 7_slow_1100mv_100c   ; # NOT -slow_model / -speed 7, see below
+  read_sdc
+  update_timing_netlist
+  report_timing -setup -npaths 50 -detail summary   -from_clock $ck -to_clock $ck -file out.rpt
+  ```
+
+  Two syntax traps cost several attempts: `create_timing_netlist -speed 7 -slow_model` is
+  rejected outright, and the error message ("Values entered did not match any valid operating
+  conditions") only appears if you read the lines *above* the generic Tcl failure. Use plain
+  `create_timing_netlist` followed by `set_operating_conditions` with one of the exact names the
+  error message lists. Also note the report is worth generating at `-detail summary` first — 50
+  summary rows immediately showed every failing path shared one module, which full-path detail
+  would have buried.
+- **`derive_pll_clocks` + `derive_clock_uncertainty` is the entire stock MiSTer `.sdc`.** That
+  constrains internal register-to-register paths (which is how the CPU failure was caught) but
+  leaves every external interface — including all of SDRAM — completely unanalyzed. Both the
+  Unconstrained Paths and Unconstrained I/O Ports panels will be non-empty on a stock core. This
+  is normal for MiSTer and is *not* by itself evidence of a bug, but it does mean "timing passed"
+  never says anything about the memory interface.
+
 ## TG68K.C (68020 CPU core)
 
+- **TG68K.C cannot run anywhere near a typical MiSTer system clock, and it has no clock-enable
+  input to protect you from that.** Measured Fmax on this project's real post-fit netlist, Cyclone
+  V speed grade 7: **48.74 MHz**. Every one of the 50 worst-slack paths in the entire design was
+  inside `TG68KdotC_Kernel` — the `altsyncram` register file and the `regfile_rtl_*_bypass`
+  network, driven from `use_direct_data` and `exec[*]`, needing ~19.6 ns. Nothing else in the
+  design (video pipeline, SDRAM controller, sound) failed timing at all. Budget for the CPU to be
+  the Fmax-limiting block in any design that includes it.
+- **The architecture assumes CLK *is* the CPU clock.** `TG68K.vhd` exposes no clock enable of its
+  own; the `clkena_in` visible in the file is the *kernel component's* port, driven internally
+  from `clkena <= state="01" OR clkena_e='1' OR skipFetch='1'`, which is derived purely from bus
+  state. Tie `CLK` to an 85.909091 MHz system clock and the whole CPU free-runs at 85.909091 MHz —
+  5.4x the real 16 MHz 68EC020, and far above what it can physically close.
+- **Add the enable by gating every clocked process in the architecture, not just the kernel.**
+  Gating only the kernel is actively wrong: the bus state machine generates `clkena_e` as a
+  one-CLK-wide pulse, so an ungated bus machine will routinely pulse it during a cycle the gated
+  kernel is asleep for, silently losing bus-cycle completions. `TG68K.vhd` has three clocked
+  regions to gate — the `E`/`sync_state` process (both its `falling_edge` and `rising_edge`
+  halves), and both halves of the bus state machine — plus the kernel's `clkena` term. One
+  enable pulse then equals exactly one emulated CPU clock cycle with all internal
+  rising/falling-edge ordering preserved. Implemented here as the `ext_clkena` port (defaults to
+  `'1'`, so full-rate instantiations are unchanged), the same
+  separate-single-driver-signal pattern as the `ext_force_run` fix.
+- **A single clock enable canNOT gate both `rising_edge` and `falling_edge` processes — you need
+  two, one delayed a cycle.** This is the most counter-intuitive part of the whole exercise and it
+  is easy to get backwards (it was, here, on the first attempt). A rising-edge register samples
+  the enable value held during the **preceding** period, so for a one-period-wide pulse spanning
+  period P, the rising-edge work fires at the **end** of P — while the falling edge *inside* P
+  occurs half a period **earlier**. Sharing one enable therefore executes each emulated CPU
+  cycle's two halves in the **wrong order**. Drive the falling-edge processes from the same pulse
+  delayed exactly one clock (`cpu_ce_f <= cpu_ce`), so the falling edge they act on is the one
+  that genuinely follows the rising-edge work.
+- **The symptom is a stalled bus, not a glitch**, which makes it hard to attribute. Here
+  `sim/maincpu_tb/tb_maincpu.sv`'s sound-latch check caught it: the CPU reached `S_state="01"`
+  with the correct byte already in `data_write` (`0x7777`), but `data_akt_e`/`data_akt_s` were
+  still `'0'`, so the `DATA` tri-state stayed at `Z` and the write captured high-impedance. The
+  same misordering skews AS/UDS/LDS/RW assertion widths and the falling-edge `waitm <= DTACK`
+  sample. **Probe the enable's two edges explicitly** when a gated dual-edge core misbehaves —
+  ModelSim `when {<sig> == 1} {echo [examine ...]}` gives the whole picture in one run without
+  editing the testbench.
+- **Clock-enabling a slow core does not make its OUTPUT paths fast — and that is a second,
+  separate bug waiting to happen.** Adding the enable took worst-case slack from −8.879 ns to
+  −2.406 ns, but the remaining failures had a completely different shape: no longer CPU-internal,
+  they now ran *from* a CPU register *to* BRAM outside the CPU (`dpram:u_palette`,
+  `dpram:u_workram`). TG68K.C's combinational output path — register file → internal data-out mux
+  → the `DATA` tri-state net → the wrapper's address decode → BRAM address/data ports — measures
+  ~14 ns, which is longer than one 11.64 ns clk_sys period. The CPU steps every ~5.4 cycles, so
+  for the first cycle or two after each step the address and write data downstream are *still
+  settling*.
+- **The consequence is silent memory corruption, and repeating the write does not undo it.** A
+  BRAM write committed during that settling window writes real data to a **wrong, half-settled
+  address**. The natural instinct — "a synchronous memory rewritten with the same stable value
+  every cycle is harmless", which is true and is exactly why the write enables were held for the
+  whole bus cycle — is only true when the *address* is stable too. Under a clock enable it isn't,
+  for the first cycle.
+- **Fix by suppressing the first cycle of every access, then constrain to match.** Gate every
+  write enable on a one-cycle-delayed strobe (`access_started`, already present for DTACK) and
+  delay any one-cycle request pulse (`rom_req`, via a registered `rom_access_d`) — the arbiter
+  samples the address combinationally when it accepts, so an ungated one-cycle request latches the
+  unsettled address and reads the wrong location. Only *then* is a CPU→anywhere
+  `set_multicycle_path -setup 2` honest, because the RTL now guarantees nothing acts before two
+  full periods have elapsed. Writing that constraint without the RTL gating would hide the
+  corruption rather than fix it.
+- **Audit for one-cycle pulses whenever you gate a CPU.** The dangerous pattern is any signal
+  asserted for exactly one full-rate cycle derived combinationally from CPU outputs — it will land
+  on precisely the unsettled cycle. Held levels are safe; single-cycle pulses are not.
+- **Clock enables fix real silicon but not the timing report.** TimeQuest does not know the
+  register only advances every Nth cycle, so it keeps reporting the same violations. The hardware
+  is genuinely correct once the enable is in; add `set_multicycle_path` to make the report honest
+  and stop the Fitter burning effort on unreachable paths.
+- **Derive the enable ratio exactly rather than rounding.** clk_sys here is the real 14.318181…MHz
+  screen XTAL x 6 = 945/11 MHz and the 68EC020 wants 176/11 MHz, so the enable rate is exactly
+  176/945 and a Bresenham accumulator hits it with zero error. The tempting integer divides are
+  both meaningfully wrong: /5 is 7.4% fast, /6 is 10.5% slow. A useful side benefit — Bresenham
+  ticks land 5 or 6 cycles apart, so the *minimum* window the critical path gets (5 x 11.64 =
+  58.2 ns) is still a 3x margin over its 19.6 ns requirement.
 - **Uninitialized signals in arithmetic crash ModelSim.** `TG68K_ALU.vhd`/`TG68KdotC_Kernel.vhd`
   have many `std_logic`/`std_logic_vector` signals with no default initializer; ModelSim's `'X'`
   propagates through arithmetic from time 0 and can cascade into multi-GB allocation failures /
@@ -124,6 +251,24 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   corrupting what the CPU samples. Symptom looked like SDRAM corruption; root cause was in the CPU
   wrapper's own request lifecycle, not the SDRAM stack — worth checking every request-tracking flag
   against the actual bus protocol's cycle length, not just its own "data arrived" signal.
+- **Nothing in the SDRAM read stack latches read data — the entire path from `sdram.sv`'s `dout`
+  to the CPU's data bus is combinational, and valid is a one-cycle pulse.** `sdram.sv` assigns
+  `dout0`/`dout1`/`dout2` from one shared `dout` register (upstream does this too);
+  `sdram_arbiter5` assigns `c*_data = phy_rdata` and `c*_valid` combinationally; and
+  `sdram_narrow_bridge` selects its word with `sel_word = g_data[16*word_sel +: 16]` with no
+  register anywhere. The consumer is therefore *required* to capture on the valid pulse.
+  `maincpu.sv` originally got away with reading it combinationally only because TG68K.C re-captured
+  `DATA` on every clock edge while parked in its wait state, so the one-cycle window always
+  landed — an alignment that holds by one cycle and breaks the moment the CPU stops stepping every
+  cycle. **Any change to how often a consumer samples the bus (a clock enable, a different clock
+  domain, an extra pipeline stage) requires latching both the data and the ready/DTACK level
+  first.** Fixed here with `rom_data_l`/`rom_ready` in `maincpu.sv`, held until the CPU drops
+  `as_n`; as a bonus this also closes the shared-`dout` overwrite exposure described in the
+  `rom_pending` note above, because once captured the word can no longer be clobbered.
+- **DTACK/ready must be a held level, never a pulse, for any CPU core driven by a clock enable.**
+  A core stepping at 16 MHz inside an 85.909091 MHz fabric looks at DTACK roughly once every 5.4
+  cycles; a one-cycle assertion is missed on nearly every access and the bus cycle hangs forever.
+  Check every ready/ack signal feeding a gated core against this before enabling the gate.
 - **A request/ack round-robin arbiter needs every request port on a hold-until-acknowledged
   contract**, not a one-shot pulse — a one-shot request arriving while the arbiter is servicing
   another client is silently lost. Applies uniformly across `ddram_arbiter`/`sdram_arbiter5` and
@@ -199,6 +344,44 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   benign trigger, don't check the sticky output directly in a test that needs to detect *later*
   problems — independently replicate the DUT's own trigger condition via a non-sticky per-cycle
   check instead.
+- **Drive stimulus with its REAL waveform shape, not a convenient pulse — a level driven as a
+  one-clock pulse hides whole classes of bug.** `tb_maincpu.sv` pulsed `vblank` high for exactly
+  one clock. Real hardware holds it for the entire 38-line vertical blank — ~2.4 ms, ~205,000
+  clk_sys cycles. That single difference hid a genuine `maincpu.sv` bug for the whole project:
+  the IRQ logic was `if (vblank) set; else if (iack) clear;`, giving *set* priority, so an
+  acknowledge arriving while vblank was still high (which is what always happens on hardware,
+  since the CPU responds in microseconds) was silently discarded. `irq_pending` then never
+  cleared, `ipl` stayed at level 4, and the CPU re-entered the ISR after every `RTE` — the main
+  program could never advance past its first vblank. With a one-clock pulse the acknowledge always
+  landed after vblank had fallen, so the test passed every time.
+- **A held interrupt line must let the acknowledge win.** Match MAME's `irq4_line_hold` exactly:
+  assert on the **rising edge** of the source, hold until acknowledged, and give the acknowledge
+  priority in the priority chain. Ask of every level-sensitive input: *is this signal still
+  asserted when the consumer responds?* If yes, set-vs-clear priority is a real design decision,
+  not a formality.
+- **Write preloaded vectors/tables AFTER `$readmemh`, never before — an assembled image silently
+  overwrites them with its own zero-filled gaps.** `tb_maincpu.sv` installed the level-4
+  autovector entry at `rom[0x38]`/`rom[0x39]` (byte `0x70`) and then `$readmemh`'d a program image
+  contiguous from byte `0x8` past an ISR at `org $100`. That image spans byte `0x70`, so its empty
+  `0x70`-`0xFF` region zeroed the entry that had just been written. The CPU then took the
+  interrupt correctly, fetched the correct vector address, read zero, jumped to `0x00000000`,
+  executed zeroes until it hit an illegal instruction, and vanished into vector 4.
+- **This cost a genuinely expensive misdiagnosis: it was recorded for weeks as a TG68K.C exception
+  microcode bug**, in both `PROVENANCE.md` and `ROADMAP.md`, and used as the standing reason
+  interrupt-driven integration "couldn't be trusted yet". The trigger for the wrong conclusion was
+  misreading a bus trace — `0x00000000` was the *data* read back from the vector table, not the
+  address the CPU fetched from, which was correctly `0x70` all along. **When a trace shows an
+  exception jumping somewhere implausible, confirm which column is address and which is data
+  before blaming the CPU**, and suspect a zeroed vector table long before exception microcode.
+- **`$readmemh` failing silently turns a whole testbench into a false regression report.** When
+  `sim/maincpu_tb/tb_maincpu.sv` was run with `vsim` launched from its own directory rather than
+  the repo root, its `$readmemh("sim/maincpu_tb/test_maincpu.hex", ...)` found nothing, the ROM
+  stayed all-zeroes, and every single check failed — reading exactly like a catastrophic RTL
+  regression ("bus wedged", all regions `0000`) and prompting a wrong diagnosis (scaling
+  timeouts) before the one-line `** Warning: (vsim-7) Failed to open readmem file` was noticed.
+  ModelSim reports this as a *warning*, not an error, and it scrolls past in the elaboration
+  noise. **When a testbench fails wholesale rather than in one specific check, grep the log for
+  `readmem` before touching any RTL.**
 - **`$readmemh` paths are relative to the simulator's working directory, not the testbench file's
   location** — recurred across `tb_maincpu.sv` (needs running from repo root), and
   `tb_psikyo_core.sv`/`tb_psikyo_top.sv` (needs running from their own subdirectory, plus
@@ -262,3 +445,77 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   working manual sequence before assuming the deployed binary is stale or wrong** — comparing a
   failing automated run against a known-good manual run isolated the bug to the automation's own
   timing rather than the build, in this project's case.
+- **The DE10-nano SDRAM pinout has an authoritative reference already inside the repo — don't go
+  to the web for it.** `Psikyo.qsf` does `source sys/sys.tcl`, and `sys/sys.tcl` (lines ~51–98)
+  *is* the vendor MiSTer template's own SDRAM pin block. Cross-check against a third artifact,
+  `output_files/<rev>.pin`, which records where every signal actually landed post-fit. All 38
+  SDRAM signals were verified identical across all three. Note `Psikyo.qsf` also *restates* every
+  one of those location assignments after the `source` line (the Quartus IDE re-saved the project
+  despite the file's own warning not to open it there) — identical values today, so harmless, but
+  a real maintenance hazard: a future `sys.tcl` update would be silently overridden.
+- **Fitter warning 176250 "Ignoring invalid fast I/O register assignments" is almost always
+  benign, and the Ignored Assignments panel names exactly which one.** Here it was `HDMI_TX_CLK`,
+  which is driven by an `altddio_out` clock-forwarding primitive — the DDIO already occupies the
+  IOE output register, so there is no core register left to migrate and the assignment is
+  correctly dropped. The companion 176251 covers `SDRAM_nCS`/`SDRAM_CKE` (tied to constants) and
+  `SDRAM_CLK` (a raw PLL output) matching the `-to SDRAM_*` wildcard — also nothing to pack. Do
+  not read either warning as evidence about the SDRAM *data* path: confirm by counting the
+  register-packing entries, which showed 16/16 fast input, 16/16 fast output and 16/16 output-
+  enable registers packed on `SDRAM_DQ`.
+- **`Psikyo.srf` (the message-suppression file) is inherited from another core and suppresses
+  messages worth seeing** — notably 15705 ("Ignored locations or region assignments") which could
+  in principle hide a dropped pin assignment. It still contains entries referencing `de10_top.v`,
+  a file that does not exist in this repo. Verify against `output_files/<rev>.pin` rather than
+  trusting that no suppressed message mattered.
+- **The SDRAM_CLK phase shift is a legitimate parameter but a poor first suspect.** `-3 ns` is the
+  standard MiSTer/DE10-nano convention; this project expresses it as the equivalent positive
+  `"8598 ps"` because this `altera_pll` configuration rejects negative values outright (a real
+  `quartus_fit` error, not a style preference) and quantizes to ~132.275 ps steps. Sweeping it to
+  `0 ps` produced byte-identical results to `8598 ps` — which was the clue that the fault was not
+  at the memory interface at all. Revert diagnostic PLL probe values immediately once measured;
+  leaving `phase_shift1` at a scratch value is an easy trap for a later build.
+
+## Tooling / workflow (Quartus, ModelSim, and the shell around them)
+
+- **Working directory does not reliably persist into backgrounded shell commands.** A `cd` done in
+  a previous call, or inside a `&&` chain, may or may not still apply. Every Quartus/ModelSim
+  invocation must either be launched as `cd <project dir> && <tool>` in one command line, or be
+  made cwd-independent. The most robust fix for Tcl-driven tools is to put the `cd` *inside the
+  Tcl script* (`cd D:/Mister-Psikyo` as the first line of `sta_failing_paths.tcl`) so the launch
+  command's cwd stops mattering at all. Symptom when this bites: `Error (23018): Tcl Script File
+  ... not found`, or `Error (12007): Top-level design entity "Psikyo" is undefined`.
+- **`quartus_sta`/`quartus_map`/`quartus_sh` are not on `PATH`** in this environment; invoke by
+  full path (`/c/intelFPGA_lite/17.0/quartus/bin64/quartus_sta.exe`). Note there are two Quartus
+  installs on this machine — `intelFPGA_lite/17.0` and `altera_lite/24.1std`. The project was
+  built with 17.0.2; use it, or the post-fit database will not match.
+- **Never leave duplicate tool instances running against the same project.** Overlapping
+  `quartus_map` runs corrupt the shared log; two `vsim` instances launched against the same
+  testbench both write the same output file and killing one can take the other down with it
+  (`Fatal: vish lost connection to vsim process` / `Kernel lost connection to front end`). Check
+  `tasklist | grep -i <tool>` before every launch.
+- **Killed ModelSim runs leave orphaned `vsimk.exe` kernels that keep spinning at 100% CPU
+  indefinitely — across sessions, across days.** Six of them were found still running from the
+  previous day, having burned ~90,000 CPU-seconds between them (one alone had 32,367 s / 9 hours).
+  They are easy to dismiss because their working set drops to ~42–50 MB, versus ~180 MB for an
+  active kernel — size is *not* a liveness signal here, and neither is `tasklist`, which shows no
+  CPU column. **Always check CPU time, not memory:**
+
+  ```powershell
+  Get-Process vsim,vsimk | Select-Object Id,ProcessName,CPU,WorkingSet64,StartTime
+  ```
+
+  `taskkill //PID <n> //F` fails against these ("could not be terminated"); PowerShell
+  `Stop-Process -Force` succeeds. Left alone they starve every subsequent simulation of CPU, which
+  then looks like the *new* run being pathologically slow — a false lead that directly wastes the
+  monitoring discipline these runs are supposed to have. Sweep for them at the start of any
+  session that runs simulations.
+- **Never run Quartus wrapped in `nohup ... &`.** It detaches, the tool call reports "completed"
+  immediately, and the real process runs untracked. Launch the tool directly as the command and
+  let the harness background it.
+- **Never switch git branches while a Quartus process is reading the source tree** — it silently
+  kills the run, leaving a truncated log that looks like a tool crash.
+- **The ModelSim `work` library lives at the repo root** (`/d/Mister-Psikyo/work`), mapped by each
+  testbench directory's own `modelsim.ini` via `work = ../../work`. Run `vsim` from the testbench
+  directory so that `modelsim.ini` is picked up. To re-test after an RTL change, recompile only
+  the changed files into the existing library (`vcom <file>.vhd`, `vlog -sv <file>.sv`) rather
+  than rebuilding everything.

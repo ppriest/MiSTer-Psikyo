@@ -93,23 +93,8 @@ module psikyo_core #(
     output logic         vsync,
     output logic [14:0] rgb,
 
-    // TEMPORARY DEBUG PATCH -- real-hardware bring-up tap, remove once the
-    // real-ROM black/purple-screen investigation (docs/ROADMAP.md) is
-    // resolved. Round 2 (dbg_palette_wr/dbg_vram_wr/dbg_vregs_wr checking
-    // actual video-RAM writes) came back all-zero on real hardware even
-    // after ~20s of confirmed-sustained CPU execution (see Psikyo.sv's own
-    // header comment on this debug block for the full round-by-round
-    // history) -- surprising enough that round 3 repurposes these same 3
-    // wires (kept as-is to avoid replumbing) to check something upstream of
-    // video init entirely: is the CPU's own instruction stream actually
-    // progressing through the ROM, or stuck spinning in a narrow address
-    // range (e.g. near the vector table, consistent with the known-unresolved
-    // vblank-IRQ vector-fetch bug in rtl/cpu/tg68k/PROVENANCE.md), and has
-    // it ever written anything to plain work RAM at all (the most basic
-    // possible sign of real code execution, independent of video).
-    output logic         dbg_palette_wr,  // now: cpu_rom_addr ever > 0x2000 (8K)
-    output logic         dbg_vram_wr,     // now: cpu_rom_addr ever > 0x20000 (128K)
-    output logic         dbg_vregs_wr     // now: work RAM ever written
+    // TEMPORARY DEBUG TAP -- see maincpu.sv's dbg_counters port comment.
+    output logic [23:0] dbg_counters
 );
 
     // ---- video timing ----
@@ -168,7 +153,9 @@ module psikyo_core #(
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
         .latch_data(latch_data), .latch_write(latch_write),
-        .vblank(vblank)
+        .vblank(vblank),
+        .dbg_vcnt(vcnt),
+        .dbg_counters(dbg_counters)
     );
 
     // ---- work RAM: CPU-only, port B unused ----
@@ -221,7 +208,9 @@ module psikyo_core #(
     logic         l0_rs_en, l1_rs_en;
     logic         l0_rs_pertile, l1_rs_pertile;
 
-    vreg_decode u_vregs (
+    // BOARD_GUNBIRD selects gunbird/btlkroad, which are exactly the Phase 1
+    // boards with MAME's m_ka302c_banking (s1945n is the third, Phase 2).
+    vreg_decode #(.KA302C_BANKING(BOARD_GUNBIRD)) u_vregs (
         .clk(clk), .reset(reset),
         .cpu_addr(vregs_cpu_addr), .cpu_wel(vregs_cpu_wel), .cpu_weh(vregs_cpu_weh),
         .cpu_wdata(vregs_cpu_wdata), .cpu_rdata(vregs_cpu_rdata),
@@ -340,10 +329,5 @@ module psikyo_core #(
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
     );
-
-    // TEMPORARY DEBUG PATCH -- see port comments above (round 3).
-    assign dbg_palette_wr = (cpu_rom_addr > 19'h02000);
-    assign dbg_vram_wr    = (cpu_rom_addr > 19'h20000);
-    assign dbg_vregs_wr   = workram_cpu_wel | workram_cpu_weh;
 
 endmodule

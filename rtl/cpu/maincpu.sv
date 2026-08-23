@@ -186,7 +186,20 @@ module maincpu #(
     output logic         latch_write,   // pulse: this CPU wrote a new command byte
 
     // vblank IRQ (level 4, held/autovectored -- see header)
-    input  logic         vblank
+    input  logic         vblank,
+
+    // TEMPORARY DEBUG TAP -- scanline index used to read back the bus-address
+    // trace below, one captured address per scanline.
+    input  logic [8:0]  dbg_vcnt,
+
+    // TEMPORARY DEBUG TAP -- remove once the black-screen bring-up question
+    // is answered. Three saturating 8-bit activity counters, driven onto
+    // VGA_R/G/B by Psikyo.sv so a single screenshot answers "is the CPU
+    // alive, is it taking interrupts, is it writing palette":
+    //   [23:16] R = CPU ROM fetches completed  (CPU executing at all?)
+    //   [15:8]  G = interrupt-acknowledge cycles (vblank IRQ reaching CPU?)
+    //   [7:0]   B = palette writes             (CPU reaching video code?)
+    output logic [23:0] dbg_counters
 );
     logic [31:0] a;
     logic [2:0]  fc;
@@ -234,6 +247,64 @@ module maincpu #(
     // cycle, not just interrupts.
     assign vpa = (fc == 3'b111) ? 1'b0 : 1'b1;
 
+    // ---- 16 MHz CPU clock enable ----
+    // The real SH201B/KA302C board clocks the 68EC020 at 32MHz/2 = 16 MHz
+    // (MAME psikyo.cpp's sngkace(), commented "verified on pcb"; the Z80 is
+    // the same 32MHz XTAL /8 = 4 MHz and the YM2610 /4 = 8 MHz).
+    //
+    // TG68K.C used to free-run on clk_sys, which was wrong twice over.
+    // Accuracy: 85.909091 MHz is 5.37x the real CPU speed. Correctness --
+    // and this is what actually broke real hardware -- it is physically
+    // unachievable. A real quartus_sta run on the post-fit netlist put the
+    // clk_sys domain's Fmax at 48.74 MHz against an 85.909091 MHz clock:
+    // setup slack -8.879 ns, TNS -21031 ns, and every one of the 50 worst
+    // paths in the entire design inside TG68KdotC_Kernel (its register file
+    // and the regfile bypass network, needing ~19.6 ns against an 11.64 ns
+    // budget). Nothing else in the design failed timing at all. That is why
+    // the core booted on hardware but read back garbage that simulation
+    // could never reproduce, and why it was completely insensitive to
+    // SDRAM_CLK phase -- the failing paths were internal fabric logic, not
+    // the memory interface.
+    //
+    // Exact ratio, no rounding needed: clk_sys is this hardware's real
+    // 14.318181...MHz screen XTAL x 6 = 945/11 MHz, and the CPU wants
+    // 176/11 MHz, so the enable rate is exactly 176/945. A Bresenham
+    // accumulator hits that average precisely (a fixed /5 would be 7.4%
+    // fast, /6 10.5% slow). Consecutive ticks are 5 or 6 clk_sys cycles
+    // apart, so the shortest window the kernel's ~19.6 ns critical path
+    // ever gets is 5 x 11.64 = 58.2 ns -- a 3x margin.
+    localparam int CE_NUM = 176;   // 16 MHz       numerator   (x 1/11 MHz)
+    localparam int CE_DEN = 945;   // 85.909091MHz denominator (x 1/11 MHz)
+
+    logic [10:0] ce_acc;
+    logic        cpu_ce;
+
+    // Companion enable for TG68K.vhd's falling-edge processes: the SAME
+    // pulse delayed one clk_sys period. A rising-edge register samples the
+    // enable held during the preceding period, so the rising-edge work for
+    // a pulse in period P fires at the END of P, while the falling edge
+    // inside P is half a period EARLIER -- one shared enable would run each
+    // CPU cycle's two halves in the wrong order. See ext_clkena_f's port
+    // comment in TG68K.vhd for the failure this actually produced.
+    logic        cpu_ce_f;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            ce_acc   <= 11'd0;
+            cpu_ce   <= 1'b0;
+            cpu_ce_f <= 1'b0;
+        end else begin
+            cpu_ce_f <= cpu_ce;
+            if (ce_acc + CE_NUM >= CE_DEN) begin
+                ce_acc <= 11'(ce_acc + CE_NUM - CE_DEN);
+                cpu_ce <= 1'b1;
+            end else begin
+                ce_acc <= 11'(ce_acc + CE_NUM);
+                cpu_ce <= 1'b0;
+            end
+        end
+    end
+
     TG68K #(
         .CPU(2'b11)   // 68020 mode, matching the Phase 0 spike's verified config
     ) u_cpu (
@@ -253,7 +324,9 @@ module maincpu #(
         .E(),
         .VPA(vpa),
         .VMA(),
-        .ext_force_run(~reset) // real-hardware fix -- see TG68K.vhd's own header comment
+        .ext_force_run(~reset), // real-hardware fix -- see TG68K.vhd's own header comment
+        .ext_clkena(cpu_ce),    // 16 MHz CPU step -- see cpu_ce's own comment above
+        .ext_clkena_f(cpu_ce_f) // same pulse, delayed one cycle -- see cpu_ce_f
     );
 
     // Declared here (right after the CPU instance), not next to where each
@@ -264,6 +337,12 @@ module maincpu #(
     // PROVENANCE.md and rtl/video/tilemap_line_engine.sv's PTR_W comment).
     logic access_started;
     logic latch_write_done;
+
+    // Declared up here for the same forward-reference reason as the two
+    // above -- read_mux (further down) consumes rom_data_l. See the
+    // "ROM read capture" block near dtack_n for why these exist at all.
+    logic        rom_ready;
+    logic [15:0] rom_data_l;
 
     // ---- address decode ----
     logic [23:0] addr24;
@@ -307,7 +386,7 @@ module maincpu #(
     // ---- read data mux (drives cpu_data during an active read cycle only) ----
     logic [15:0] read_mux;
     always_comb begin
-        if (is_rom)              read_mux = rom_data;
+        if (is_rom)              read_mux = rom_data_l;   // latched, NOT raw -- see below
         else if (is_spriteram)   read_mux = spriteram_rdata;
         else if (is_palette)      read_mux = palette_rdata;
         else if (is_vram0)         read_mux = vram0_rdata;
@@ -325,35 +404,52 @@ module maincpu #(
     // ---- writes: BRAM regions + sound latch ----
     // Byte-lane write enables (wel=low byte/D7-0, weh=high byte/D15-8) --
     // matches rtl/memory/sdram/sdram.sv's own wrl/wrh convention, kept
-    // consistent project-wide. Pulsed every cycle the write is active
+    // consistent project-wide. Held for every cycle the write is active
     // (mem_active_wr stays high for the whole, possibly multi-cycle,
     // wait-extended window) -- matches sound_cpu_sngkace.sv's own proven
     // write scheme exactly: a synchronous single-port memory repeatedly
     // written with the same stable value every cycle is harmless, and
     // this avoids needing a separate "write exactly once" edge/level flag
     // that would just be one more thing to get subtly wrong.
-    assign spriteram_wel = mem_active_wr && is_spriteram && !lds_n;
-    assign spriteram_weh = mem_active_wr && is_spriteram && !uds_n;
+    //
+    // ...with one addition: every enable is also gated on `access_started`,
+    // which suppresses the FIRST clk_sys cycle of the access. This is not
+    // cosmetic. TG68K.C's combinational output paths (register file ->
+    // internal data-out mux -> the DATA tri-state net -> this module's
+    // decode -> BRAM address/data ports) measure ~14 ns on real silicon,
+    // which is LONGER than one 11.64 ns clk_sys period. The CPU now only
+    // steps on the 16 MHz cpu_ce tick, so for the first cycle or two after
+    // each step `a`/`cpu_data` are still settling. Committing a write in
+    // that window writes real data to a WRONG, half-settled ADDRESS -- a
+    // silent corruption that repeating the write on later, settled cycles
+    // does not undo. `access_started` is `!as_n` delayed one cycle, so
+    // gating on it gives the address and data two full clk_sys periods
+    // (23.3 ns) to settle before anything commits, and the write still
+    // holds for the remaining several cycles of the bus cycle. It is also
+    // the exact signal `dtack_n` already uses for these regions, so the
+    // write commits on the same cycle the CPU is told the access completed.
+    assign spriteram_wel = mem_active_wr && access_started && is_spriteram && !lds_n;
+    assign spriteram_weh = mem_active_wr && access_started && is_spriteram && !uds_n;
     assign spriteram_wdata = cpu_data;
 
-    assign palette_wel = mem_active_wr && is_palette && !lds_n;
-    assign palette_weh = mem_active_wr && is_palette && !uds_n;
+    assign palette_wel = mem_active_wr && access_started && is_palette && !lds_n;
+    assign palette_weh = mem_active_wr && access_started && is_palette && !uds_n;
     assign palette_wdata = cpu_data;
 
-    assign vram0_wel = mem_active_wr && is_vram0 && !lds_n;
-    assign vram0_weh = mem_active_wr && is_vram0 && !uds_n;
+    assign vram0_wel = mem_active_wr && access_started && is_vram0 && !lds_n;
+    assign vram0_weh = mem_active_wr && access_started && is_vram0 && !uds_n;
     assign vram0_wdata = cpu_data;
 
-    assign vram1_wel = mem_active_wr && is_vram1 && !lds_n;
-    assign vram1_weh = mem_active_wr && is_vram1 && !uds_n;
+    assign vram1_wel = mem_active_wr && access_started && is_vram1 && !lds_n;
+    assign vram1_weh = mem_active_wr && access_started && is_vram1 && !uds_n;
     assign vram1_wdata = cpu_data;
 
-    assign vregs_wel = mem_active_wr && is_vregs && !lds_n;
-    assign vregs_weh = mem_active_wr && is_vregs && !uds_n;
+    assign vregs_wel = mem_active_wr && access_started && is_vregs && !lds_n;
+    assign vregs_weh = mem_active_wr && access_started && is_vregs && !uds_n;
     assign vregs_wdata = cpu_data;
 
-    assign workram_wel = mem_active_wr && is_workram && !lds_n;
-    assign workram_weh = mem_active_wr && is_workram && !uds_n;
+    assign workram_wel = mem_active_wr && access_started && is_workram && !lds_n;
+    assign workram_weh = mem_active_wr && access_started && is_workram && !uds_n;
     assign workram_wdata = cpu_data;
 
     // Sound latch write must pulse exactly once (the receiving side treats
@@ -414,18 +510,59 @@ module maincpu #(
     // the spurious re-request entirely.
     logic rom_pending;
 
+    // rom_access_d delays the request by one clk_sys cycle for exactly the
+    // same reason the BRAM write enables are gated on `access_started` (see
+    // that comment): the CPU's ~14 ns address path has not settled on the
+    // first cycle after a cpu_ce step, and `rom_req` is asserted for
+    // precisely one cycle -- which, ungated, is that unsettled cycle. The
+    // arbiter samples `c2_addr` combinationally when it accepts the
+    // request, so a half-settled address would be latched and a read issued
+    // to the wrong SDRAM location.
+    logic rom_access_d;
+
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
-            rom_pending <= 1'b0;
+            rom_access_d <= 1'b0;
+            rom_pending  <= 1'b0;
         end else begin
-            if (is_rom_access && !rom_pending) rom_pending <= 1'b1;
-            else if (!is_rom_access)               rom_pending <= 1'b0;
+            rom_access_d <= is_rom_access;
+            if (rom_access_d && !rom_pending) rom_pending <= 1'b1;
+            else if (!is_rom_access)              rom_pending <= 1'b0;
         end
     end
 
-    assign rom_req = is_rom_access && !rom_pending;
+    assign rom_req = rom_access_d && !rom_pending;
 
-    assign dtack_n = is_rom_access        ? ~rom_valid
+    // ---- ROM read capture ----
+    // rom_valid is a ONE-CYCLE pulse and rom_data is combinational straight
+    // off sdram.sv's shared dout register -- rtl/memory/sdram_narrow_bridge.sv
+    // latches neither (its `valid` is `(bstate == B_WAIT) && g_valid` and its
+    // `data` is a bit-select of g_data). That was survivable only while
+    // TG68K.C stepped on every clk_sys edge: its bus state machine sampled
+    // DTACK at every falling edge and re-captured DATA at every rising edge
+    // while parked in S_state="10", so the one-cycle window always landed.
+    //
+    // The CPU now advances only on the 16 MHz cpu_ce tick (see cpu_ce above),
+    // so it looks at DTACK roughly once every 5.4 clk_sys cycles. An
+    // unlatched one-cycle DTACK would be missed on nearly every fetch and
+    // the bus cycle would hang forever. Latch both halves: the data on the
+    // valid pulse, and ready as a level held until the CPU drops AS and ends
+    // the bus cycle (is_rom_access falls). This also closes the shared-dout
+    // exposure the rom_pending comment above describes -- once captured, the
+    // word can no longer be overwritten by another Port 2 client.
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            rom_ready  <= 1'b0;
+            rom_data_l <= 16'h0000;
+        end else if (!is_rom_access) begin
+            rom_ready  <= 1'b0;
+        end else if (rom_valid && !rom_ready) begin
+            rom_data_l <= rom_data;
+            rom_ready  <= 1'b1;
+        end
+    end
+
+    assign dtack_n = is_rom_access        ? ~rom_ready
                      : access_now_nonrom ? ~access_started
                      : 1'b1;
 
@@ -433,15 +570,97 @@ module maincpu #(
     // acknowledge bus cycle (FC=3'b111 during an active bus cycle) ----
     logic irq_pending;
 
+    // vblank is a LEVEL, held for the full 38-line vertical blank (~2.4 ms,
+    // ~205,000 clk_sys cycles) -- not a pulse. The CPU acknowledges within
+    // microseconds, i.e. while vblank is STILL HIGH, so the original
+    // `if (vblank) set; else if (iack) clear;` gave set priority and threw
+    // the acknowledge away. irq_pending then never cleared: ipl stayed at
+    // level 4 permanently and the CPU re-entered the ISR immediately after
+    // every RTE, so the main program could never advance past its first
+    // vblank. On hardware that presents as a core that boots, runs, and
+    // then renders nothing further.
+    //
+    // sim/maincpu_tb/tb_maincpu.sv could not catch this because it pulsed
+    // vblank for exactly ONE clock, so its acknowledge always landed after
+    // vblank had already fallen. That stimulus is now realistic.
+    //
+    // Correct behaviour matches MAME's irq4_line_hold: assert once at the
+    // START of vblank, hold until the CPU acknowledges, and let the
+    // acknowledge take priority.
+    logic vblank_d;
+
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
             irq_pending <= 1'b0;
+            vblank_d    <= 1'b0;
         end else begin
-            if (vblank) irq_pending <= 1'b1;
-            else if (!as_n && fc == 3'b111) irq_pending <= 1'b0;
+            vblank_d <= vblank;
+            if (!as_n && fc == 3'b111)     irq_pending <= 1'b0;  // IACK wins
+            else if (vblank && !vblank_d)  irq_pending <= 1'b1;  // vblank rising edge
         end
     end
 
     assign ipl = irq_pending ? 3'b011 : 3'b111;   // NOT-encoded: 3'b011 -> level 4, see header
+
+    // TEMPORARY DEBUG TAP -- see the dbg_counters port comment.
+    // Round 2. Round 1 read RGB(46,0,0): the CPU completed 46 ROM fetches
+    // then stopped dead, never acknowledged an interrupt, never wrote
+    // palette. This round separates "wedged on a bus cycle whose DTACK
+    // never arrives" from "executed STOP and is waiting for an interrupt
+    // that never arrives", and checks whether vblank is reaching this
+    // module at all.
+    //   R = ROM fetches completed          (saturating, expect 46 again)
+    //   G = vblank RISING edges seen       (saturating; 0 => vblank never
+    //                                       toggles here, so no IRQ possible)
+    //   B = live flag/state byte, decoded as:
+    //         [7] irq_pending  (IRQ asserted to the CPU right now?)
+    //         [6] as_n         (0 => parked mid-bus-cycle => DTACK stall)
+    //         [5] rom_ready
+    //         [4] dtack_n
+    //         [3:0] bus cycles started, low 4 bits (is it still cycling?)
+    // Round 3. Round 2 read R=46 G=255 B=0xDA: the CPU is ALIVE and still
+    // running bus cycles (the cycle counter kept incrementing) but makes no
+    // further ROM fetches, and ignores a permanently-asserted level-4 IRQ
+    // (irq_pending=1, zero IACK cycles) -- i.e. it is looping on non-ROM
+    // addresses with its SR mask still >= 4. This round shows WHERE.
+    //
+    // Displays the 24-bit bus address latched at the START of each bus cycle
+    // (as_n falling edge), straight onto R/G/B = a[23:16]/a[15:8]/a[7:0].
+    // The CPU is looping, so the screen paints a band per address it visits
+    // and the loop is read directly off one screenshot.
+    // Round 4. Round 3 showed the steady state: the address marches
+    // monotonically +4 from 0x9C9F95 to 0x9E5CD9 -- a ~1.6 MB straight-line
+    // sweep of unmapped space, i.e. the CPU long since ran away and its PC
+    // is walking through nothing. That is the SYMPTOM; this round captures
+    // the CAUSE by recording the FIRST 224 bus cycles and then freezing, so
+    // the boot sequence is visible and the screenshot is deterministic
+    // regardless of when it is taken.
+    //
+    // Sampled one clock AFTER as_n falls, not on the edge: the CPU's address
+    // path is ~14 ns, longer than one 11.64 ns clock, so latching on the
+    // falling edge captures it mid-settle (which is why round 3's low bits
+    // looked odd -- every address came out == 1 mod 4).
+    //
+    // Read back as trace[vcnt]: one captured address per scanline, on
+    // R/G/B = a[23:16]/a[15:8]/a[7:0], so the screen shows 224 consecutive
+    // bus cycles as horizontal bands top to bottom.
+    logic [23:0] dbg_trace [0:223];
+    logic [7:0]  dbg_idx;
+    logic         dbg_asn_prev, dbg_cap;
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            dbg_idx      <= 8'd0;
+            dbg_asn_prev <= 1'b1;
+            dbg_cap      <= 1'b0;
+        end else begin
+            dbg_asn_prev <= as_n;
+            dbg_cap      <= (!as_n && dbg_asn_prev);   // settle one clock, then sample
+            if (dbg_cap && dbg_idx < 8'd224) begin
+                dbg_trace[dbg_idx] <= addr24;
+                dbg_idx            <= dbg_idx + 8'd1;
+            end
+        end
+    end
+    assign dbg_counters = (dbg_vcnt < 9'd224) ? dbg_trace[dbg_vcnt[7:0]] : 24'd0;
 
 endmodule

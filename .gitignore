@@ -44,6 +44,33 @@ work/
 transcript
 vsim.wlf
 modelsim.ini
+sim/**/*.log
+
+# Local build/debug scratch: Quartus run logs and hardware screenshots pulled
+# back by scripts/mister_hw_test.py during bring-up. Regenerable, and the
+# screenshots are only meaningful alongside the temporary debug build that
+# produced them.
+quartus_*.log
+scratch_*.png
+
+# Local MiSTer connection settings (host/user/password) for
+# scripts/mister_hw_test.py -- never committed, see the file's own header.
+mister.env
+
+# ModelSim crash dumps.
+*.vstf
+
+# Decoded debug-tap captures and other local analysis scratch.
+scratch_*.txt
+
+# releases/ IS the right home for built bitstreams -- they just aren't
+# tracked for now, while the core still doesn't run the games. Only a build
+# VERIFIED to actually run belongs in git: committing one that merely
+# compiles is actively misleading (one such build was committed and had to
+# be removed -- it predated the timing-closure fix and did not run at all).
+# When there is a verified build worth publishing, add it deliberately:
+#   git add -f "releases/<name>.rbf"
+releases/*.rbf
 
 # vasm: NOT vendored (license is non-commercial/no-modification
 # redistribution, see tools/README.md) -- built locally on demand by

@@ -185,7 +185,8 @@ module tb_maincpu;
     end
 
     initial begin
-        #6000000;
+        // 6x, see the Case 1 marker-timeout comment (cpu_ce).
+        #40000000;
         $display("TIMEOUT: simulation did not finish in time");
         $finish;
     end
@@ -224,10 +225,20 @@ module tb_maincpu;
         // cycle) -- levels 1-7 map to vectors 25-31, so level 4 is vector
         // 28, byte address 28*4=0x70, not 24*4=0x60. Points at irq4_isr
         // (0x00000100), confirmed from test_maincpu.lst's symbol table.
-        rom[16'h0038] = 16'h0000; rom[16'h0039] = 16'h0100;
-
+        //
+        // MUST be written AFTER $readmemh below, not before. The assembled
+        // image is contiguous from byte 0x8 to past the ISR at org $100,
+        // so it spans byte 0x70 and fills the 0x70-0xFF gap with zeroes --
+        // silently wiping this entry if it is installed first. That is
+        // exactly what happened: the CPU took the IRQ correctly, fetched
+        // the vector from the correct address 0x70, read the zeroed table,
+        // jumped to 0x00000000, executed zeroes until it hit an illegal
+        // instruction, and took vector 4 into the weeds. It looked like a
+        // CPU vector-fetch bug and was recorded as one in PROVENANCE.md.
         // assembled program, starting at byte 8 = word index 4
         $readmemh("sim/maincpu_tb/test_maincpu.hex", rom, 4);
+
+        rom[16'h0038] = 16'h0000; rom[16'h0039] = 16'h0100;
 
         p1p2_in = 32'hAABBCCDD;
         dsw_in  = 32'h00000000;
@@ -249,7 +260,13 @@ module tb_maincpu;
                 wait (workram[1] === 16'hCAFE);
             end
             begin
-                #5000000;
+                // Scaled 6x when maincpu.sv gained its 16 MHz cpu_ce clock
+                // enable: the CPU now steps once per ~5.4 clk_sys cycles
+                // instead of every cycle, so every one of these sim-time
+                // timeouts was tuned to a CPU running 5.4x faster than the
+                // real board's 68EC020. They are watchdogs, not assertions
+                // about speed -- keep them generous.
+                #30000000;
                 $display("FAIL: timed out waiting for the final marker write (0xFE0002=0xCAFE) -- bus wedged or a wrong address decoded");
                 errors++;
             end
@@ -294,8 +311,16 @@ module tb_maincpu;
         // vblank, so this test isn't racing the CPU's own boot tail.
         repeat (30) @(posedge clk);
         dbg_irq_trace_on = 1'b1;
+        // Hold vblank as a real LEVEL, not a one-clock pulse. Real hardware
+        // asserts it for the whole 38-line vertical blank (~205,000 clk_sys
+        // cycles), so the CPU's interrupt-acknowledge lands while vblank is
+        // still high. The old one-clock pulse meant the acknowledge always
+        // arrived after vblank had fallen, which hid a real maincpu.sv bug:
+        // set-priority over the acknowledge left irq_pending stuck high
+        // forever, re-entering the ISR after every RTE. 5000 cycles is far
+        // more than the ISR needs while still keeping the test quick.
         vblank = 1'b1;
-        @(posedge clk);
+        repeat (5000) @(posedge clk);
         vblank = 1'b0;
 
         fork
@@ -303,7 +328,7 @@ module tb_maincpu;
                 wait (spriteram[16'h0080] === 16'hbeef);
             end
             begin
-                #200000;
+                #1200000;   // 6x, see Case 1's marker-timeout comment (cpu_ce)
                 $display("FAIL: timed out waiting for the vblank IRQ4 ISR's marker write (spriteram[0x80]=0xbeef) -- IRQ not taken or not autovectored correctly");
                 errors++;
             end
