@@ -606,4 +606,5 @@ module maincpu #(
     assign ipl = irq_pending ? 3'b011 : 3'b111;   // NOT-encoded: 3'b011 -> level 4, see header
 
 
+
 endmodule
