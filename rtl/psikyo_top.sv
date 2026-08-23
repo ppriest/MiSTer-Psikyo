@@ -96,10 +96,7 @@ module psikyo_top #(
     output logic         vblank,
     output logic         hsync,
     output logic         vsync,
-    output logic [14:0] rgb,
-
-    // TEMPORARY DEBUG TAP -- see maincpu.sv's dbg_counters port comment.
-    output logic [23:0] dbg_counters
+    output logic [14:0] rgb
 );
 
     logic         cpu_rom_req;
@@ -131,6 +128,40 @@ module psikyo_top #(
     logic core_reset;
     assign core_reset = reset | ioctl_download;
 
+    // SDRAM backend reset -- deliberately NOT plain `reset`, and this is the
+    // second time this project has been bitten by the same hazard.
+    //
+    // The module header already documents that psikyo_sdram_top must stay out
+    // of reset while ioctl_download is active, and fixes it by passing plain
+    // `reset` here rather than `core_reset`. That is NOT sufficient, because
+    // `reset` is ITSELF asserted for the whole download: MiSTer holds core
+    // RESET across the ROM transfer (Psikyo.sv builds reset from RESET, and
+    // sys_top drives RESET from sysmem_lite's reset_out via reset_core_req,
+    // which the HPS asserts around loading). Measured on real hardware: the
+    // (reset && ioctl_download) cycle counter saturated -- reset covers the
+    // entire transfer.
+    //
+    // The consequence was total and silent. sdram_download's FSM never left
+    // D_IDLE, so dl_req never asserted, the arbiter never selected the
+    // download path, and a pin-level counter on {nRAS,nCAS,nWE} confirmed
+    // ZERO CMD_WRITE commands ever reached the chip -- while every one of the
+    // 0xE00000 bytes was delivered by the HPS and accepted by the FSM. SDRAM
+    // stayed completely unwritten, so the CPU read garbage for its reset
+    // vector and ran away into unmapped space.
+    //
+    // Upstream Sorgelig sdram.v has no reset port at all by design -- it is
+    // driven purely by `init` -- precisely so a core reset cannot disturb
+    // memory. This project's own wrappers added a reset, so they must
+    // explicitly hold it off while a download is in flight. Resetting them
+    // once the download finishes is harmless: sdram.sv itself has no reset
+    // input, its init sequence is driven separately by `init`, and the
+    // contents of the chip are unaffected.
+    logic sdram_reset;
+    assign sdram_reset = reset & ~ioctl_download;
+
+
+
+
     psikyo_core #(.BOARD_GUNBIRD(BOARD_GUNBIRD)) u_core (
         .clk(clk), .ce_pix(ce_pix), .reset(core_reset),
         .cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
@@ -146,8 +177,7 @@ module psikyo_top #(
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
-        .hsync(hsync), .vsync(vsync), .rgb(rgb),
-        .dbg_counters(dbg_counters)
+        .hsync(hsync), .vsync(vsync), .rgb(rgb)
     );
 
     // Board-appropriate sound CPU -- sngkace/samuraia/btlkroad/gunbird all
@@ -185,8 +215,94 @@ module psikyo_top #(
     assign audiocpu_rom_req  = audiocpu_rom_req_raw;
     assign audiocpu_rom_addr = {1'b0, audiocpu_rom_addr_raw};
 
+    // TEMPORARY DEBUG TAP -- does the HPS ROM download actually LAND?
+    //
+    // Established so far: the CPU fetches the reset vector from the correct
+    // addresses but SDRAM returns wrong data, identically at two SDRAM_CLK
+    // phases a quarter-period apart (8598 ps and 2910 ps) on a build whose
+    // CPU closes timing. So it is not read-side interface timing. Every
+    // in-ROM-range address returns essentially one constant (0xCDCD), which
+    // is what unwritten SDRAM looks like.
+    //
+    // The one thing real hardware demands that simulation does not is
+    // correct ioctl_wait backpressure: the HPS streams bytes continuously,
+    // and sdram_download.sv asserts ioctl_wait from a REGISTERED dstate, so
+    // it rises one cycle after a write is accepted. Any ioctl_wr arriving in
+    // that window is silently dropped -- the byte is simply never written,
+    // leaving that location at its power-up value.
+    //
+    //   R:G:B = 24-bit count of ioctl_wr pulses that arrived while
+    //           ioctl_wait was already HIGH, i.e. DROPPED bytes.
+    //
+    // 0x000000 => backpressure is correct and the download is not the fault.
+    // Anything large => bytes are being dropped and the ROM image in SDRAM
+    // is incomplete, which would explain the garbage directly.
+    // Round 2 of this tap. Round 1 counted only DROPPED bytes and read
+    // 0x000000 -- which was inconclusive, because zero drops is also exactly
+    // what a download that never happened at all looks like. Count totals
+    // instead, both scaled by >>12 (4096-byte granularity) so each fits in
+    // 12 bits:
+    //   R:G[7:4]  = total ioctl_wr pulses seen   >> 12
+    //   G[3:0]:B  = SDRAM byte writes issued     >> 12
+    //
+    // The MRA reserves 0xE00000 bytes, so BOTH should read 0xE00 (3584) if
+    // the HPS sent the whole image and every byte reached the SDRAM write
+    // path. 0x000 on the first => the core never received a download at all.
+    // First large, second small => bytes are being lost inside the download
+    // path rather than at the ioctl handshake.
+    // Round 3 of this tap. Rounds 1 and 2 both read 0x000000 but were BOTH
+    // inconclusive for the same reason: their counters were cleared by
+    // `reset`, so a zero could equally mean "held in reset" as "never
+    // happened". These have NO reset at all -- Quartus powers registers up
+    // to 0 -- so whatever they show is what actually occurred since
+    // configuration, and cannot be an artefact of reset timing.
+    //
+    //   R:G[7:4]  = ioctl_download RISING EDGES (did a download ever start?)
+    //   G[3:0]:B  = ioctl_wr pulses >> 12 (4096-byte units; 0xE00 = the full
+    //               0xE00000 the MRA reserves)
+    //
+    // 0x000/0x000 => the core never sees a download at all: the fault is in
+    //   hps_io/CONF_STR/MRA delivery, not in any of the SDRAM RTL.
+    // >=1 / 0xE00  => the download is fine and the loss is downstream.
+    // >=1 / small  => the download starts but stalls partway.
+    // Round 4 of this tap. Round 3 (no reset, so trustworthy) proved the HPS
+    // delivers the COMPLETE image: 0xE00 * 4096 = 0xE00000 ioctl_wr pulses,
+    // exactly the MRA's reservation. So the bytes arrive at this module and
+    // are lost downstream.
+    //
+    // sdram_download.sv accepts a byte only when ioctl_index == 16'd0. If
+    // MiSTer tags MRA ROM data with any other index, every byte is discarded
+    // in silence while the delivery counters still look perfect. Measure the
+    // index directly, and count bytes that actually pass the FSM's accept
+    // condition:
+    //   R:G[7:4]  = ioctl_index[11:0] latched during download
+    //   G[3:0]:B  = bytes ACCEPTED (index==0 && !ioctl_wait) >> 12
+    //
+    // index 0 + 0xE00 => acceptance is fine; look further down the chain.
+    // index != 0      => root cause: sdram_download.sv's index filter.
+    // index 0 + small => the FSM is stalling and losing bytes.
+    // Round 5 of this tap. Round 4 proved the download FSM ACCEPTS all
+    // 0xE00000 bytes (the index filter is fine -- the 254 that showed up is
+    // MiSTer's DIP-settings transfer, sent after the ROM). So delivery and
+    // acceptance are both perfect, and the bytes are lost between the FSM
+    // and the chip.
+    //
+    // Measure at the SDRAM PINS themselves, which are top-level signals
+    // here, so this counts what the chip actually sees rather than what the
+    // RTL intended. sdram.sv encodes commands on {nRAS,nCAS,nWE}:
+    //   CMD_WRITE = 3'b100, CMD_READ = 3'b101.
+    //
+    //   R:G[7:4]  = WRITE commands issued to the chip >> 12
+    //   G[3:0]:B  = READ  commands issued to the chip >> 12
+    //
+    // The download is byte-at-a-time single-word writes, so writes should
+    // reach 0xE00 (0xE00000). If it does, the commands genuinely reach the
+    // chip and the chip is not storing them -- an init/electrical problem
+    // rather than an RTL one. If it stays near zero, sdram.sv never issues
+    // the writes and the fault is in the controller or arbiter.
+
     psikyo_sdram_top u_sdram (
-        .clk(clk), .reset(reset), .init(init),
+        .clk(clk), .reset(sdram_reset), .init(init),
         .SDRAM_A(SDRAM_A), .SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
         .SDRAM_BA(SDRAM_BA), .SDRAM_nCS(SDRAM_nCS), .SDRAM_nWE(SDRAM_nWE),
         .SDRAM_nRAS(SDRAM_nRAS), .SDRAM_nCAS(SDRAM_nCAS),

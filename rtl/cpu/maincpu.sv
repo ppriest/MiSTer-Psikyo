@@ -186,20 +186,7 @@ module maincpu #(
     output logic         latch_write,   // pulse: this CPU wrote a new command byte
 
     // vblank IRQ (level 4, held/autovectored -- see header)
-    input  logic         vblank,
-
-    // TEMPORARY DEBUG TAP -- scanline index used to read back the bus-address
-    // trace below, one captured address per scanline.
-    input  logic [8:0]  dbg_vcnt,
-
-    // TEMPORARY DEBUG TAP -- remove once the black-screen bring-up question
-    // is answered. Three saturating 8-bit activity counters, driven onto
-    // VGA_R/G/B by Psikyo.sv so a single screenshot answers "is the CPU
-    // alive, is it taking interrupts, is it writing palette":
-    //   [23:16] R = CPU ROM fetches completed  (CPU executing at all?)
-    //   [15:8]  G = interrupt-acknowledge cycles (vblank IRQ reaching CPU?)
-    //   [7:0]   B = palette writes             (CPU reaching video code?)
-    output logic [23:0] dbg_counters
+    input  logic         vblank
 );
     logic [31:0] a;
     logic [2:0]  fc;
@@ -550,15 +537,31 @@ module maincpu #(
     // the bus cycle (is_rom_access falls). This also closes the shared-dout
     // exposure the rom_pending comment above describes -- once captured, the
     // word can no longer be overwritten by another Port 2 client.
+    // rom_ready must be immune to a SINGLE-cycle glitch on is_rom_access.
+    // That signal is combinational off the CPU's address bus, whose path is
+    // ~14 ns -- longer than one 11.64 ns clock -- so while the address
+    // settles after each 16 MHz CPU step, is_rom can transiently read wrong.
+    // Clearing on one cycle of !is_rom_access would then discard an
+    // already-latched word and re-drive DTACK mid-access, handing the CPU
+    // corrupted data. Require the access to be gone for two consecutive
+    // cycles (is_rom_access AND its registered copy both low), which a
+    // settling glitch cannot satisfy while a real bus-cycle end always does
+    // -- AS stays high for a full CPU step (~5.4 clocks) between accesses.
+    logic is_rom_access_d;
+
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
-            rom_ready  <= 1'b0;
-            rom_data_l <= 16'h0000;
-        end else if (!is_rom_access) begin
-            rom_ready  <= 1'b0;
-        end else if (rom_valid && !rom_ready) begin
-            rom_data_l <= rom_data;
-            rom_ready  <= 1'b1;
+            rom_ready       <= 1'b0;
+            rom_data_l      <= 16'h0000;
+            is_rom_access_d <= 1'b0;
+        end else begin
+            is_rom_access_d <= is_rom_access;
+            if (!is_rom_access && !is_rom_access_d) begin
+                rom_ready  <= 1'b0;
+            end else if (is_rom_access && rom_valid && !rom_ready) begin
+                rom_data_l <= rom_data;
+                rom_ready  <= 1'b1;
+            end
         end
     end
 
@@ -602,65 +605,5 @@ module maincpu #(
 
     assign ipl = irq_pending ? 3'b011 : 3'b111;   // NOT-encoded: 3'b011 -> level 4, see header
 
-    // TEMPORARY DEBUG TAP -- see the dbg_counters port comment.
-    // Round 2. Round 1 read RGB(46,0,0): the CPU completed 46 ROM fetches
-    // then stopped dead, never acknowledged an interrupt, never wrote
-    // palette. This round separates "wedged on a bus cycle whose DTACK
-    // never arrives" from "executed STOP and is waiting for an interrupt
-    // that never arrives", and checks whether vblank is reaching this
-    // module at all.
-    //   R = ROM fetches completed          (saturating, expect 46 again)
-    //   G = vblank RISING edges seen       (saturating; 0 => vblank never
-    //                                       toggles here, so no IRQ possible)
-    //   B = live flag/state byte, decoded as:
-    //         [7] irq_pending  (IRQ asserted to the CPU right now?)
-    //         [6] as_n         (0 => parked mid-bus-cycle => DTACK stall)
-    //         [5] rom_ready
-    //         [4] dtack_n
-    //         [3:0] bus cycles started, low 4 bits (is it still cycling?)
-    // Round 3. Round 2 read R=46 G=255 B=0xDA: the CPU is ALIVE and still
-    // running bus cycles (the cycle counter kept incrementing) but makes no
-    // further ROM fetches, and ignores a permanently-asserted level-4 IRQ
-    // (irq_pending=1, zero IACK cycles) -- i.e. it is looping on non-ROM
-    // addresses with its SR mask still >= 4. This round shows WHERE.
-    //
-    // Displays the 24-bit bus address latched at the START of each bus cycle
-    // (as_n falling edge), straight onto R/G/B = a[23:16]/a[15:8]/a[7:0].
-    // The CPU is looping, so the screen paints a band per address it visits
-    // and the loop is read directly off one screenshot.
-    // Round 4. Round 3 showed the steady state: the address marches
-    // monotonically +4 from 0x9C9F95 to 0x9E5CD9 -- a ~1.6 MB straight-line
-    // sweep of unmapped space, i.e. the CPU long since ran away and its PC
-    // is walking through nothing. That is the SYMPTOM; this round captures
-    // the CAUSE by recording the FIRST 224 bus cycles and then freezing, so
-    // the boot sequence is visible and the screenshot is deterministic
-    // regardless of when it is taken.
-    //
-    // Sampled one clock AFTER as_n falls, not on the edge: the CPU's address
-    // path is ~14 ns, longer than one 11.64 ns clock, so latching on the
-    // falling edge captures it mid-settle (which is why round 3's low bits
-    // looked odd -- every address came out == 1 mod 4).
-    //
-    // Read back as trace[vcnt]: one captured address per scanline, on
-    // R/G/B = a[23:16]/a[15:8]/a[7:0], so the screen shows 224 consecutive
-    // bus cycles as horizontal bands top to bottom.
-    logic [23:0] dbg_trace [0:223];
-    logic [7:0]  dbg_idx;
-    logic         dbg_asn_prev, dbg_cap;
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            dbg_idx      <= 8'd0;
-            dbg_asn_prev <= 1'b1;
-            dbg_cap      <= 1'b0;
-        end else begin
-            dbg_asn_prev <= as_n;
-            dbg_cap      <= (!as_n && dbg_asn_prev);   // settle one clock, then sample
-            if (dbg_cap && dbg_idx < 8'd224) begin
-                dbg_trace[dbg_idx] <= addr24;
-                dbg_idx            <= dbg_idx + 8'd1;
-            end
-        end
-    end
-    assign dbg_counters = (dbg_vcnt < 9'd224) ? dbg_trace[dbg_vcnt[7:0]] : 24'd0;
 
 endmodule

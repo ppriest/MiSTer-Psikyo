@@ -58,9 +58,9 @@
 		     and u126 -> bytes 1,0 swapped ("21"). Decodes SP=0xffff8000
 		     PC=0x00000400, matching sim/psikyo_top_tb/gen_real_rom.py, which is
 		     the image the ModelSim real-ROM boot test runs from successfully. -->
-		<interleave output="32">
-			<part name="4-u127.bin" crc="8c9911ca" map="1200"/>
-			<part name="5-u126.bin" crc="d20c3ef0" map="0021"/>
+		<interleave output="16">
+			<part name="4-u127.bin" crc="8c9911ca" map="01"/>
+			<part name="5-u126.bin" crc="d20c3ef0" map="10"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 

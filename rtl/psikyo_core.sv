@@ -91,10 +91,7 @@ module psikyo_core #(
     output logic         vblank,
     output logic         hsync,
     output logic         vsync,
-    output logic [14:0] rgb,
-
-    // TEMPORARY DEBUG TAP -- see maincpu.sv's dbg_counters port comment.
-    output logic [23:0] dbg_counters
+    output logic [14:0] rgb
 );
 
     // ---- video timing ----
@@ -153,9 +150,7 @@ module psikyo_core #(
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
         .latch_data(latch_data), .latch_write(latch_write),
-        .vblank(vblank),
-        .dbg_vcnt(vcnt),
-        .dbg_counters(dbg_counters)
+        .vblank(vblank)
     );
 
     // ---- work RAM: CPU-only, port B unused ----

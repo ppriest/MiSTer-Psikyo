@@ -250,12 +250,8 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.ym_dout(ym_dout), .ym_din(8'h00), // no jt10 yet -- see module header
 
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
-	.hsync(hsync), .vsync(vsync), .rgb(rgb),
-	.dbg_counters(dbg_counters)
+	.hsync(hsync), .vsync(vsync), .rgb(rgb)
 );
-
-// TEMPORARY DEBUG TAP -- see rtl/cpu/maincpu.sv's dbg_counters port comment.
-wire [23:0] dbg_counters;
 
 assign CLK_VIDEO = clk_sys;
 assign CE_PIXEL = ce_pix;
@@ -268,16 +264,9 @@ assign VGA_VS = vsync;
 // zero-padding, which would darken max-brightness colors) -- rgb[14:10]=R,
 // rgb[9:5]=G, rgb[4:0]=B, MAME's own xRGB555 convention (R in the high
 // bits), matching docs/phase1_memory_map.md's "Palette format is xRGB_555".
-// TEMPORARY DEBUG TAP -- overrides the real xRGB_555 output with the three
-// activity counters (R=ROM fetches, G=IACK cycles, B=palette writes). Restore
-// the three commented lines below once the black-screen question is answered.
-assign VGA_R = dbg_counters[23:16];
-assign VGA_G = dbg_counters[15:8];
-assign VGA_B = dbg_counters[7:0];
-
-// assign VGA_R = {rgb[14:10], rgb[14:12]};
-// assign VGA_G = {rgb[9:5],   rgb[9:7]};
-// assign VGA_B = {rgb[4:0],   rgb[4:2]};
+assign VGA_R = {rgb[14:10], rgb[14:12]};
+assign VGA_G = {rgb[9:5],   rgb[9:7]};
+assign VGA_B = {rgb[4:0],   rgb[4:2]};
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
