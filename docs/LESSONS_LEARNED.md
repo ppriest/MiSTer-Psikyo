@@ -6,6 +6,73 @@ behaviors likely to recur. Organized by topic, not chronology. For the blow-by-b
 lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/`,
 `rtl/sound/jt10/`, `rtl/sound/jt49/`).
 
+## Suspect your own changes and your integration first
+
+- **Vendored cores and MiSTer's own infrastructure are battle-tested; on balance the bug is
+  yours.** TG68K.C, T80, Sorgelig's `sdram.sv`, MRA/ROM loading, `hps_io`, `sys_top` ship in many
+  working cores. On 2026-08-23 a full day went into suspecting, in order: SDRAM pin assignments
+  (38/38 correct), SDRAM_CLK phase (irrelevant — identical output a quarter period apart), the
+  burst-4 SDRAM controller (sound), the MRA interleave (correct — "fixed" wrongly, then reverted),
+  and TG68K's exception microcode (a testbench bug). The real cause was integration glue this
+  project wrote.
+- **When a vendored module omits something obvious, that omission is usually deliberate.**
+  Upstream `sdram.v` has **no reset port at all** — driven purely by `init` — precisely so a core
+  reset cannot disturb memory. This project's wrappers added one, which is exactly what
+  reintroduced the hazard below. Read the upstream design before overriding it.
+- **Do not "fix" a loader or file format without hardware evidence it produces wrong bytes.** The
+  `.mra` maincpu interleave was rewritten from `<interleave output="16">` with `map="01"/"10"` to
+  `output="32"` with 4-digit maps, on the strength of a mental model that predicted a corrupt
+  stack pointer. The 4-digit maps turned out to be **silently ignored** (proved by swapping them
+  and getting byte-identical hardware output), and the original form was right all along. Every
+  test that seemed to indict it had run against an SDRAM that was never written — garbage
+  compared against garbage.
+
+## MiSTer integration: ROM download and reset
+
+- **MiSTer holds core `RESET` asserted for the ENTIRE ROM download.** Anything in the memory path
+  that resets on `RESET` is therefore dead for the whole transfer. Here `Psikyo.sv` builds
+  `reset = RESET | status[0] | buttons[1] | ~pll_locked` and `psikyo_top` passed it into the SDRAM
+  backend, pinning `sdram_download`'s FSM in `D_IDLE`. `dl_req` never asserted, the arbiter never
+  selected the download path, and **not one `CMD_WRITE` ever reached the chip** — while the HPS
+  delivered all `0xE00000` bytes and the FSM's accept condition looked perfect. SDRAM was simply
+  never written; every read returned power-up contents. Fix: `sdram_reset = reset & ~ioctl_download`.
+- **This is invisible to simulation by construction.** A testbench drives its own reset and
+  download sequencing, so it never reproduces MiSTer holding RESET across the transfer. The same
+  blind spot produced two other bugs the same day: `vblank` driven as a one-clock pulse when real
+  hardware holds it 38 lines, and `ioctl_index` hardcoded to 0 so an index mismatch could never
+  surface. **Ask of every testbench stimulus: is this the shape the real system produces?**
+- **Verify at the pins, not at the intent.** The decisive measurement was counting real commands
+  on `{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE}` (`CMD_WRITE = 3'b100`), which are top-level signals.
+  Delivery counters and FSM accept-condition counters both looked perfect; only the pin count
+  revealed zero writes. Measure the last observable stage, not an internal signal that merely
+  implies it.
+
+## Debug instrumentation: how to not fool yourself
+
+- **Never reset a debug counter with the reset you are investigating.** Two separate measurements
+  read `0x000000` and were reported as findings before it was noticed that the counters were
+  cleared by `reset` — which is asserted for the whole window being measured. Declare debug
+  counters with `= 0` initialisers and **no reset at all**; Quartus powers registers to zero, so
+  whatever they show is what genuinely happened since configuration.
+- **A zero can mean "did not happen" OR "was never allowed to count". Design the probe so those
+  differ.** Counting only dropped bytes was useless because zero drops and zero traffic look
+  identical. Always pair a "bad event" counter with a "total events" counter.
+- **Sample registered signals, not combinational ones, and prove the probe on a known-good
+  configuration.** A tap on `cpu_data` (combinational) sampled at `cpu_ce && !as_n && !dtack_n`
+  appeared to show the CPU latching byte-skewed data — a compelling and completely false finding.
+  Running the *same* probe in a simulation that demonstrably boots showed the same skew, proving
+  the probe mis-sampled. **Run any new probe against a known-good setup first**; if it reports a
+  fault there, the probe is the fault.
+- **Distinguish the address column from the data column before blaming the CPU.** A bus trace
+  showing `0x00000000` was read for years as "the vector fetch address comes out wrong". It was
+  the *data* read back from the correct address `0x70`, because the testbench had zeroed the
+  vector table. That misreading was recorded in two docs and used to justify not trusting
+  interrupts at all.
+- **Measurements taken while the design fails timing are worthless.** The "~51% of ROM words
+  match" figure and the original SDRAM_CLK phase sweep were both taken while the entire clk_sys
+  domain failed by 8.9 ns, and both were used to rule the memory interface *out*. Re-run any
+  measurement that predates a timing fix.
+
 ## Static timing analysis (check this FIRST on any hardware-vs-simulation divergence)
 
 - **Quartus reports "Fitter was successful" on a design that grossly fails timing. Nothing in the
@@ -67,74 +134,47 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   network, driven from `use_direct_data` and `exec[*]`, needing ~19.6 ns. Nothing else in the
   design (video pipeline, SDRAM controller, sound) failed timing at all. Budget for the CPU to be
   the Fmax-limiting block in any design that includes it.
-- **The architecture assumes CLK *is* the CPU clock.** `TG68K.vhd` exposes no clock enable of its
-  own; the `clkena_in` visible in the file is the *kernel component's* port, driven internally
-  from `clkena <= state="01" OR clkena_e='1' OR skipFetch='1'`, which is derived purely from bus
-  state. Tie `CLK` to an 85.909091 MHz system clock and the whole CPU free-runs at 85.909091 MHz —
-  5.4x the real 16 MHz 68EC020, and far above what it can physically close.
-- **Add the enable by gating every clocked process in the architecture, not just the kernel.**
-  Gating only the kernel is actively wrong: the bus state machine generates `clkena_e` as a
-  one-CLK-wide pulse, so an ungated bus machine will routinely pulse it during a cycle the gated
-  kernel is asleep for, silently losing bus-cycle completions. `TG68K.vhd` has three clocked
-  regions to gate — the `E`/`sync_state` process (both its `falling_edge` and `rising_edge`
-  halves), and both halves of the bus state machine — plus the kernel's `clkena` term. One
-  enable pulse then equals exactly one emulated CPU clock cycle with all internal
-  rising/falling-edge ordering preserved. Implemented here as the `ext_clkena` port (defaults to
-  `'1'`, so full-rate instantiations are unchanged), the same
-  separate-single-driver-signal pattern as the `ext_force_run` fix.
-- **A single clock enable canNOT gate both `rising_edge` and `falling_edge` processes — you need
-  two, one delayed a cycle.** This is the most counter-intuitive part of the whole exercise and it
-  is easy to get backwards (it was, here, on the first attempt). A rising-edge register samples
-  the enable value held during the **preceding** period, so for a one-period-wide pulse spanning
-  period P, the rising-edge work fires at the **end** of P — while the falling edge *inside* P
-  occurs half a period **earlier**. Sharing one enable therefore executes each emulated CPU
-  cycle's two halves in the **wrong order**. Drive the falling-edge processes from the same pulse
-  delayed exactly one clock (`cpu_ce_f <= cpu_ce`), so the falling edge they act on is the one
-  that genuinely follows the rising-edge work.
-- **The symptom is a stalled bus, not a glitch**, which makes it hard to attribute. Here
-  `sim/maincpu_tb/tb_maincpu.sv`'s sound-latch check caught it: the CPU reached `S_state="01"`
-  with the correct byte already in `data_write` (`0x7777`), but `data_akt_e`/`data_akt_s` were
-  still `'0'`, so the `DATA` tri-state stayed at `Z` and the write captured high-impedance. The
-  same misordering skews AS/UDS/LDS/RW assertion widths and the falling-edge `waitm <= DTACK`
-  sample. **Probe the enable's two edges explicitly** when a gated dual-edge core misbehaves —
-  ModelSim `when {<sig> == 1} {echo [examine ...]}` gives the whole picture in one run without
-  editing the testbench.
-- **Clock-enabling a slow core does not make its OUTPUT paths fast — and that is a second,
-  separate bug waiting to happen.** Adding the enable took worst-case slack from −8.879 ns to
-  −2.406 ns, but the remaining failures had a completely different shape: no longer CPU-internal,
-  they now ran *from* a CPU register *to* BRAM outside the CPU (`dpram:u_palette`,
-  `dpram:u_workram`). TG68K.C's combinational output path — register file → internal data-out mux
-  → the `DATA` tri-state net → the wrapper's address decode → BRAM address/data ports — measures
-  ~14 ns, which is longer than one 11.64 ns clk_sys period. The CPU steps every ~5.4 cycles, so
-  for the first cycle or two after each step the address and write data downstream are *still
-  settling*.
-- **The consequence is silent memory corruption, and repeating the write does not undo it.** A
-  BRAM write committed during that settling window writes real data to a **wrong, half-settled
-  address**. The natural instinct — "a synchronous memory rewritten with the same stable value
-  every cycle is harmless", which is true and is exactly why the write enables were held for the
-  whole bus cycle — is only true when the *address* is stable too. Under a clock enable it isn't,
-  for the first cycle.
-- **Fix by suppressing the first cycle of every access, then constrain to match.** Gate every
-  write enable on a one-cycle-delayed strobe (`access_started`, already present for DTACK) and
-  delay any one-cycle request pulse (`rom_req`, via a registered `rom_access_d`) — the arbiter
-  samples the address combinationally when it accepts, so an ungated one-cycle request latches the
-  unsettled address and reads the wrong location. Only *then* is a CPU→anywhere
-  `set_multicycle_path -setup 2` honest, because the RTL now guarantees nothing acts before two
-  full periods have elapsed. Writing that constraint without the RTL gating would hide the
-  corruption rather than fix it.
-- **Audit for one-cycle pulses whenever you gate a CPU.** The dangerous pattern is any signal
-  asserted for exactly one full-rate cycle derived combinationally from CPU outputs — it will land
-  on precisely the unsettled cycle. Held levels are safe; single-cycle pulses are not.
-- **Clock enables fix real silicon but not the timing report.** TimeQuest does not know the
-  register only advances every Nth cycle, so it keeps reporting the same violations. The hardware
-  is genuinely correct once the enable is in; add `set_multicycle_path` to make the report honest
-  and stop the Fitter burning effort on unreachable paths.
-- **Derive the enable ratio exactly rather than rounding.** clk_sys here is the real 14.318181…MHz
+- **`TG68K.vhd` is an async-68000-BUS ADAPTER, not the CPU. Do not rate-limit it — bypass it.**
+  This is the single most expensive mistake made on this project. `TG68K.vhd` wraps the real core
+  (`TG68KdotC_Kernel`) in a 68000 bus-protocol emulator that assumes `CLK` **is** the CPU clock:
+  it has `falling_edge` registers (`as_e`, `rw_e`, `uds_e`, `lds_e`, `clkena_e`, `data_akt_e`,
+  `cpuIPL`, `waitm`, `E`) precisely because it reproduces real 68000 bus phases. Slowing it down
+  means fighting its design.
+- **The kernel is what you clock-enable, and it is designed for exactly that.**
+  `TG68KdotC_Kernel` is **entirely rising-edge** (verified: zero `falling_edge` occurrences) and
+  exposes `clkena_in` for this purpose. Established cores instantiate the kernel DIRECTLY and own
+  the bus interface themselves. `mist-devel/plus_too`'s `tg68k.v` is the canonical example:
+
+  ```verilog
+  wire tg68_clkena = phi1 && (s_state == 7 || tg68_busstate == 2'b01);
+  ```
+
+  Its own state machine handles DTACK and stalls the CPU purely by gating `clkena_in`; the bus
+  interface is `busstate`/`addr_out`/`data_in`/`nUDS`/`nLDS`/`nWr` (`busstate == 2'b01` means "no
+  memory access", so the CPU free-runs). There is no AS/DTACK adapter and nothing inside the core
+  is modified.
+- **What NOT to do (all of it was tried here, and all of it failed).** Adding `ext_clkena` to
+  `TG68K.vhd` and gating every clocked process appears to work — `tb_maincpu` passed both cases
+  and the real-ROM sim booted — but it drags in a chain of consequences: the two clock edges need
+  two separate enables (a rising-edge register samples the enable held during the PRECEDING
+  period, so one shared enable runs each emulated CPU cycle's halves in the wrong order), and then
+  the timing report needs a `set_multicycle_path` to accept the result, which is where it becomes
+  genuinely dangerous — see the half-cycle warning below. Four layers of scaffolding on a
+  battle-tested core, and it still did not boot on hardware.
+- **NEVER let a multicycle constraint touch a posedge->negedge path.** A constraint matching
+  `{*TG68K:*|*}` sweeps the wrapper's falling-edge registers into the collection and grants a
+  HALF-cycle path (~5.8 ns at 85.909091 MHz) two or four FULL cycles — up to ~46 ns. The Fitter
+  will happily route it that slowly, the timing report stays clean, and the design fails only on
+  silicon. Two of those registers are `waitm` (the DTACK sample) and `data_akt_e` (which gates the
+  DATA tri-state), so relaxing them corrupts bus handshaking directly. If a multicycle is needed
+  at all, scope it to a block you have verified is single-edge, and explicitly
+  `remove_from_collection` any falling-edge registers from BOTH ends.
+- **Derive an enable ratio exactly rather than rounding.** clk_sys here is the real 14.318181…MHz
   screen XTAL x 6 = 945/11 MHz and the 68EC020 wants 176/11 MHz, so the enable rate is exactly
   176/945 and a Bresenham accumulator hits it with zero error. The tempting integer divides are
-  both meaningfully wrong: /5 is 7.4% fast, /6 is 10.5% slow. A useful side benefit — Bresenham
-  ticks land 5 or 6 cycles apart, so the *minimum* window the critical path gets (5 x 11.64 =
-  58.2 ns) is still a 3x margin over its 19.6 ns requirement.
+  both meaningfully wrong: /5 is 7.4% fast, /6 is 10.5% slow. (Alternatively drop clk_sys to
+  42.954545 MHz = 14.318181 x 3, which keeps the pixel divide exact at 6:1 and is under TG68K's
+  measured Fmax outright.)
 - **Uninitialized signals in arithmetic crash ModelSim.** `TG68K_ALU.vhd`/`TG68KdotC_Kernel.vhd`
   have many `std_logic`/`std_logic_vector` signals with no default initializer; ModelSim's `'X'`
   propagates through arithmetic from time 0 and can cascade into multi-GB allocation failures /

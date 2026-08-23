@@ -117,6 +117,21 @@ first work-RAM write (`addr=c07e`), same vblank-IRQ time, with the CPU proportio
 in its program — exactly the expected 16 MHz behaviour. Full writeup in LESSONS_LEARNED.md's new
 "Static timing analysis" section.
 
+**ROM download never reached SDRAM (found and fixed 2026-08-23).** MiSTer holds core RESET
+asserted for the ENTIRE ROM download; Psikyo.sv folds that into `reset` and psikyo_top passed it
+into the SDRAM backend, pinning sdram_download's FSM in D_IDLE. Zero write commands ever reached
+the chip while the HPS delivered all 0xE00000 bytes. Fixed with
+`sdram_reset = reset & ~ioctl_download`, confirmed at the pins (CMD_WRITE 0x000 -> 0xE00); the
+CPU's reset vector now reads SP=0xFFFF8000 PC=0x00000400, matching MAME. Note upstream
+`sdram.v` has no reset port at all by design — this project's wrappers added one.
+
+**Core still does not run the game.** With correct ROM contents the CPU reads its reset vector and
+then, without executing at 0x400, takes bus error -> illegal instruction -> F-line. The next step
+is a planned rewrite of `rtl/cpu/maincpu.sv` to drive `TG68KdotC_Kernel` directly at a 16 MHz
+clock enable instead of rate-limiting the `TG68K.vhd` async-bus wrapper — see
+**`docs/maincpu_kernel_rewrite.md`** for the full plan, the reference implementation
+(mist-devel/plus_too's tg68k.v), and the list of verified fixes that must survive it.
+
 `scripts/mister_hw_test.py` — a maintained deploy/launch/screenshot automation tool for this
 hardware-bring-up loop (SCP the `.rbf`, launch a `.mra` via the MiSTer Remote API, pull a
 screenshot back) — see the script's own docstring/`--help` for usage.
