@@ -101,6 +101,7 @@ module psikyo_top #(
 
     // ---- debug tracer, live-controlled from the OSD ----
     input  logic         dbg_overlay,
+    input  logic [2:0]  dbg_render_dis,
     input  logic [1:0]  dbg_src,
     input  logic [3:0]  dbg_window,
     input  logic         dbg_rearm,
@@ -186,7 +187,7 @@ module psikyo_top #(
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb),
-        .dbg_overlay(dbg_overlay), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
         .dbg_pixel(dbg_pixel)
     );
 

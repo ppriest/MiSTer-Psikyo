@@ -86,6 +86,44 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   bits. Capture the *full* address — if it does not fit alongside the data, use two buffers
   strobed by the same event, so entry N of each describes the same bus cycle.
 
+## Copy the polarity, not just the bit position
+
+`psikyo_v.cpp` enables a tilemap with
+
+```c
+m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
+```
+
+That `~` is the entire difference between a working tilemap layer and one that
+never draws. `vreg_decode.sv` had `assign layer0_enable = l0_ctrl[0]`, which is the
+right bit read the wrong way round, so both layers were held off for every value the
+game actually writes. The compositor then fell through to backdrop on every pixel and
+the screen showed only sprites -- which looked like a rendering-pipeline failure, and
+sent the investigation into the fetch path, the addressing, and the VRAM contents.
+
+Everything *else* in that path was correct, and was verified so during the hunt:
+tile_scan for all four size modes (each reduces to row-major once masked with
+`tile_index & 0xfff`), the six vreg offsets (`0x402/0x406/0x412`, `0x40a/0x40e/0x416`),
+the control bit positions, `get_tile_info`'s tile/colour split, and the rowscroll table
+layout (`vregs[(layer*0x200)/2 + (i >> tile_rowscroll)]`, word indices, indexed by the
+RAW scanline). One inverted bit hid all of it.
+
+**When transcribing a driver's register semantics, copy the expression, including its
+operators.** A bit position that matches is not the same as a bit that means the same
+thing. Where MAME writes `~x & 1`, `!(x & 1)`, or `x & 8 ? 0 : 15`, carry the sense
+across explicitly and say so in a comment, because a polarity error is invisible in
+review -- the bit index is right there and looks correct.
+
+### How it was actually found
+
+Not by reading the RTL, which had been read several times. By making the hardware
+report its own state: the debug overlay was extended to dump the video-register RAM
+(borrowing `vreg_decode`'s rowscroll read port while the overlay is up, since the
+picture is discarded anyway), so one screenshot showed the layer control words the CPU
+had really written -- `0x00D0`, bit 0 clear. The core simultaneously echoed its decoded
+`layer_enable` as 0. Those two facts side by side name the bug immediately. Dump the
+register, not the intent.
+
 ## A hardware-vs-image comparison cannot detect a wrong image
 
 The single most expensive mistake of 2026-08-23. A hardware trace of CPU ROM reads was checked

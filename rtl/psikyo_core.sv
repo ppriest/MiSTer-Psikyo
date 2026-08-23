@@ -97,6 +97,11 @@ module psikyo_core #(
     // Live-controlled from the OSD; see that module's header. Compiled out
     // entirely when DEBUG_TRACER = 0.
     input  logic         dbg_overlay,  // overlay is being displayed (frees VRAM read ports)
+    // Force-disable rendering per layer, from the OSD. Purely a debugging aid:
+    // it isolates which pipeline actually drew a given thing on screen, which
+    // is otherwise guesswork once sprites and tilemaps overlap.
+    //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
+    input  logic [2:0]  dbg_render_dis,
     input  logic [1:0]  dbg_src,      // which signal group to record
     input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
     input  logic         dbg_rearm,    // any change restarts capture
@@ -202,6 +207,13 @@ module psikyo_core #(
     logic [15:0] vram0_b_rdata, vram1_b_rdata;
 
     wire        vram_dump_active = DEBUG_TRACER && dbg_overlay && (vcnt < 9'd32);
+    // vregs dump occupies rows 32..47: words 0x000-0xFFF of the video-register
+    // region, which covers BOTH rowscroll tables (0x000-0x1FF) and the six
+    // control/scroll registers (0x201..0x20B).
+    logic [15:0] vregs_dump_data;
+    wire         vregs_dump_active = DEBUG_TRACER && dbg_overlay
+                                   && (vcnt >= 9'd32) && (vcnt < 9'd48);
+    wire [12:0] vregs_dump_addr   = {1'b0, vcnt[3:0], hcnt[7:0]};
     wire [11:0] vram_dump_addr   = {vcnt[3:0], hcnt[7:0]};
 
     assign vram0_b_addr = vram_dump_active ? vram_dump_addr : l0_vram_addr;
@@ -250,7 +262,9 @@ module psikyo_core #(
         .layer1_mode(l1_mode), .layer1_base_x_scroll(l1_base_x), .layer1_base_y_scroll(l1_base_y),
         .layer1_bank(l1_bank), .layer1_enable(l1_enable), .layer1_opaque(l1_opaque),
         .layer1_transpen_sel(l1_transpen_sel),
-        .layer1_rowscroll_enable(l1_rs_en), .layer1_rowscroll_pertile(l1_rs_pertile)
+        .layer1_rowscroll_enable(l1_rs_en), .layer1_rowscroll_pertile(l1_rs_pertile),
+        .dbg_dump_en(vregs_dump_active), .dbg_dump_addr(vregs_dump_addr),
+        .dbg_dump_data(vregs_dump_data)
     );
 
     // ---- tilemap engines ----
@@ -355,7 +369,7 @@ module psikyo_core #(
     logic sp_swap_busy, sp_swap_done;
     logic sp_frame_busy, sp_frame_done;
 
-    wire want_frame     = frame_start_d & ~sprites_disable;
+    wire want_frame     = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
     wire sprite_swap_now = frame_start & ~sp_frame_busy;
 
     assign sprite_frame_start = start_pending & bank_ready
@@ -412,9 +426,9 @@ module psikyo_core #(
     // ---- compositor ----
     compositor u_compositor (
         .l0_valid(l0_pixel_valid), .l0_pixel(l0_pixel_index), .l0_color(l0_pixel_color),
-        .l0_ctrl_enable(l0_enable), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
+        .l0_ctrl_enable(l0_enable & ~dbg_render_dis[1]), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
         .l1_valid(l1_pixel_valid), .l1_pixel(l1_pixel_index), .l1_color(l1_pixel_color),
-        .l1_ctrl_enable(l1_enable), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
+        .l1_ctrl_enable(l1_enable & ~dbg_render_dis[2]), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
         .sp_present(sp_present), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
@@ -465,7 +479,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index(vcnt - 9'd32),
+            .rd_index(vcnt - 9'd48),
             .rd_data(rd_addr),
             .frozen(frz_a)
         );
@@ -479,7 +493,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index(vcnt - 9'd160),
+            .rd_index(vcnt - 9'd176),
             .rd_data(rd_data),
             .frozen(frz_d)
         );
@@ -514,13 +528,15 @@ module psikyo_core #(
         // Overlay band layout (one screenshot carries all of it):
         //   rows   0- 15 : layer 0 VRAM, all 4096 words  ({vcnt[3:0],hcnt[7:0]})
         //   rows  16- 31 : layer 1 VRAM, all 4096 words
-        //   rows  32-159 : CPU ROM read, full 19-bit address (128 entries)
-        //   rows 160-215 : CPU ROM read, {addr[7:0],data}    (56 entries)
+        //   rows  32- 47 : video registers, words 0x000-0xFFF
+        //   rows  48-175 : CPU ROM read, full 19-bit address (128 entries)
+        //   rows 176-215 : CPU ROM read, {addr[7:0],data}    (40 entries)
         //   rows 216-223 : control echo + video-engine health flags
         assign dbg_pixel = (vcnt >= 9'd216) ? ctl_echo
                          : (vcnt <  9'd16)  ? {8'h00, vram0_b_rdata}
                          : (vcnt <  9'd32)  ? {8'h00, vram1_b_rdata}
-                         : (vcnt <  9'd160) ? rd_addr
+                         : (vcnt <  9'd48)  ? {8'h00, vregs_dump_data}
+                         : (vcnt <  9'd176) ? rd_addr
                                             : rd_data;
     end else begin : g_no_tracer
         assign dbg_pixel = 24'd0;

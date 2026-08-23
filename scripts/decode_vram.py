@@ -128,6 +128,45 @@ def main():
     print()
     c1 = report(l1, 1, args.label, args.outdir)
 
+    # ---- video registers (rows 32..47), if the capture carries them ----
+    if H >= 48:
+        vr = extract(rows, 32, 16, W)
+        base = os.path.join(args.outdir, '%s_vregs.bin' % args.label)
+        with open(base, 'wb') as fh:
+            for w in vr:
+                fh.write(struct.pack('<H', w))
+        REGS = [(0x201, 'layer0 Y scroll'), (0x203, 'layer0 X scroll'),
+                (0x205, 'layer1 Y scroll'), (0x207, 'layer1 X scroll'),
+                (0x209, 'layer0 CONTROL'),  (0x20B, 'layer1 CONTROL')]
+        print()
+        print('VIDEO REGISTERS (word addresses, from the vregs BRAM itself)')
+        print('=' * 64)
+        for a, name in REGS:
+            v = vr[a]
+            line = '  %04X  %-16s = %04X' % (a, name, v)
+            if 'CONTROL' in name:
+                line += ('   enable=%d opaque=%d transp=%s size=%d rowscroll=%d'
+                         ' pertile=%d bank=%d'
+                         % (v & 1, (v >> 1) & 1, 'pen0' if (v >> 3) & 1 else 'pen15',
+                            (v >> 6) & 3, (v >> 8) & 1, (v >> 9) & 1, (v >> 10) & 1))
+            print(line)
+        rs0 = vr[0x000:0x100]
+        rs1 = vr[0x100:0x200]
+        print('  rowscroll layer0 (0x000-0x0FF): %d non-zero, %d distinct'
+              % (sum(1 for x in rs0 if x), len(set(rs0))))
+        print('  rowscroll layer1 (0x100-0x1FF): %d non-zero, %d distinct'
+              % (sum(1 for x in rs1 if x), len(set(rs1))))
+        print('  -> %s' % base)
+        if vr[0x209] == 0 and vr[0x20B] == 0:
+            print()
+            print('  BOTH CONTROL WORDS ARE ZERO IN THE VREGS RAM ITSELF.')
+            print('  That means the CPU never wrote them -- vreg_decode latching is')
+            print('  NOT at fault. Look at why the game does not program the layers.')
+        elif (vr[0x209] & 1) or (vr[0x20B] & 1):
+            print()
+            print('  A control word HAS its enable bit set in RAM. If the overlay')
+            print('  still reports enable=0, vreg_decode is failing to latch it.')
+
     print()
     if len(c0) <= 1 and len(c1) <= 1:
         print('WARNING: both layers read as a single repeated value. Either the '

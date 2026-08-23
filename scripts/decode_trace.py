@@ -92,11 +92,17 @@ def main():
     args = ap.parse_args()
 
     W, H, rows = load_png(args.png)
-    addr = [sample(rows, y) for y in range(0, min(128, H))]
-    data = [sample(rows, y) for y in range(128, min(216, H))]
+    # Band layout must track rtl/psikyo_core.sv's dbg_pixel mux:
+    #   0-15 layer0 VRAM | 16-31 layer1 VRAM | 32-47 vregs
+    #   48-175 CPU addr  | 176-215 CPU addr+data | 216-223 control echo
+    addr = [sample(rows, y) for y in range(48, min(176, H))]
+    data = [sample(rows, y) for y in range(176, min(216, H))]
     echo = sample(rows, 218) if H > 218 else 0
 
     marker = echo >> 16
+    # middle byte: {2'd0, l0_overrun, l1_overrun, l0_enable, l1_enable, frz_a, frz_d}
+    l0_ovr, l1_ovr = (echo >> 13) & 1, (echo >> 12) & 1
+    l0_en,  l1_en  = (echo >> 11) & 1, (echo >> 10) & 1
     frz_a, frz_d = (echo >> 9) & 1, (echo >> 8) & 1
     rearm = (echo >> 7) & 1
     window = (echo >> 3) & 0xF
@@ -118,6 +124,13 @@ def main():
     lines.append('  mode       : %s%s' % (mode, ' + trigger-freeze' if trig else ''))
     lines.append('  window     : %d  (skip %d events)' % (window, skip))
     lines.append('  frozen     : addr=%d data=%d   rearm=%d' % (frz_a, frz_d, rearm))
+    lines.append('  tilemaps   : layer0 enable=%d overrun=%d | layer1 enable=%d overrun=%d'
+                 % (l0_en, l0_ovr, l1_en, l1_ovr))
+    if l0_ovr or l1_ovr:
+        lines.append('               ^ OVERRUN IS STICKY: a line engine wanted a pixel whose'
+                     ' tile was not fetched yet,')
+        lines.append('                 so it dropped pixel_valid and the compositor painted'
+                     ' backdrop instead.')
     lines.append('  entries    : addr=%d data=%d' % (len(addr), len(data)))
 
     romw = rom_reader(args.rom, args.parts) if args.rom else None

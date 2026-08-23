@@ -78,7 +78,18 @@ module vreg_decode #(
     output logic         layer1_opaque,
     output logic         layer1_transpen_sel,
     output logic         layer1_rowscroll_enable,
-    output logic         layer1_rowscroll_pertile
+    output logic         layer1_rowscroll_pertile,
+
+    // ---- debug dump port (rtl/psikyo_core.sv drives this from the video
+    // counters while the debug overlay is up). Borrows u_ram_l0's read port,
+    // which normally only ever sees the 8-bit layer-0 rowscroll index, so it
+    // cannot otherwise reach the control registers at word 0x209/0x20B. This
+    // is what distinguishes "the CPU never wrote the layer control word" from
+    // "it wrote it and vreg_decode failed to latch it" -- the two have
+    // completely different fixes and look identical from outside.
+    input  logic         dbg_dump_en,
+    input  logic [12:0] dbg_dump_addr,
+    output logic [15:0] dbg_dump_data
 );
 
     // Fixed word offsets, from docs/phase1_memory_map.md's "Video
@@ -122,7 +133,21 @@ module vreg_decode #(
 
     // Layer control word bits, docs/phase1_memory_map.md's "Layer control
     // word bits" table.
-    assign layer0_enable            = l0_ctrl[0];
+    // ENABLE IS ACTIVE LOW. psikyo_v.cpp:
+    //     m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
+    // This was read as active-high, which inverted the meaning of the bit and
+    // held both tilemaps OFF for every value the game actually writes. On
+    // hardware the layer control words read back as 0x00D0 -- bit 0 clear, i.e.
+    // ENABLED -- while the core reported enable=0 and the compositor fell
+    // through to backdrop on every pixel, so no tilemap ever drew anything.
+    // Everything else about the tilemap path (addressing, all four size modes,
+    // rowscroll table layout and indexing, cell decode, vreg offsets) was
+    // verified correct against MAME at the same time; this single inverted bit
+    // was the whole reason none of it was visible.
+    //
+    // Note the reset value (0x0000) therefore means ENABLED, matching MAME,
+    // whose m_vregs also powers up zeroed.
+    assign layer0_enable            = ~l0_ctrl[0];
     assign layer0_opaque            = l0_ctrl[1];
     assign layer0_transpen_sel      = l0_ctrl[3];
     assign layer0_mode              = l0_ctrl[7:6];
@@ -130,7 +155,7 @@ module vreg_decode #(
     assign layer0_rowscroll_pertile = l0_ctrl[9];
     assign layer0_bank              = KA302C_BANKING ? {1'b0, l0_ctrl[10]} : 2'd0; // see KA302C_BANKING
 
-    assign layer1_enable            = l1_ctrl[0];
+    assign layer1_enable            = ~l1_ctrl[0];   // active low, see layer0_enable
     assign layer1_opaque            = l1_ctrl[1];
     assign layer1_transpen_sel      = l1_ctrl[3];
     assign layer1_mode              = l1_ctrl[7:6];
@@ -138,11 +163,15 @@ module vreg_decode #(
     assign layer1_rowscroll_pertile = l1_ctrl[9];
     assign layer1_bank              = KA302C_BANKING ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia -- see KA302C_BANKING
 
+    logic [15:0] l0_ram_b_rdata;
     dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l0 (
         .clk(clk),
         .a_addr(cpu_addr), .a_wel(cpu_wel), .a_weh(cpu_weh), .a_wdata(cpu_wdata), .a_rdata(cpu_rdata),
-        .b_addr({5'b0, layer0_rowscroll_addr}), .b_rdata(layer0_rowscroll_data)
+        .b_addr(dbg_dump_en ? dbg_dump_addr : {5'b0, layer0_rowscroll_addr}),
+        .b_rdata(l0_ram_b_rdata)
     );
+    assign layer0_rowscroll_data = l0_ram_b_rdata;
+    assign dbg_dump_data          = l0_ram_b_rdata;
 
     logic [15:0] cpu_rdata_l1; // unused -- l1's copy only needed for its own read port
     dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l1 (

@@ -97,6 +97,10 @@ localparam CONF_STR = {
 	"P1O[58:57],Trace source,CPU addr+data,CPU fetch addr,SpriteRAM wr,Palette wr;",
 	"P1O[62:59],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
 	"P1O[63],Re-arm capture,A,B;",
+	"P1-;",
+	"P1O[40],Sprites,On,Off;",
+	"P1O[41],Tilemap 0,On,Off;",
+	"P1O[42],Tilemap 1,On,Off;",
 	"-;",
 	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
@@ -258,6 +262,12 @@ wire [31:0] dsw_in = {status[31:16], 8'hFF, status[39:32]};
 // /media/fat/config/<core>.CFG:
 //   bit0 overlay, bits2:1 source, bits6:3 window, bit7 re-arm
 wire        dbg_overlay = status[56];
+
+// Force-disable rendering per pipeline, for isolating what is actually drawing
+// what. status[55:40] is free: the .mra's three <switches> bytes occupy
+// status[39:16] and the tracer controls sit at status[63:56].
+//   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
+wire [2:0] dbg_render_dis = status[42:40];
 wire [1:0] dbg_src     = status[58:57];
 wire [3:0] dbg_window  = status[62:59];
 wire        dbg_rearm   = status[63];
@@ -340,7 +350,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
@@ -360,26 +370,9 @@ assign VGA_VS = vsync;
 // instead -- decode it with scripts/decode_debug_screenshot.py --mode
 // scanline. No rebuild is needed to switch, so instrumentation no longer
 // costs a 12-minute round trip.
-// The overlay is PARTIAL: it takes the top 32 scanlines (the two tilemap
-// VRAM dump bands) and the bottom 8 (the control echo), and leaves rows
-// 32..215 showing the real picture.
-//
-// It used to replace the whole frame, which made the dump nearly useless for
-// comparison work: a VRAM dump is only meaningful against a KNOWN screen, and
-// with the picture hidden there was no way to tell which screen the game was
-// on when the dump was taken. Comparing such a dump against a MAME dump of a
-// named screen is guesswork -- the first attempt matched ~90%, which turned
-// out to be nothing but the zero cells agreeing.
-//
-// Rows 0..31 of the picture ARE corrupted while dumping, because those are
-// exactly the scanlines whose tilemap read ports get borrowed (see
-// rtl/psikyo_core.sv). That is a fair trade: the remaining 184 rows identify
-// the screen unambiguously, in the same screenshot as the data.
-wire overlay_here = dbg_overlay && ((vcnt < 9'd32) || (vcnt >= 9'd216));
-
-assign VGA_R = overlay_here ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
-assign VGA_G = overlay_here ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
-assign VGA_B = overlay_here ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
+assign VGA_R = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
+assign VGA_G = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
+assign VGA_B = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
