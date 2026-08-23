@@ -311,7 +311,20 @@ module maincpu #(
     // first cpu_ce tick after the access completes.
     logic        acc_ready;
     logic [15:0] acc_data;
-    logic        bram_ph;      // BRAM/IO reads have 1 cycle of latency
+
+    // Settle/latency phase counter. The CPU's address (a32) is a registered
+    // kernel output that changes on a cpu_ce tick, but its downstream path
+    // measures ~14 ns -- longer than one 11.64 ns clock -- so it is NOT
+    // settled during the first cycle after a step. Acting in that cycle
+    // would commit a BRAM write to a half-settled ADDRESS, which repeating
+    // the write later does not undo.
+    //   acc_ph == 0 : address still settling, do nothing
+    //   acc_ph == 1 : address settled -> commit writes here
+    //   acc_ph == 2 : BRAM has output data for the settled address -> capture
+    // (BRAM registers its address each edge and returns data one cycle
+    // later, so the first output that corresponds to a settled address
+    // appears at phase 2.)
+    logic [1:0]  acc_ph;
 
     wire mem_needed = (busstate != 2'b01);
     wire is_write   = (busstate == 2'b11);
@@ -341,22 +354,23 @@ module maincpu #(
         if (reset) begin
             acc_ready <= 1'b0;
             acc_data  <= 16'h0000;
-            bram_ph   <= 1'b0;
+            acc_ph    <= 2'd0;
         end else if (cpu_clkena) begin
             // CPU has consumed this access; arm for the next one
             acc_ready <= 1'b0;
-            bram_ph   <= 1'b0;
+            acc_ph    <= 2'd0;
         end else if (mem_needed && !acc_ready) begin
-            if (is_write) begin
-                acc_ready <= 1'b1;              // synchronous BRAM write, 1 cycle
-            end else if (is_rom) begin
+            if (acc_ph != 2'd3) acc_ph <= acc_ph + 2'd1;
+            if (is_rom && !is_write) begin
+                // SDRAM latency dominates; rom_req is held until valid
                 if (rom_valid) begin
                     acc_data  <= rom_data;
                     acc_ready <= 1'b1;
                 end
+            end else if (is_write) begin
+                if (acc_ph >= 2'd1) acc_ready <= 1'b1;   // committed this cycle
             end else begin
-                bram_ph <= 1'b1;                // present address, wait one cycle
-                if (bram_ph) begin
+                if (acc_ph >= 2'd2) begin
                     acc_data  <= read_mux;
                     acc_ready <= 1'b1;
                 end
@@ -367,10 +381,11 @@ module maincpu #(
     assign cpu_din = acc_data;   // registered and stable -- never combinational
 
     // ---- writes ----
-    // wr_now is high for exactly one cycle (acc_ready sets at the next edge),
-    // which is all a synchronous BRAM port needs, and gives the sound latch
-    // the single pulse its receiver expects.
-    wire wr_now = mem_needed && is_write && !acc_ready;
+    // Held for exactly the cycle at which the address is settled and the
+    // access completes (acc_ph == 1) -- see acc_ph's comment. One cycle is
+    // all a synchronous BRAM port needs, and it gives the sound latch the
+    // single pulse its receiver expects.
+    wire wr_now = mem_needed && is_write && !acc_ready && (acc_ph == 2'd1);
 
     assign spriteram_wel   = wr_now && is_spriteram && !nLDS;
     assign spriteram_weh   = wr_now && is_spriteram && !nUDS;

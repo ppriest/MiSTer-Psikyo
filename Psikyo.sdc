@@ -20,6 +20,31 @@ derive_clock_uncertainty
 # two of those registers are waitm (the DTACK sample) and data_akt_e (which
 # gates the DATA tri-state). See docs/LESSONS_LEARNED.md.
 #
-# If a multicycle is ever needed again, scope it to a block verified to be
-# single-edge and remove_from_collection every falling-edge register from
-# BOTH ends.
+# A multicycle IS needed -- the kernel's register file measures ~19.6 ns
+# against an 11.64 ns clock -- but it is now safe to state, for two reasons
+# that did not hold before:
+#
+#   1. The CPU path is TG68KdotC_Kernel only, which is entirely rising-edge
+#      (verified: zero falling_edge occurrences). The TG68K.vhd wrapper and
+#      its falling-edge registers are no longer instantiated, so there is no
+#      half-cycle path left in the CPU for a multicycle to corrupt.
+#   2. The relaxation is backed by RTL, not hope. rtl/cpu/maincpu.sv gates
+#      the kernel with a real 16 MHz clock enable (ticks 5-6 clk_sys cycles
+#      apart), and its acc_ph settle counter guarantees nothing downstream
+#      acts before the CPU's ~14 ns address path has settled: writes commit
+#      at phase 1, BRAM reads capture at phase 2.
+#
+# Kernel -> kernel gets 4 (5 is genuinely available; 4 keeps margin against
+# the minimum enable gap). Kernel -> anywhere gets 2, matching the settle
+# discipline above.
+set krn [get_registers {*TG68KdotC_Kernel:*|*}]
+if {[get_collection_size $krn] > 0} {
+    set_multicycle_path -setup -end 2 -from $krn -to [all_registers]
+    set_multicycle_path -hold  -end 1 -from $krn -to [all_registers]
+
+    set_multicycle_path -setup -end 4 -from $krn -to $krn
+    set_multicycle_path -hold  -end 3 -from $krn -to $krn
+} else {
+    post_message -type critical_warning \
+        "Psikyo.sdc: no TG68KdotC_Kernel registers matched -- CPU multicycle NOT applied"
+}
