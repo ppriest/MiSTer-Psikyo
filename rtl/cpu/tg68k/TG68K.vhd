@@ -79,51 +79,7 @@ entity TG68K is
       -- (not-reset) operation; has no effect during active reset (RESET/
       -- HALT's own strong-0-vs-Z resolution during that window was never
       -- the broken case -- only the idle/steady-state release was).
-      ext_force_run : in std_logic := '0';
-
-      -- Real-hardware fix, part 3 (docs/LESSONS_LEARNED.md). This
-      -- architecture was written to be clocked AT the target CPU speed --
-      -- it has no clock-enable input of its own, and the kernel's clkena
-      -- below is derived purely from bus state, so with CLK tied to a fast
-      -- system clock the whole CPU free-runs at that speed. Psikyo's real
-      -- 68EC020 is 16 MHz (MAME psikyo.cpp sngkace(), "verified on pcb")
-      -- while this project's clk_sys is 85.909091 MHz, so the CPU ran 5.4x
-      -- too fast AND, fatally, far above what TG68K.C can physically close:
-      -- quartus_sta measured TG68KdotC_Kernel's Fmax at 48.74 MHz on the
-      -- real post-fit netlist. Drive ext_clkena with a one-CLK-wide pulse
-      -- at the desired CPU rate to step the core at that rate instead.
-      --
-      -- It gates EVERY clocked process in this architecture, not just the
-      -- kernel, so one pulse == exactly one emulated CPU clock cycle with
-      -- all internal rising/falling-edge relationships preserved. Gating
-      -- only the kernel would be actively wrong: the bus state machine
-      -- generates clkena_e as a one-CLK pulse, and an ungated bus machine
-      -- would routinely pulse it on a cycle the gated kernel is asleep for,
-      -- losing bus-cycle completions outright.
-      --
-      -- Callers must present DTACK as a HELD LEVEL, not a one-cycle pulse:
-      -- DTACK is now sampled once per CPU cycle rather than every CLK.
-      -- Defaults to '1' so existing full-rate instantiations are unchanged.
-      ext_clkena    : in std_logic := '1';
-
-      -- Companion enable for this architecture's FALLING-edge processes,
-      -- and NOT optional when ext_clkena is used: drive it with ext_clkena
-      -- delayed by exactly one CLK period.
-      --
-      -- One enable cannot serve both edges. A rising-edge register samples
-      -- the enable held during the PRECEDING period, so if ext_clkena is
-      -- high throughout period P the rising-edge work fires at the END of
-      -- P -- while the falling edge INSIDE P occurs half a period BEFORE
-      -- that. Gating both edges with the same signal therefore runs each
-      -- emulated CPU cycle's two halves in the wrong order.
-      --
-      -- Caught by sim/maincpu_tb/tb_maincpu.sv's sound-latch check: the CPU
-      -- reached S_state="01" with the correct data in data_write (0x7777),
-      -- but data_akt_e/data_akt_s were still '0', so DATA sat at 'Z' and
-      -- the write captured high-impedance instead of the byte. The same
-      -- misordering also skews AS/UDS/LDS/RW assertion and the falling-edge
-      -- DTACK sample (waitm), so it is not a cosmetic ordering nit.
-      ext_clkena_f  : in std_logic := '1'
+      ext_force_run : in std_logic := '0'
    );
 end TG68K;
 
@@ -258,18 +214,15 @@ cpu1: TG68KdotC_Kernel
    PROCESS (CLK)
    BEGIN
       IF falling_edge(CLK) THEN
-        IF ext_clkena_f='1' THEN   -- delayed enable, see ext_clkena_f
          IF sync_state=sync5 THEN
             E <= '1';
          END IF;
          IF sync_state=sync9 THEN
             E <= '0';
          END IF;
-        END IF;
       END IF;
-
+      
       IF rising_edge(CLK) THEN
-        IF ext_clkena='1' THEN
          CASE sync_state IS
             WHEN sync0  => sync_state <= sync1;
             WHEN sync1  => sync_state <= sync2;
@@ -286,18 +239,15 @@ cpu1: TG68KdotC_Kernel
             WHEN OTHERS => sync_state <= sync0;
                         VMA <= '1';
          END CASE;
-        END IF;
       END IF;
    END PROCESS;
 
 
-   PROCESS (state, clkena_e, skipFetch, ext_clkena)
+   PROCESS (state, clkena_e, skipFetch)
    BEGIN
-      -- ext_clkena gates the kernel here; the two clocked processes below
-      -- are gated at their own clock edges. See ext_clkena's port comment.
-      IF ext_clkena='1' AND (state="01" OR clkena_e='1' OR skipFetch='1') THEN
+      IF state="01" OR clkena_e='1' OR skipFetch='1' THEN
          clkena <= '1';
-      ELSE
+      ELSE 
          clkena <= '0';
       END IF;
    END PROCESS;
@@ -312,7 +262,6 @@ PROCESS (CLK, effective_reset, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_
          lds_s <= '1';
          data_akt_s <= '0';
       ELSIF rising_edge(CLK) THEN
-        IF ext_clkena='1' THEN
          as_s <= '1';
          rw_s <= '1';
          uds_s <= '1';
@@ -350,10 +299,8 @@ PROCESS (CLK, effective_reset, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_
                       S_state <= "00";
             WHEN OTHERS => null;
          END CASE;
-        END IF;
       END IF;
-
-
+      
       IF effective_reset='0' THEN
          as_e <= '1';
          rw_e <= '1';
@@ -362,7 +309,6 @@ PROCESS (CLK, effective_reset, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_
          clkena_e <= '0';
          data_akt_e <= '0';
       ELSIF falling_edge(CLK) THEN
-        IF ext_clkena_f='1' THEN   -- delayed enable, see ext_clkena_f
          as_e <= '1';
          rw_e <= '1';
          uds_e <= '1';
@@ -386,7 +332,6 @@ PROCESS (CLK, effective_reset, state, as_s, as_e, rw_s, rw_e, uds_s, uds_e, lds_
             WHEN OTHERS =>
                       clkena_e <= '1';
          END CASE;
-        END IF;
       END IF;
    END PROCESS;
 END;

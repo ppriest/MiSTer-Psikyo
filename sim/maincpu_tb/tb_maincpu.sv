@@ -80,6 +80,7 @@ module tb_maincpu;
     logic [15:0] rom [0:524287];
     localparam int ROM_LATENCY = 5;
     logic         rom_busy;
+    logic         rom_served;
     int           rom_cnt;
     int           errors;
 
@@ -89,25 +90,37 @@ module tb_maincpu;
     // fc=101 meant "write" without actually checking rw, which was a real
     // mistake worth not repeating) and the actual data value for both
     // reads and writes.
+    // Updated 2026-08-23 for maincpu.sv's rewrite onto TG68KdotC_Kernel: the
+    // old AS/UDS/LDS/RW/VPA async-bus signals no longer exist. The kernel's
+    // interface is busstate (00 fetch, 10 read, 11 write, 01 no access) plus
+    // nUDS/nLDS, with separate data_in/data_write instead of a shared bus.
     logic dbg_irq_trace_on;
-    logic dbg_asn_prev;
+    logic dbg_acc_prev;
     always_ff @(posedge clk) begin
         if (dbg_irq_trace_on) begin
-            if (dut.as_n == 1'b0 && dbg_asn_prev == 1'b1) begin
-                $display("DEBUG t=%0t fc=%b rw=%b uds_n=%b lds_n=%b a=%h data=%h ipl=%b irq_pending=%b vpa=%b",
-                          $time, dut.fc, dut.rw, dut.uds_n, dut.lds_n, dut.a, dut.cpu_data, dut.ipl, dut.irq_pending, dut.vpa);
+            if (dut.mem_needed && !dbg_acc_prev) begin
+                $display("DEBUG t=%0t fc=%b bus=%b nUDS=%b nLDS=%b a=%h din=%h dout=%h ipl=%b irq_pending=%b",
+                          $time, dut.fc, dut.busstate, dut.nUDS, dut.nLDS,
+                          dut.a32, dut.cpu_din, dut.cpu_dout, dut.ipl, dut.irq_pending);
             end
-            dbg_asn_prev <= dut.as_n;
+            dbg_acc_prev <= dut.mem_needed;
         end
     end
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            rom_busy  <= 1'b0;
-            rom_valid <= 1'b0;
+            rom_busy   <= 1'b0;
+            rom_served <= 1'b0;
+            rom_valid  <= 1'b0;
         end else begin
             rom_valid <= 1'b0;
-            if (rom_req && !rom_busy) begin
+            // rom_served matches the real bridge's handshake: once a held
+            // request has been serviced, do NOT re-accept it until req drops.
+            // Without this the model re-triggers a spurious second read the
+            // cycle rom_busy clears, because rom_valid is registered and the
+            // client cannot have dropped req yet.
+            if (!rom_req) rom_served <= 1'b0;
+            if (rom_req && !rom_busy && !rom_served) begin
                 rom_busy <= 1'b1;
                 rom_cnt  <= 0;
             end else if (rom_busy) begin
@@ -115,12 +128,21 @@ module tb_maincpu;
                     rom_valid <= 1'b1;
                     rom_data  <= rom[rom_addr];
                     rom_busy  <= 1'b0;
+                    rom_served <= 1'b1;
                 end else begin
                     rom_cnt <= rom_cnt + 1;
                 end
             end
-            if (rom_req && rom_busy) begin
-                $display("FAIL: rom_req pulsed while a previous ROM access was still in flight (rom_pending race)");
+            // Contract check, corrected 2026-08-23. This used to flag
+            // (rom_req && rom_busy) as a fault, i.e. it required req to be a
+            // one-cycle PULSE. That is backwards: rtl/memory/
+            // sdram_narrow_bridge.sv's documented client contract is HOLD req
+            // until the matching valid pulse, and every other consumer in the
+            // project does that. The model was encoding maincpu.sv's old
+            // pulsed behaviour rather than the real bridge's requirement.
+            // The genuine violation is dropping req before valid arrives.
+            if (rom_busy && !rom_req && !(rom_cnt == ROM_LATENCY - 1)) begin
+                $display("FAIL: rom_req deasserted before its valid arrived -- the bridge contract is hold-until-valid");
                 errors++;
             end
         end

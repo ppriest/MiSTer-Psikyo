@@ -153,7 +153,10 @@ module tb_psikyo_top_realrom #(
             $display("[t=%0t] vblank IRQ first asserted (irq_pending) cpu_rom_addr=%h", $time, dut.u_core.u_cpu.rom_addr);
             irq_ever_pending <= 1'b1;
         end
-        if (!dut.u_core.u_cpu.as_n && dut.u_core.u_cpu.fc == 3'b111 && !iack_ever_seen) begin
+        // maincpu.sv now drives TG68KdotC_Kernel directly, so there is no
+        // as_n -- an interrupt-acknowledge cycle is FC=3'b111 during a real
+        // memory access, i.e. busstate != 2'b01 (mem_needed).
+        if (dut.u_core.u_cpu.mem_needed && dut.u_core.u_cpu.fc == 3'b111 && !iack_ever_seen) begin
             $display("[t=%0t] IACK cycle first seen (FC=111, AS asserted) cpu_rom_addr=%h", $time, dut.u_core.u_cpu.rom_addr);
             iack_ever_seen <= 1'b1;
         end
