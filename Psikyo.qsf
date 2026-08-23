@@ -263,6 +263,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_zoom_src_index.s
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_render_engine.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_frame_buffer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/compositor.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/debug_tracer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/psikyo_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_phy.sv

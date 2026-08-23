@@ -40,7 +40,8 @@
 // error, only visible by tracing dstate stuck at D_IDLE despite ioctl_wr
 // pulsing correctly (sim/psikyo_top_tb/tb_psikyo_top.sv's own history).
 module psikyo_top #(
-    parameter bit BOARD_GUNBIRD = 1'b0
+    parameter bit BOARD_GUNBIRD = 1'b0,
+    parameter bit DEBUG_TRACER  = 1'b1
 ) (
     input  logic clk,
     input  logic ce_pix,
@@ -96,7 +97,13 @@ module psikyo_top #(
     output logic         vblank,
     output logic         hsync,
     output logic         vsync,
-    output logic [14:0] rgb
+    output logic [14:0] rgb,
+
+    // ---- debug tracer, live-controlled from the OSD ----
+    input  logic [1:0]  dbg_src,
+    input  logic [3:0]  dbg_window,
+    input  logic         dbg_rearm,
+    output logic [23:0] dbg_pixel
 );
 
     logic         cpu_rom_req;
@@ -162,7 +169,7 @@ module psikyo_top #(
 
 
 
-    psikyo_core #(.BOARD_GUNBIRD(BOARD_GUNBIRD)) u_core (
+    psikyo_core #(.BOARD_GUNBIRD(BOARD_GUNBIRD), .DEBUG_TRACER(DEBUG_TRACER)) u_core (
         .clk(clk), .ce_pix(ce_pix), .reset(core_reset),
         .cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
         .cpu_rom_valid(cpu_rom_valid), .cpu_rom_data(cpu_rom_data),
@@ -177,7 +184,9 @@ module psikyo_top #(
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
-        .hsync(hsync), .vsync(vsync), .rgb(rgb)
+        .hsync(hsync), .vsync(vsync), .rgb(rgb),
+        .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+        .dbg_pixel(dbg_pixel)
     );
 
     // Board-appropriate sound CPU -- sngkace/samuraia/btlkroad/gunbird all

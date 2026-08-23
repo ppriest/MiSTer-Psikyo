@@ -43,7 +43,8 @@
 // here, same "prove wiring first, measure the budget separately" approach
 // already used for the SDRAM contention numbers in docs/ROADMAP.md.
 module psikyo_core #(
-    parameter bit BOARD_GUNBIRD = 1'b0
+    parameter bit BOARD_GUNBIRD = 1'b0,
+    parameter bit DEBUG_TRACER  = 1'b1
 ) (
     input  logic clk,
     input  logic ce_pix,
@@ -91,7 +92,15 @@ module psikyo_core #(
     output logic         vblank,
     output logic         hsync,
     output logic         vsync,
-    output logic [14:0] rgb
+    output logic [14:0] rgb,
+
+    // ---- debug tracer (rtl/debug/debug_tracer.sv) ----
+    // Live-controlled from the OSD; see that module's header. Compiled out
+    // entirely when DEBUG_TRACER = 0.
+    input  logic [1:0]  dbg_src,      // which signal group to record
+    input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
+    input  logic         dbg_rearm,    // any change restarts capture
+    output logic [23:0] dbg_pixel     // one captured entry per scanline
 );
 
     // ---- video timing ----
@@ -324,5 +333,60 @@ module psikyo_core #(
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
     );
+
+
+    // ---- debug tracer ----------------------------------------------------
+    // Sources, chosen for the two questions bring-up actually asks:
+    //   0  CPU instruction fetch address (WORD address) -- diff directly
+    //      against debug/mame_samuraia_boot_trace.txt.gz, whose PCs are byte
+    //      addresses (word = PC >> 1). This is the "is the CPU running the
+    //      right code" probe.
+    //   1  CPU ROM read: {addr low byte, data returned} -- "is it being fed
+    //      the right bytes".
+    //   2  Sprite RAM writes: {addr low byte, data} -- what the CPU actually
+    //      puts in sprite RAM.
+    //   3  Palette writes: {addr low byte, data}.
+    generate if (DEBUG_TRACER) begin : g_tracer
+        logic         cap_stb;
+        logic [23:0] cap_data;
+
+        always_comb begin
+            case (dbg_src)
+                // NOTE: source 0 is deliberately the addr+data pair, because
+                // the OSD source-select is not currently taking effect (the
+                // overlay bit at status[64] works, bits 65+ do not, cause not
+                // yet understood). Making the DEFAULT source the most
+                // informative one means the tracer is useful regardless.
+                2'd0: begin
+                    cap_stb  = cpu_rom_valid;
+                    cap_data = {cpu_rom_addr[7:0], cpu_rom_data};
+                end
+                2'd1: begin
+                    cap_stb  = cpu_rom_valid;
+                    cap_data = {5'd0, cpu_rom_addr};
+                end
+                2'd2: begin
+                    cap_stb  = spr_cpu_wel | spr_cpu_weh;
+                    cap_data = {spr_cpu_addr[7:0], spr_cpu_wdata};
+                end
+                default: begin
+                    cap_stb  = pal_cpu_wel | pal_cpu_weh;
+                    cap_data = {pal_cpu_addr[7:0], pal_cpu_wdata};
+                end
+            endcase
+        end
+
+        debug_tracer #(.DEPTH(256), .WIDTH(24)) u_tracer (
+            .clk(clk),
+            .cap_stb(cap_stb),
+            .cap_data(cap_data),
+            .ctl_rearm(dbg_rearm),
+            .ctl_window(dbg_window),
+            .rd_index(vcnt),
+            .rd_data(dbg_pixel)
+        );
+    end else begin : g_no_tracer
+        assign dbg_pixel = 24'd0;
+    end endgenerate
 
 endmodule
