@@ -21,9 +21,9 @@
 	<rom index="0" zip="gunbird.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
 		     word-swap interleave scheme as the sngkace family. Actual 0x80000. -->
-		<interleave output="16">
-			<part name="4.u46" crc="b78ec99d" map="01"/>
-			<part name="5.u39" crc="925f095d" map="10"/>
+		<interleave output="32">
+			<part name="4.u46" crc="b78ec99d" map="0012"/>
+			<part name="5.u39" crc="925f095d" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -36,14 +36,18 @@
 		     four ROMs concatenated in ROM_START's own order (not interleaved with
 		     each other - each occupies its own contiguous span). Actual 0x700000,
 		     the largest of any Phase 1 set (this region's reservation size). -->
-		<part name="u14.bin" crc="7d7e8a00"/>
-		<part name="u24.bin" crc="5e3ffc9d"/>
-		<part name="u15.bin" crc="a827bfb5"/>
-		<part name="u25.bin" crc="ef652e0c"/>
+		<interleave output="16">
+			<part name="u14.bin" crc="7d7e8a00" map="12"/>
+			<part name="u24.bin" crc="5e3ffc9d" map="12"/>
+			<part name="u15.bin" crc="a827bfb5" map="12"/>
+			<part name="u25.bin" crc="ef652e0c" map="12"/>
+		</interleave>
 		<part repeat="0x100000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
-		<part name="u33.bin" crc="54494e6b"/>
+		<interleave output="16">
+			<part name="u33.bin" crc="54494e6b" map="12"/>
+		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="9e07104d"/>

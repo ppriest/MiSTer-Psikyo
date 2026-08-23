@@ -23,9 +23,9 @@
 	<rom index="0" zip="btlkroad.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
 		     word-swap interleave scheme as gunbird. Actual 0x80000. -->
-		<interleave output="16">
-			<part name="4-u46.bin" crc="8a7a28b4" map="01"/>
-			<part name="5-u39.bin" crc="933561fa" map="10"/>
+		<interleave output="32">
+			<part name="4-u46.bin" crc="8a7a28b4" map="0012"/>
+			<part name="5-u39.bin" crc="933561fa" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -37,13 +37,17 @@
 		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
 		     only THREE ROMs (see header note - one fewer than gunbird's four).
 		     Actual 0x600000. -->
-		<part name="u14.bin" crc="282d89c3"/>
-		<part name="u24.bin" crc="bbe9d3d1"/>
-		<part name="u15.bin" crc="d4d1b07c"/>
+		<interleave output="16">
+			<part name="u14.bin" crc="282d89c3" map="12"/>
+			<part name="u24.bin" crc="bbe9d3d1" map="12"/>
+			<part name="u15.bin" crc="d4d1b07c" map="12"/>
+		</interleave>
 		<part repeat="0x200000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
-		<part name="u33.bin" crc="4c8577f1"/>
+		<interleave output="16">
+			<part name="u33.bin" crc="4c8577f1" map="12"/>
+		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="51d73682"/>
