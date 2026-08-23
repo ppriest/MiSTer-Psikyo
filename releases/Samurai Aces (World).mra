@@ -101,12 +101,21 @@
 		     the file raw here left the whole sprites region byte-pair-swapped
 		     relative to what the decoder expects - at 4bpp each byte is 2 pixels,
 		     so every group of 4 pixels in a tile row came out transposed, which on
-		     real hardware looked like structured-but-scrambled sprites. map="21"
-		     replicates the WORD_SWAP (digits are output byte lanes, value = which
-		     input byte feeds that lane, so 21 = swapped pair; confirmed against
-		     working MiSTer MRAs using the same idiom at output="64"). -->
+		     real hardware looked like structured-but-scrambled sprites.
+		     2026-08-23: map="21" was the wrong digit form and has been changed to
+		     map="12". The maincpu block above pinned the convention down against
+		     MAME's disassembly: the ASCENDING form ("0012"/"1200") is what
+		     produces the byte swap that ROM_LOAD*_WORD_SWAP implies, while the
+		     descending form ("0021"/"2100") leaves the file order alone. These
+		     gfx parts are ROM_LOAD16_WORD_SWAP in MAME, so they need the swap
+		     too, and map="21" was silently not applying one. On hardware that
+		     showed as alternate pixel PAIRS transposed (at 4bpp one byte is two
+		     pixels, so swapping bytes exchanges pixel pairs) - sprites were
+		     recognisable but visibly scrambled. map="12" renders correctly.
+		     Note the decoder itself was never at fault: rtl/video/tile_row_decode.sv
+		     correctly puts the high nibble in the left pixel per packed_msb. -->
 		<interleave output="16">
-			<part name="u14.bin" crc="00a546cb" map="21"/>
+			<part name="u14.bin" crc="00a546cb" map="12"/>
 		</interleave>
 		<part repeat="0x600000">FF</part>
 
@@ -114,15 +123,16 @@
 		     ROMs concatenated (not interleaved with each other). Exact fit, no
 		     padding needed.
 		     Both are ROM_LOAD16_WORD_SWAP in MAME, same reasoning as the sprites
-		     region above, so each gets its own map="21" interleave. They are
+		     region above, so each gets its own map="12" interleave (was "21";
+		     see the sprites block for why that form did not swap). They are
 		     CONCATENATED, not interleaved with each other (u34 at region 0x000000,
 		     u35 at 0x100000), hence two separate single-part blocks rather than one
 		     two-part block. -->
 		<interleave output="16">
-			<part name="u34.bin" crc="e6a75bd8" map="21"/>
+			<part name="u34.bin" crc="e6a75bd8" map="12"/>
 		</interleave>
 		<interleave output="16">
-			<part name="u35.bin" crc="c4ca0164" map="21"/>
+			<part name="u35.bin" crc="c4ca0164" map="12"/>
 		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - YM2610 ADPCM-A sample
