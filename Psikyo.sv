@@ -202,13 +202,7 @@ wire [31:0] p1p2_in = {
 // inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
 // exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
 // full derivation). Every other bit is unused by sngkace_input_r.
-wire [31:0] coin_in = {
-	8'hFF,                                    // bits 31:24 unused
-	nmi_pending,                                // bit 23
-	5'h1F,                                      // bits 22:18 unused
-	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
-	16'hFFFF                                    // bits 15:0 unused
-};
+// (declared further down, after the video timing wires it depends on)
 
 // DIP switches: status[47:16] passed straight through -- every .mra's own
 // <dip bits="16,...> entries already target this exact range (confirmed
@@ -245,6 +239,41 @@ wire [23:0] dbg_pixel;
 
 wire [8:0] hcnt, vcnt;
 wire        hblank, vblank, hsync, vsync;
+
+// COIN port (sngkace-only): COIN1 = bit16, COIN2 = bit17, both
+// IP_ACTIVE_LOW; bit23 is MAME's z80_nmi_r() (IP_ACTIVE_HIGH, not
+// inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
+// exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
+// full derivation).
+//
+// BIT 0 IS A VBLANK STATUS FLAG, ACTIVE LOW (0 while in vblank). It used to
+// be tied high with the rest of bits 15:0, which hung the boot: on hardware
+// the CPU sat forever in
+//     000436: move.l $c00008.l, D0
+//     00043C: addq.w #1, $fffe0000.l      (a timeout counter)
+//     000442: andi.l #$1, D0
+//     000448: bne    $436                 <- spins while bit 0 is SET
+// which MAME executes too, but MAME's falls through to 00044A and then
+// copies 0x800 longs from $fffee000 to $400000 -- a sprite-RAM DMA, which is
+// exactly the thing you time to vertical blanking. So the poll is "wait for
+// vblank", and a permanently-set bit 0 means it never arrives.
+//
+// Inferred from the code's behaviour and MAME's execution path rather than
+// read out of psikyo.cpp's INPUT_PORTS (not available locally), so treat the
+// exact bit position as verified-by-experiment, not by source.
+//
+// This sits below the video wires purely because it uses vblank. Feeding a
+// psikyo_top output back into one of its inputs is safe here: vblank is
+// derived from the video counters, never from coin_in, so there is no
+// combinational loop.
+wire [31:0] coin_in = {
+	8'hFF,                                    // bits 31:24 unused
+	nmi_pending,                                // bit 23
+	5'h1F,                                      // bits 22:18 unused
+	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
+	15'h7FFF,                                   // bits 15:1 unused
+	~vblank                                     // bit 0 = VBLANK, active low
+};
 wire [14:0] rgb;
 wire        nmi_pending;
 

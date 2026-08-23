@@ -335,56 +335,90 @@ module psikyo_core #(
     );
 
 
-    // ---- debug tracer ----------------------------------------------------
-    // Sources, chosen for the two questions bring-up actually asks:
-    //   0  CPU instruction fetch address (WORD address) -- diff directly
-    //      against debug/mame_samuraia_boot_trace.txt.gz, whose PCs are byte
-    //      addresses (word = PC >> 1). This is the "is the CPU running the
-    //      right code" probe.
-    //   1  CPU ROM read: {addr low byte, data returned} -- "is it being fed
-    //      the right bytes".
-    //   2  Sprite RAM writes: {addr low byte, data} -- what the CPU actually
-    //      puts in sprite RAM.
-    //   3  Palette writes: {addr low byte, data}.
+    // ---- debug tracer (two buffers, no source selection) ------------------
+    // Deliberately NOT selectable at runtime. The OSD source-select bit was
+    // tried at status[50:49] and again at status[58:57] and never took effect
+    // (the overlay bit in the same byte works, so the CFG path itself is
+    // fine). Rather than debug that a third time, both signals of interest
+    // are captured simultaneously into separate buffers and read out by
+    // scanline:
+    //   scanlines   0-127 : CPU ROM read, FULL 19-bit word address
+    //   scanlines 128-255 : CPU ROM read, {addr[7:0], data} -- SAME event N
+    // Both buffers are strobed by cpu_rom_valid, so entry N of one describes
+    // exactly the same bus cycle as entry N of the other: scanline L and
+    // scanline L+128 are one read, seen twice.
+    //
+    // Why the full address is worth a whole buffer: capturing only addr[7:0]
+    // cannot distinguish a CPU that is genuinely sweeping ROM (a checksum,
+    // address climbing, low bits wrapping every 256 words) from a ROM read
+    // path that ALIASES (upper address bits dropped, so word 2048 returns
+    // word 0). Those two have completely different causes and the truncated
+    // capture looks identical for both. The sprite-write tracer is dropped
+    // for this build: sprite writes were already confirmed present, and this
+    // question gates everything downstream of it.
     generate if (DEBUG_TRACER) begin : g_tracer
-        logic         cap_stb;
-        logic [23:0] cap_data;
+        logic [23:0] rd_addr, rd_data;
+        logic        frz_a, frz_d;
 
-        always_comb begin
-            case (dbg_src)
-                // NOTE: source 0 is deliberately the addr+data pair, because
-                // the OSD source-select is not currently taking effect (the
-                // overlay bit at status[64] works, bits 65+ do not, cause not
-                // yet understood). Making the DEFAULT source the most
-                // informative one means the tracer is useful regardless.
-                2'd0: begin
-                    cap_stb  = cpu_rom_valid;
-                    cap_data = {cpu_rom_addr[7:0], cpu_rom_data};
-                end
-                2'd1: begin
-                    cap_stb  = cpu_rom_valid;
-                    cap_data = {5'd0, cpu_rom_addr};
-                end
-                2'd2: begin
-                    cap_stb  = spr_cpu_wel | spr_cpu_weh;
-                    cap_data = {spr_cpu_addr[7:0], spr_cpu_wdata};
-                end
-                default: begin
-                    cap_stb  = pal_cpu_wel | pal_cpu_weh;
-                    cap_data = {pal_cpu_addr[7:0], pal_cpu_wdata};
-                end
-            endcase
-        end
+        // TRIGGER: word address 8 is bytes 0x10-0x13 = exception vector 4,
+        // Illegal Instruction. On hardware the CPU fetches this vector over and
+        // over in an 8-read loop, so freezing on the FIRST fetch leaves the
+        // buffer holding the 127 ROM reads that preceded it -- the code that
+        // caused the exception. MAME's boot never executes any of the loop's
+        // addresses, so this is a fault path, not game logic.
+        wire trig_vec4 = (cpu_rom_addr == 19'd8);
 
-        debug_tracer #(.DEPTH(256), .WIDTH(24)) u_tracer (
+        // dbg_src[0] = ring (latest N) vs first-N + window walk
+        // dbg_src[1] = freeze on trigger
+        debug_tracer #(.DEPTH(128), .WIDTH(24)) u_trace_addr (
             .clk(clk),
-            .cap_stb(cap_stb),
-            .cap_data(cap_data),
+            .cap_stb(cpu_rom_valid),
+            .cap_data({5'd0, cpu_rom_addr}),
             .ctl_rearm(dbg_rearm),
             .ctl_window(dbg_window),
-            .rd_index(vcnt),
-            .rd_data(dbg_pixel)
+            .ctl_ring(dbg_src[0]),
+            .ctl_trig_en(dbg_src[1]),
+            .cap_trig(trig_vec4),
+            .rd_index({2'd0, vcnt[6:0]}),
+            .rd_data(rd_addr),
+            .frozen(frz_a)
         );
+
+        debug_tracer #(.DEPTH(128), .WIDTH(24)) u_trace_data (
+            .clk(clk),
+            .cap_stb(cpu_rom_valid),
+            .cap_data({cpu_rom_addr[7:0], cpu_rom_data}),
+            .ctl_rearm(dbg_rearm),
+            .ctl_window(dbg_window),
+            .ctl_ring(dbg_src[0]),
+            .ctl_trig_en(dbg_src[1]),
+            .cap_trig(trig_vec4),
+            .rd_index({2'd0, vcnt[6:0]}),
+            .rd_data(rd_data),
+            .frozen(frz_d)
+        );
+
+        // Scanlines 216-223 echo the CONTROL INPUTS back out, plus a fixed 0xA5
+        // marker byte so a mis-decoded band is obvious rather than silently
+        // believable.
+        //
+        // This exists because three separate captures at ctl_window = 0, 1 and 8
+        // returned byte-identical images, which is impossible if the window is
+        // reaching the tracer (the skip step is 8191, prime -- no event period
+        // can alias with all three). Rather than keep debugging the consequence
+        // while assuming the control input is correct, the core now reports what
+        // it actually receives. If this band reads back window=0 while the CFG
+        // holds window=8, the fault is in the OSD/status path, not the tracer.
+        // (dbg_overlay is not a core input -- it only gates the mux up in
+        // Psikyo.sv, and this band is only visible when it is on, so it would
+        // read back 1 unconditionally. The low bit is a constant 1 instead,
+        // giving a second fixed bit to catch a mis-decode.)
+        wire [23:0] ctl_echo = {8'hA5, 6'd0, frz_a, frz_d,
+                                dbg_rearm, dbg_window, dbg_src, 1'b1};
+
+        assign dbg_pixel = (vcnt >= 9'd216) ? ctl_echo
+                         : (vcnt <  9'd128) ? rd_addr
+                                            : rd_data;
     end else begin : g_no_tracer
         assign dbg_pixel = 24'd0;
     end endgenerate

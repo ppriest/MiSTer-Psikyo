@@ -30,9 +30,9 @@
 		     github.com/MiSTer-devel/Main_MiSTer/wiki/Arcade-Roms-and-MRA-files that
 		     `map` actually reorders bytes WITHIN one part's own stream (e.g. map="10"
 		     swaps a byte pair), independent of file identity/order. Recomputing with
-		     the correct semantics against this file's ORIGINAL (unedited) pairing --
+		     the correct semantics against this file's ORIGINAL (unedited) pairing -
 		     u127 unswapped (map=01), u126 byte-pair-swapped (map=10), interleaved in
-		     listing order -- decodes the reset vector as SP=0xffff8000 (top of a
+		     listing order - decodes the reset vector as SP=0xffff8000 (top of a
 		     high-address-mirrored work RAM region, a standard 68k idiom) and
 		     PC=0x00000400 (a clean, plausible code-entry address): this original
 		     pairing is correct. Reverted.  <<< THAT CONCLUSION WAS ALSO WRONG,
@@ -40,7 +40,7 @@
 		     2026-08-23 (second correction, this one verified): the block below
 		     used to be <interleave output="16"> with u127 map="01" and u126
 		     map="10". Those digits do NOT mean "swap the byte pair within this
-		     part" -- that reading was wrong. Each digit is an OUTPUT BYTE LANE
+		     part" - that reading was wrong. Each digit is an OUTPUT BYTE LANE
 		     (leftmost = highest byte) and its VALUE selects which input byte of
 		     that part feeds the lane, with 0 meaning "this part does not supply
 		     this lane". Confirmed against working MiSTer MRAs using both a
@@ -48,7 +48,7 @@
 		     4-part output="32" form (map="1000"/"0100"/"0010"/"0001").
 		     So map="01"+map="10" at output="16" produced a BYTE-level
 		     interleave, word = {u126[i] high, u127[i] low}, which decodes the
-		     reset vector as SP=0x00ff80ff -- a corrupt, odd stack pointer --
+		     reset vector as SP=0x00ff80ff - a corrupt, odd stack pointer -
 		     even though PC=0x00000400 comes out correct. On real hardware that
 		     boots and executes correctly from 0x400 and then dies at the first
 		     stack operation.
@@ -57,10 +57,32 @@
 		     output="32" byte lanes that is u127 -> bytes 3,2 in order ("12")
 		     and u126 -> bytes 1,0 swapped ("21"). Decodes SP=0xffff8000
 		     PC=0x00000400, matching sim/psikyo_top_tb/gen_real_rom.py, which is
-		     the image the ModelSim real-ROM boot test runs from successfully. -->
-		<interleave output="16">
-			<part name="4-u127.bin" crc="8c9911ca" map="01"/>
-			<part name="5-u126.bin" crc="d20c3ef0" map="10"/>
+		     the image the ModelSim real-ROM boot test runs from successfully.
+		     2026-08-23 (THIRD correction; this one proved offline against MAME,
+		     not inferred). The map above (u127="0021", u126="2100") put the right
+		     FILE in each half but delivered each 16-bit word BYTE-SWAPPED. A
+		     hardware trace of CPU ROM reads matched the assembled image 128/128,
+		     which proved only that SDRAM delivers faithfully what the MRA built;
+		     it could not detect a wrong map, because both sides of that comparison
+		     share the same assumption. The real oracle is MAME's disassembly:
+		         000404: lea $ffff7000.l,A0   -> 41F9 FFFF 7000
+		         00040A: move A0,USP          -> 4E60
+		         00040C: move.w #$1,D0        -> 303C 0001
+		         000410: movec D0,CACR        -> 4E7B 0002
+		     Reconstructing those words from the two files scores 18/18 for
+		     "even word <- u127, little-endian within part" and 5/18 for
+		     big-endian. Big-endian (what the old map produced) yields
+		     SP=FFFF0080 PC=00000004 and code F941 FFFF 0070 604E, so the CPU
+		     jumped to address 4, ran the vector table as code, hit an illegal
+		     instruction and looped on vector 4 forever. That was observed on
+		     hardware as an 8-read loop containing the vector-4 fetch.
+		     Swapping the two byte-lane digits within EACH part (0021 to 0012,
+		     2100 to 1200) keeps the file-to-half assignment and fixes the byte
+		     order. Verify any future change with scripts/verify_rom_trace.py
+		     AND against the MAME disassembly above, never with "it boots". -->
+		<interleave output="32">
+			<part name="4-u127.bin" crc="8c9911ca" map="0012"/>
+			<part name="5-u126.bin" crc="d20c3ef0" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -72,12 +94,12 @@
 		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics.
 		     Actual content 0x200000 (this family's sprites region is the smallest of
 		     any Phase 1 game - gunbird's needs the full 0x700000); padded to the
-		     full reservation. -->
+		     full reservation.
 		     MAME loads this with ROM_LOAD16_WORD_SWAP, i.e. every 16-bit word is
 		     byte-swapped into the region, and rtl/video/tile_row_decode.sv was
 		     verified against THAT layout (MAME's gfx_16x16x4_packed_msb). Loading
 		     the file raw here left the whole sprites region byte-pair-swapped
-		     relative to what the decoder expects -- at 4bpp each byte is 2 pixels,
+		     relative to what the decoder expects - at 4bpp each byte is 2 pixels,
 		     so every group of 4 pixels in a tile row came out transposed, which on
 		     real hardware looked like structured-but-scrambled sprites. map="21"
 		     replicates the WORD_SWAP (digits are output byte lanes, value = which
@@ -90,8 +112,8 @@
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - tilemap layer 0+1 graphics, 2
 		     ROMs concatenated (not interleaved with each other). Exact fit, no
-		     padding needed. -->
-		     Both are ROM_LOAD16_WORD_SWAP in MAME -- same reasoning as the sprites
+		     padding needed.
+		     Both are ROM_LOAD16_WORD_SWAP in MAME, same reasoning as the sprites
 		     region above, so each gets its own map="21" interleave. They are
 		     CONCATENATED, not interleaved with each other (u34 at region 0x000000,
 		     u35 at 0x100000), hence two separate single-part blocks rather than one

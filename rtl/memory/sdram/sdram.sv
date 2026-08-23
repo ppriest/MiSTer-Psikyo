@@ -158,12 +158,21 @@ reg [4:0] reset=5'h1f;
 // access manager
 always @(posedge clk) begin
 	rfs_cnt <= rfs_cnt + 1'd1;
-	if (rfs_cnt == 850) begin
+	// 670, not upstream's 850. The MT48LC16M16 needs 8192 auto-refresh
+	// commands per 64 ms = one every 7.8125 us. At this project's
+	// 85.909091 MHz clk_sys, 850 cycles is 9.90 us -- 27% OVER spec. That
+	// is a real violation, not a margin: during the multi-second 14.7 MB
+	// ROM download the refresh is also deferred by traffic (rfs <= rfs2
+	// below), and address 0 is written FIRST, so the reset vector sits
+	// longest of all before the CPU reads it. Symptom was non-deterministic
+	// ROM corruption -- the same .mra read back correct on one load and
+	// corrupt on the next. 670 cycles = 7.80 us, just inside spec.
+	if (rfs_cnt == 670) begin
 		rfs <= 1;
 		rfs_cnt <= 0;
 	end
 
-	if (rfs_cnt == 425) rfs2 <= 1;
+	if (rfs_cnt == 335) rfs2 <= 1;   // half of the interval above
 
 	if(state == STATE_IDLE && mode == MODE_NORMAL) begin
 		if (rfs) begin

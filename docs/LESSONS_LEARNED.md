@@ -72,6 +72,111 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   match" figure and the original SDRAM_CLK phase sweep were both taken while the entire clk_sys
   domain failed by 8.9 ns, and both were used to rule the memory interface *out*. Re-run any
   measurement that predates a timing fix.
+- **Never let the probe's step size share a factor with the period you are trying to measure.**
+  The BRAM tracer's capture window skipped `window * 256` events. Windows 0, 8 and 15 (skips of
+  0, 2048, 3840 — all multiples of 256) returned *byte-identical* 128-entry captures. That is
+  consistent with two completely different faults: a CPU resetting every 256 reads, or a ROM read
+  path aliasing every 256 words. A sampling step that is always a multiple of 256 lands on a
+  period boundary of **any** stream whose period divides 256, so it cannot separate them. The step
+  is now `window * 8191` — odd, so it cannot alias with a power-of-two period. When a probe gives
+  the same answer at every setting, suspect the probe's step before believing the answer.
+- **Truncating an address in the capture destroys the distinction between "progressing" and
+  "stuck".** Packing only `addr[7:0]` into the 24-bit pixel made a genuine linear sweep through
+  ROM (low bits wrapping every 256 words) look exactly like a read path dropping its high address
+  bits. Capture the *full* address — if it does not fit alongside the data, use two buffers
+  strobed by the same event, so entry N of each describes the same bus cycle.
+
+## A hardware-vs-image comparison cannot detect a wrong image
+
+The single most expensive mistake of 2026-08-23. A hardware trace of CPU ROM reads was checked
+against the ROM image assembled from the `.mra` and matched **128/128**, which was reported as
+"the SDRAM read path is verified sound". It was — but the same measurement was also taken as
+evidence the `.mra` was right, and it could never show that: **both sides of the comparison were
+built from the same assumption about byte order.** A wrong map is invisible to it.
+
+The reset vector had to be byte-swapped in the analysis script to make it match MAME
+(`SP=FFFF8000 PC=00000400`). That swap was written off as a capture artifact. It was real: the CPU
+genuinely received `PC=0x00000004`, jumped to address 4, executed the **vector table as code**,
+hit an illegal instruction, and looped forever fetching vector 4. The "sequential sweep from
+address 0" that looked like the boot ROM checksum was actually the CPU running off the end of the
+vector table.
+
+**Use an independent oracle.** MAME's disassembly is one:
+
+```
+000404: lea $ffff7000.l,A0   -> 41F9 FFFF 7000
+00040A: move A0,USP          -> 4E60
+00040C: move.w #$1,D0        -> 303C 0001
+000410: movec D0,CACR        -> 4E7B 0002
+```
+
+Reconstructing those exact words from the two ROM files scores 18/18 for one interleave model and
+5/18 for the other, offline, in seconds, with no hardware involved. Do that **before** building.
+
+## MiSTer caches the loaded ROM -- an .mra edit alone does nothing
+
+Deploying a corrected `.mra` and re-launching it produced a byte-identical trace, which nearly got
+the fix discarded as ineffective. Re-launching the game that is already loaded reuses the ROM.
+Force a genuine reload by bouncing through the menu first:
+
+```
+POST /api/launch {"path":"/media/fat/menu.rbf"}   # then wait
+POST /api/launch {"path":"/media/fat/_Arcade/.../Game.mra"}
+```
+
+## Writing a .CFG by hand silently rewrites the DIP switches
+
+`/media/fat/config/<setname>.CFG` is the whole 128-bit status word. Writing 16 bytes with only
+byte 7 set to enable a debug bit **zeroes every DIP switch**, because the `.mra`'s `<switches>`
+occupy `status[55:16]`. For this core that turned **Service Mode ON** (bit 23, ids `On,Off`) and
+Flip Screen on, in every capture taken that way. Either write the `<switches default>` bytes
+alongside your own (`FF,FF,FD,FF,FF` -> CFG bytes 2..6 here), or delete the CFG and let MiSTer
+write its own defaults.
+
+## A malformed .mra looks exactly like a core regression
+
+An edited comment block left a `-->` that had already closed the comment, so the new prose landed
+in the document as character data -- and it contained `<- u127`. A bare `<` is illegal XML, MiSTer
+rejected the file, and the result was: DIP switches gone from the OSD, ROM never loaded, core up on
+an all-zero image, `SP=PC=00000000`, black screen. Every symptom pointed at the RTL. The only clue
+that it was the `.mra` was the on-screen "XML parse" message, which the user saw and I did not.
+
+`scripts/validate_mra.py` now checks well-formedness AND flags stray element text (which is how a
+prematurely-closed comment shows up). Gate every deploy on it:
+
+```bash
+python scripts/validate_mra.py "releases/*.mra" && <copy to device>
+```
+
+Note MiSTer's own parser is *more lenient* than a strict one: this file had `--` inside comments
+and two other comment blocks leaking text for a long time without complaint. Leniency varies by
+malformation, so do not treat "it loaded before" as evidence the file is well-formed.
+
+## Verify ROM interleave against hardware, not against "it boots"
+
+Every `.mra` interleave map for this core that was *derived* by reasoning about byte order was
+wrong; the working maincpu map was found by copying the idiom from a shipped core
+(`Bucky O'Hare.mra`). "It boots" is weak evidence — a wrong map can still boot far enough to look
+plausible.
+
+`scripts/verify_rom_trace.py` closes this properly: it takes a decoded on-hardware trace of ROM
+reads and the original ROM zip, brute-forces the small space of plausible interleaves, and reports
+which one reproduces the observed data **exactly**. For maincpu it returned **128/128** for
+"even word ← `4-u127.bin`, big-endian within part", confirming the shipped map
+
+```xml
+<interleave output="32">
+    <part name="4-u127.bin" map="0021"/>
+    <part name="5-u126.bin" map="2100"/>
+</interleave>
+```
+
+and simultaneously proving the SDRAM read path returns byte-perfect data at those addresses. Use
+the same technique on the still-unverified gfx maps (`u14.bin`, `u34.bin`, `u35.bin`, all carrying
+a guessed `map="21"`) rather than reasoning about them again.
+
+Note what it does **not** prove: the trace address is truncated, so it verifies *content*, not
+*address reach*. A path that aliases high address bits still scores 100%.
 
 ## Static timing analysis (check this FIRST on any hardware-vs-simulation divergence)
 
