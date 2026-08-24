@@ -111,5 +111,5 @@
 		<dip name="Region" bits="16,17,18,19" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260822220000</mratimestamp>
+	<mratimestamp>20260825000000</mratimestamp>
 </misterromdescription>
