@@ -51,6 +51,21 @@ module sprite_display_list_walker (
     output logic         done            // pulses once when the walk ends (sentinel or exhausted)
 );
 
+    // DO NOT "fix" this to walk backward. It was changed once to scan for
+    // the terminator and then emit entries from last down to entry 0, on the
+    // reading that psikyo_v.cpp's draw loop
+    //     while (sprite_ptr != m_spritelist.get()) { sprite_ptr--; ... }
+    // draws the list in reverse and therefore puts list entry 0 on top.
+    // On hardware that inverted sprite-vs-sprite depth ordering, and the
+    // extra scan pass measurably slowed the game. Reverted.
+    //
+    // The forward walk here, with later writes overwriting earlier ones in
+    // sprite_frame_buffer (its write_en is unconditional), reproduces the
+    // hardware's ordering. Whatever m_sprite_ptr_pre's fill order is during
+    // parsing, the net effect of MAME's parse-then-draw pair matches a plain
+    // forward walk -- which was not verified before changing it, and the
+    // change cost a build and a bad test session.
+
     localparam logic [11:0] DL_BASE       = 12'hC00;
     localparam int          DL_MAX_ENTRIES = 1023;
 

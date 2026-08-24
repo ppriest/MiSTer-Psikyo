@@ -10,7 +10,7 @@ PIC protection FSM and a YMF278B, neither of which exists yet.
 ## Status
 
 All three Phase 1 games boot and run on real hardware. There are known video, audio and
-speed defects; see below. No releases have been published.
+speed defects; see below. Builds are published in `releases/`.
 
 Working, confirmed on hardware:
 
@@ -21,25 +21,39 @@ Working, confirmed on hardware:
 * Scandoubler / gamma / scanline effects via `sys/arcade_video.v`
 * Rotation and 180° flip over HDMI via the HPS framebuffer
 * CPU pause, and the debug overlay used for bring-up
+* DIP switches, delivered via ioctl index 254 as MiSTer actually sends them
+* Sprite RAM buffered as a true copy at vblank, matching buffered_spriteram32_device --
+  this fixed sprite ghosting, stale sprites, and Gun Bird's per-scene sprite freeze
 
 Not working, or built but unconfirmed:
 
-* **Audio has never been heard.** Z80 and jt10/YM2610 are wired and clocked, but the ADPCM-A
-  and ADPCM-B ROM interfaces are not connected — `sdram_arbiter5` has no free consumer port,
-  and no `ADPCMA_BASE`/`ADPCMB_BASE` regions are defined. FM only, at best.
-* **Some slowdown may remain.** The `$C00008` bit-0 change (see below) made this much better.
-  If any residual turns out to be load-dependent, the candidate is SDRAM contention:
-  `sdram_arbiter5` is strict round-robin and fully serialises one transaction at a time, so a
-  heavy sprite frame takes slots away from CPU instruction fetch — something that cannot
-  happen on the real board, where CPU program ROM and sprite GFX ROM are separate chips. OSD
-  bit 40 (Sprites Off) tests it without a rebuild.
-* **Sprites still flicker and ghost**, though much improved by the bit-0 change. The
-  per-scanline replacement is built and selectable (OSD bit 52) but has not been evaluated.
-  See `docs/sprite_buffering.md`.
-* Some tilemap tiles use the wrong palette (a row of the Gun Bird logo goes green); the
-  sengokua hiscore tilemap is offset by about two tiles.
-* Gun Bird sprites freeze a few seconds into each scene — suspected spriteram banking.
-* Aspect ratio Original/Full Screen: the rotation-aware fix is built but not confirmed.
+* **The game slows down under sprite load.** Diagnosed, not yet fixed: `sdram.sv` spends
+  10 cycles per 64-bit granule and only 4 of them move data — the other 6 are ACTIVATE +
+  tRCD + CAS latency, paid on every transaction because the row is closed and reopened
+  each time. The sprite engine's worst pass is ~73,000 transactions, about 61% of total
+  bus capacity on its own; tilemaps add ~8% and the CPU ~20%, so the bus runs near 90%
+  utilisation and the CPU stalls waiting for instruction fetch. Real hardware cannot do
+  this — CPU program ROM and sprite GFX ROM are separate chips there. The fix is 4-bank
+  interleaving with open-row tracking; jotego measures 48 -> 126 MB/s from that on the
+  same chip, so one SDRAM has roughly 3x the bandwidth needed. Validate against
+  `sim/sdram_tb/` (real MT48LC16M16 model) before building.
+* **Audio has never been heard.** Z80 and jt10/YM2610 are wired and clocked, but the
+  ADPCM-A and ADPCM-B ROM interfaces are not connected — `sdram_arbiter5` has no free
+  consumer port and no `ADPCMA_BASE`/`ADPCMB_BASE` regions are defined.
+* **Sprite palette lags by one frame.** `sprite_frame_buffer` renders during frame N and
+  displays during N+1, while palette RAM is read live, so a scene change flashes
+  miscoloured sprites for a frame. Real hardware buffers sprite RAM but draws in real
+  time. The principled fix is the per-scanline renderer, which is one line ahead rather
+  than one frame.
+* **Sprite-vs-tilemap priority is unresolved.** The one-hot test and `pri[] = {0, 0xfc,
+  0xfe, 0xff}` are in, but whether the rule is a one-hot mask or a magnitude compare with
+  ties going to the sprite is still open. See `compositor.sv`.
+* **Some tilemap tiles use the wrong palette.** Tracks VRAM column 0 of each row, appears
+  mid-screen with non-zero scroll, so it is not a scroll artefact. `tile_cell_decode`,
+  `tilemap_addrgen` and `tilemap_coord` all read correctly on inspection; next step is
+  dumping our VRAM at that cell and diffing against MAME rather than more code reading.
+* **The line-buffer sprite path is buggy** — renders, but degrades progressively down the
+  screen. Parked; see `docs/sprite_buffering.md`.
 * `clk_sys` misses timing by about 0.45 ns.
 
 ## ROMs

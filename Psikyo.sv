@@ -288,9 +288,30 @@ wire [31:0] p1p2_in = {
 // touched: with a default-ish .CFG that bit is 0 and PORT_SERVICE is
 // ACTIVE_LOW, so the board came up stuck in Service Mode.
 //
-// The .mra's <dip bits="..."> entries already use MAME's own bit numbers
-// (16..31), so aligning them is just a matter of feeding status[31:16] into
-// the upper half.
+// DIP switches do NOT arrive through the status word. MiSTer delivers them
+// as an ioctl DOWNLOAD with index 254 -- 8 bytes, little-endian uint64 --
+// see Main_MiSTer/support/arcade/mra_loader.cpp:
+//
+//     void arcade_sw_send() {
+//         user_io_set_index(254);
+//         user_io_set_download(1);
+//         user_io_file_tx_data((uint8_t*)&sw->dip_cur, sizeof(sw->dip_cur));
+//         user_io_set_download(0);
+//     }
+//
+// This core previously read status[31:16]/status[39:32] instead, which is
+// simply not where DIPs come from, and produced three symptoms at once:
+// editing DIPs in the OSD did nothing, the changes never appeared in the
+// .CFG (they are saved to config/dips/<mra name>, not the status word), and
+// with no .CFG present every DIP bit read 0 -- which for Service Mode
+// (ids="On,Off", so 0 = On) meant booting straight into service mode.
+// Hand-written .CFG files appeared to "work" only because they fed the wrong
+// path this core happened to read, masking the real bug.
+//
+// The .mra's <dip bits="..."> numbering must match dip_cur's own layout:
+// arcade_sw_parse does `dip_def |= binary[i] << (i * 8)`, so <switches>
+// default byte 0 is bits 7:0, byte 1 is bits 15:8, byte 2 is bits 23:16.
+// There is no 16-bit offset -- an earlier numbering assumed one.
 //
 // The LOW BYTE is not spare -- it is the region/country jumper. samuraia's
 // ports carry PORT_CONFNAME( 0x000000ff, 0x000000ff, Region ) with
@@ -302,7 +323,13 @@ wire [31:0] p1p2_in = {
 //
 // Byte 1 (dsw_in[15:8]) genuinely is unused and reads back as 1s, matching
 // MAME's IP_ACTIVE_LOW default for undefined bits.
-wire [31:0] dsw_in = {status[31:16], 8'hFF, status[39:32]};
+reg [63:0] dip_sw;
+always @(posedge clk_sys) begin
+	if (ioctl_wr && (ioctl_index == 254) && !ioctl_addr[24:3])
+		dip_sw[{ioctl_addr[2:0], 3'b000} +: 8] <= ioctl_dout;
+end
+
+wire [31:0] dsw_in = {dip_sw[15:8], dip_sw[7:0], 8'hFF, dip_sw[23:16]};
 
 // ---- debug tracer controls (rtl/debug/debug_tracer.sv) ----
 // Live from the OSD, so the capture window can be walked across a long boot
