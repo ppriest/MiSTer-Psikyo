@@ -21,9 +21,9 @@
 	<rom index="0" zip="gunbirdj.zip|gunbird.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
 		     (different CRCs than gunbird's or gunbirdk's). Actual 0x80000. -->
-		<interleave output="16">
-			<part name="1.u46" crc="474abd69" map="01"/>
-			<part name="2.u39" crc="3e3e661f" map="10"/>
+		<interleave output="32">
+			<part name="1.u46" crc="474abd69" map="0012"/>
+			<part name="2.u39" crc="3e3e661f" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -32,10 +32,18 @@
 		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to gunbird's. -->
-		<part name="u14.bin" crc="7d7e8a00"/>
-		<part name="u24.bin" crc="5e3ffc9d"/>
-		<part name="u15.bin" crc="a827bfb5"/>
-		<part name="u25.bin" crc="ef652e0c"/>
+		<interleave output="16">
+			<part name="u14.bin" crc="7d7e8a00" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u24.bin" crc="5e3ffc9d" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u15.bin" crc="a827bfb5" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u25.bin" crc="ef652e0c" map="12"/>
+		</interleave>
 		<part repeat="0x100000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to gunbird's. -->

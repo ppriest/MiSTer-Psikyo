@@ -22,9 +22,9 @@
 	<rom index="0" zip="sngkace.zip|samuraia.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - Japan-region content
 		     (different CRCs than samuraia's, same load scheme). Actual 0x80000. -->
-		<interleave output="16">
-			<part name="1-u127.bin" crc="6c45b2f8" map="01"/>
-			<part name="2-u126.bin" crc="845a6760" map="10"/>
+		<interleave output="32">
+			<part name="1-u127.bin" crc="6c45b2f8" map="0012"/>
+			<part name="2-u126.bin" crc="845a6760" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -33,7 +33,9 @@
 		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to samuraia's. -->
-		<part name="u14.bin" crc="00a546cb"/>
+		<interleave output="16">
+			<part name="u14.bin" crc="00a546cb" map="12"/>
+		</interleave>
 		<part repeat="0x600000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to samuraia's. -->

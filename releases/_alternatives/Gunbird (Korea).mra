@@ -23,9 +23,9 @@
 		<!-- maincpu: base 0x000000, reserved 0x200000 - two 0x80000 ROMs (twice
 		     the size of the parent gunbird's) word-swap-interleaved. Actual
 		     0x100000. -->
-		<interleave output="16">
-			<part name="1k.u46" crc="745cee52" map="01"/>
-			<part name="2k.u39" crc="669632fb" map="10"/>
+		<interleave output="32">
+			<part name="1k.u46" crc="745cee52" map="0012"/>
+			<part name="2k.u39" crc="669632fb" map="1200"/>
 		</interleave>
 		<part repeat="0x100000">FF</part>
 
@@ -35,10 +35,18 @@
 		<part repeat="0x20000">FF</part>
 
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to gunbird's. -->
-		<part name="u14.bin" crc="7d7e8a00"/>
-		<part name="u24.bin" crc="5e3ffc9d"/>
-		<part name="u15.bin" crc="a827bfb5"/>
-		<part name="u25.bin" crc="ef652e0c"/>
+		<interleave output="16">
+			<part name="u14.bin" crc="7d7e8a00" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u24.bin" crc="5e3ffc9d" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u15.bin" crc="a827bfb5" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u25.bin" crc="ef652e0c" map="12"/>
+		</interleave>
 		<part repeat="0x100000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to gunbird's. -->

@@ -21,9 +21,9 @@
 	<rom index="0" zip="btlkroadk.zip|btlkroad.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
 		     (different CRCs than btlkroad's). Actual 0x80000. -->
-		<interleave output="16">
-			<part name="4,dot.u46" crc="e724d429" map="01"/>
-			<part name="5,dot.u39" crc="c0d65765" map="10"/>
+		<interleave output="32">
+			<part name="4,dot.u46" crc="e724d429" map="0012"/>
+			<part name="5,dot.u39" crc="c0d65765" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -35,9 +35,15 @@
 		<!-- sprites: base 0x240000, reserved 0x800000 - identical to btlkroad's
 		     (only three ROMs, matching the parent - not gunbird's four). Actual
 		     0x600000. -->
-		<part name="u14.bin" crc="282d89c3"/>
-		<part name="u24.bin" crc="bbe9d3d1"/>
-		<part name="u15.bin" crc="d4d1b07c"/>
+		<interleave output="16">
+			<part name="u14.bin" crc="282d89c3" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u24.bin" crc="bbe9d3d1" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u15.bin" crc="d4d1b07c" map="12"/>
+		</interleave>
 		<part repeat="0x200000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to btlkroad's. -->
