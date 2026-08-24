@@ -100,6 +100,7 @@ module psikyo_top #(
     input  logic         dbg_overlay,
     input  logic [2:0]  dbg_render_dis,
     input  logic         pause,
+    input  logic         snd_irq_en,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,
     input  logic [3:0]  dbg_window,
@@ -123,6 +124,13 @@ module psikyo_top #(
     logic         sp_gfxrom_valid, sp_lut_valid;
     logic [63:0] sp_gfxrom_data;
     logic [15:0] sp_lut_data;
+
+    // ---- YM2610 chip bus, sound CPU <-> jt10 ----
+    // These were previously missing, so Quartus created 1-BIT implicit nets for
+    // ym_dout/ym_din/ym_addr and the whole sound bus was truncated.
+    logic        ym_cs, ym_rd, ym_wr, ym_irq_n;
+    logic [1:0] ym_addr;
+    logic [7:0] ym_dout, ym_din;
 
     logic [7:0]  latch_data;
     logic         latch_write;
@@ -205,7 +213,7 @@ module psikyo_top #(
                 .latch_data(latch_data), .latch_write(latch_write),
                 .nmi_pending(nmi_pending),
                 .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n)
+                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
             );
         end else begin : g_sound_sngkace
             sound_cpu_sngkace u_sound (
@@ -215,7 +223,7 @@ module psikyo_top #(
                 .latch_data(latch_data), .latch_write(latch_write),
                 .nmi_pending(nmi_pending),
                 .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n)
+                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
             );
         end
     endgenerate
