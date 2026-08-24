@@ -202,7 +202,7 @@ module maincpu (
     // phases (AS/UDS/LDS/DTACK) and therefore contains falling-edge
     // registers, and it assumes CLK *is* the CPU clock. Rate-limiting it to
     // 16 MHz meant fighting its design -- see docs/LESSONS_LEARNED.md and
-    // docs/maincpu_kernel_rewrite.md for the chain of failures that caused.
+    // docs/LESSONS_LEARNED.md ("TG68K.C") for the chain of failures that caused.
     //
     // The kernel underneath is entirely rising-edge and exposes clkena_in
     // for exactly this purpose. Established cores drive it directly and own

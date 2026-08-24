@@ -37,11 +37,9 @@
 		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
 		     only THREE ROMs (see header note - one fewer than gunbird's four).
 		     Actual 0x600000. -->
-		<!-- 2026-08-24: these were all inside ONE <interleave output="16">, which
-		     BYTE-INTERLEAVES the four files together. MAME loads them at successive
-		     offsets (0x000000/0x200000/0x400000/0x600000), i.e. CONCATENATED, each
-		     one individually ROM_LOAD16_WORD_SWAP. One block per file, same idiom as
-		     the tiles region. -->
+		<!-- Sprite ROMs are CONCATENATED at successive offsets, not interleaved with
+		     each other, so one single-part interleave block per file. All
+		     ROM_LOAD16_WORD_SWAP, hence map="12". -->
 		<interleave output="16">
 			<part name="u14.bin" crc="282d89c3" map="12"/>
 		</interleave>
@@ -82,15 +80,10 @@
 	<buttons names="Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause" default="Y,B,A,X,L,R,Start,Select" count="6"/>
 
 	<switches default="FD,FF,00">
-		<!-- 2026-08-24: was a five-byte default written on the assumption that
-		     <switches> bytes start at status[0]. They start at status[16]:
-		     byte0 -> status[23:16] (Flip/Demo/Difficulty/Lives/Bonus/Service),
-		     byte1 -> status[31:24] (coin settings),
-		     byte2 -> status[39:32] (the DSW's low byte = region jumper).
-		     Psikyo.sv feeds these into the 32-bit DSW long at $C00004 as
-		     {status[31:16], 8'hFF, status[39:32]}. Defaults now match MAME's own
-		     PORT_DIPNAME defaults: Demo Sounds On, Difficulty Normal, 3 Lives,
-		     Bonus 400K, Service Mode OFF (bit 23 = 1), 1C 1C; region 0x00 = World (btlkroad encodes World as 0, NOT 0x0f like the others). -->
+		<!-- <switches> bytes start at status[16]: byte0 -> status[23:16],
+		     byte1 -> status[31:24], byte2 -> status[39:32], fed into the upper half of
+		     the 32-bit DSW long at $C00004 with byte2 as the region jumper in its low
+		     byte. Defaults match MAME's PORT_DIPNAME defaults; region 0x00 = World; btlkroad encodes World as 0 where the others use 0x0f. -->
 		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
 		<!-- Flip Screen / Demo Sounds / Difficulty at the same bit positions as

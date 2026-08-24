@@ -78,72 +78,16 @@ history for individual commits):
   under real Quartus 17.0**: 0 errors, 22382 logic cells, 1349 RAM segments, 3 PLLs, 39 DSP
   elements. First full place-and-route (`.sof`/`.rbf`) also complete. **Timing closure was NOT
   achieved for a long time and this was not noticed** — see the 2026-08-23 root-cause note below;
-  always read `output_files/Psikyo.sta.summary`, never trust "Fitter was successful". Ships with `BOARD_GUNBIRD` fixed to `1'b0` (sngkace
-  layout only); a gunbird/btlkroad build needs its own top-level parameter value.
+  always read `output_files/Psikyo.sta.summary`, never trust "Fitter was successful". The board variant is selected at runtime from the `.mra` mod byte, so one `.rbf` serves all three games.
 
-**Real hardware bring-up: CPU confirmed booting and fetching ROM on the DE10-nano
-(2026-08-22).** First hardware test failed silently (misplaced `.rbf`, a deployment issue not an
-RTL bug — see LESSONS_LEARNED.md). After fixing that, the screen stayed black; root-caused via a
-VGA-color-override debug build to a genuine, two-part Quartus synthesis bug in TG68K.vhd's
-RESET/HALT open-collector handling (Quartus resolves the shared tri-state net as a broken selector
-instead of true wired-AND — full writeup in LESSONS_LEARNED.md's TG68K.C section). Fixed with a new
-`ext_force_run`/`effective_reset` signal pair in `TG68K.vhd`, wired from `maincpu.sv`. Confirmed
-working via a sequence of debug-color hardware screenshots (cyan → red → green, each color proving
-one more stage of the fix), then verified clean after removing all debug instrumentation: full
-ModelSim regression re-passes (`tb_maincpu`, `tb_psikyo_core_smoke`, `tb_psikyo_core`,
-`tb_psikyo_top` all PASS) and a fresh hardware rebuild/deploy is in progress to confirm on real
-silicon with the actual game screen (not a debug color).
+**Hardware bring-up history has moved to `LESSONS_LEARNED.md`.** It was a long chronological
+narrative of failures and fixes, which belongs there rather than in a design document. The bugs
+it covered, in case you are looking for one: the RESET/HALT tri-state synthesis bug in
+TG68K.vhd; the design not closing timing while every log line said "successful"; the ROM download
+never reaching SDRAM because MiSTer holds core reset for its duration; the maincpu `.mra`
+interleave delivering byte-swapped words; the tilemap layer-enable polarity; and the tilemap
+display side consuming at `clk` instead of `ce_pix`.
 
-**Root cause of the "CPU boots but reads garbage" symptom found (2026-08-23): the design did not
-close timing.** After the RESET/HALT fix the CPU ran on real hardware but never wrote video or work
-RAM, while an identical real-ROM ModelSim run wrote work RAM within microseconds. Six rounds of
-VGA-colour-override debug builds narrowed it to ROM words read back wrong ~51% of the time,
-deterministically and *identically* at two different SDRAM_CLK phase shifts. That pointed at the
-memory interface, and a full audit cleared it: all 38 SDRAM pin assignments verified identical
-across `Psikyo.qsf`, the vendor `sys/sys.tcl`, and the post-fit `.pin` file; `SDRAM_DQ` confirmed
-fully IOE-registered (16/16 in/out/OE); `sdram.sv`'s burst-4 adaptation reviewed against upstream
-and found sound.
-
-The actual cause was in `output_files/Psikyo.sta.summary`, which nothing in the build flow forces
-you to read: **the `clk_sys` domain had −8.879 ns setup slack and −21,031 ns TNS, with an Fmax of
-48.74 MHz against an 85.909091 MHz clock.** Every one of the 50 worst-slack paths in the whole
-design was inside `TG68KdotC_Kernel` — nothing else failed timing at all. TG68K.C was free-running
-at `clk_sys` because the architecture has no clock-enable input of its own, which was both 5.4x the
-real board's 16 MHz 68EC020 and far beyond what the core can physically close.
-
-Fixed by adding an `ext_clkena` port to `TG68K.vhd` that gates *every* clocked process in the
-architecture (not just the kernel — the bus state machine's one-cycle `clkena_e` pulse would
-otherwise be lost on cycles the gated kernel sleeps through), driven from `maincpu.sv` by an exact
-Bresenham 176/945 enable = 16.000 MHz. This required latching the ROM read path (`rom_data_l`/
-`rom_ready` in `maincpu.sv`), because `sdram_narrow_bridge` returns a one-cycle `valid` with
-combinational data and a CPU stepping every ~5.4 cycles would miss it. `Psikyo.sdc` gained matching
-`set_multicycle_path` constraints. Validated in ModelSim against the real `samuraia` ROM: same
-first work-RAM write (`addr=c07e`), same vblank-IRQ time, with the CPU proportionally further back
-in its program — exactly the expected 16 MHz behaviour. Full writeup in LESSONS_LEARNED.md's new
-"Static timing analysis" section.
-
-**ROM download never reached SDRAM (found and fixed 2026-08-23).** MiSTer holds core RESET
-asserted for the ENTIRE ROM download; Psikyo.sv folds that into `reset` and psikyo_top passed it
-into the SDRAM backend, pinning sdram_download's FSM in D_IDLE. Zero write commands ever reached
-the chip while the HPS delivered all 0xE00000 bytes. Fixed with
-`sdram_reset = reset & ~ioctl_download`, confirmed at the pins (CMD_WRITE 0x000 -> 0xE00); the
-CPU's reset vector now reads SP=0xFFFF8000 PC=0x00000400, matching MAME. Note upstream
-`sdram.v` has no reset port at all by design — this project's wrappers added one.
-
-**Core still does not run the game.** With correct ROM contents the CPU reads its reset vector and
-then, without executing at 0x400, takes bus error -> illegal instruction -> F-line. The next step
-is a planned rewrite of `rtl/cpu/maincpu.sv` to drive `TG68KdotC_Kernel` directly at a 16 MHz
-clock enable instead of rate-limiting the `TG68K.vhd` async-bus wrapper — see
-**`docs/maincpu_kernel_rewrite.md`** for the full plan, the reference implementation
-(mist-devel/plus_too's tg68k.v), and the list of verified fixes that must survive it.
-
-`scripts/mister_hw_test.py` — a maintained deploy/launch/screenshot automation tool for this
-hardware-bring-up loop (SCP the `.rbf`, launch a `.mra` via the MiSTer Remote API, pull a
-screenshot back) — see the script's own docstring/`--help` for usage.
-
-Every RTL module has been verified in ModelSim against an independently-computed reference
-(exhaustively or near-exhaustively over its realistic input domain) — see individual module
-headers and commit messages for verification counts.
 
 ## Hardware reality (from the driver, not assumption)
 
@@ -193,8 +137,9 @@ above and is entirely custom — this is the real engineering content of the pro
 
 **Phase 0 — CPU spike: complete** (see Progress above).
 
-**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road): RTL
-complete, hardware bring-up underway.** Exit criteria: all three games booting, correct sprite
+**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road): all
+three games boot and run; audio and the sprite buffering defects remain.** Exit criteria: all
+three games booting, correct sprite
 zoom/priority, correct tilemap size-switching and row-scroll, working `.mra` files for each region
 variant.
 
@@ -265,15 +210,14 @@ Convention: `develop` is the working branch, `master` only gets merges when expl
 
 ## Next steps
 
-1. **Confirm the RESET/HALT fix on real hardware with debug instrumentation fully removed** (in
-   progress — see Progress above) and commit that body of work.
-2. A `BOARD_GUNBIRD(1'b1)` build variant for gunbird/btlkroad (currently `Psikyo.sv` fixes
-   `BOARD_GUNBIRD` to `1'b0`/sngkace only).
-3. Sound subsystem: jt10 FM channel + ADPCM-A/B ROM interface verification (audio-domain, not
-   just compile-clean — tracked in `rtl/sound/jt10/PROVENANCE.md`, including an unresolved
-   `jt10_acc.v` port-width warning), then wire jt10 into the sound CPU's YM I/O bus and apply the
-   samuraia/sngkace ADPCM-A bit 6/7 swap during ROM download.
-4. Timing closure pass on `sprite_record_decode.sv`/`sprite_render_engine.sv` (see Open items).
-5. CRT_Offset module and hiscore.v — later-stage/polish, not needed for initial bring-up.
-6. Continue DE10-nano bring-up now that the CPU boots: verify actual gameplay/graphics rendering
-   correctness (not just "boots"), design/implement the Pause feature (see Open items).
+1. **Sound.** jt10/YM2610 is not wired in at all; `AUDIO_L/R` are tied low and
+   `rtl/psikyo_top.sv`'s `ym_*` bus is exposed but unconnected. Needs the Z80 side verified in the
+   audio domain (see `rtl/sound/jt10/PROVENANCE.md`, including an unresolved `jt10_acc.v`
+   port-width warning) and the samuraia/sngkace ADPCM-A bit 6/7 swap applied during ROM download.
+2. **Sprite flicker and retention** — see `docs/sprite_buffering.md`. Decide between the runtime
+   `FrameStart` swap policy and the per-scanline line-buffer rewrite.
+3. **Tinted colours on Gun Bird and Battle K-Road** — palette path not yet examined.
+4. **Finish timing closure** (about 0.5 ns of setup slack remains on `clk_sys`).
+5. **Confirm HDMI rotation and flip on a display** — screenshots capture the core's native video,
+   so the rotated framebuffer is invisible to the existing tooling.
+6. Polish: CRT_Offset, hiscore.v, Pause.
