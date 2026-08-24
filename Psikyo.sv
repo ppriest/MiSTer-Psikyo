@@ -37,8 +37,11 @@
 // aspect/crop) with rtl/video/screen_rotate_two.sv tapping the output to
 // provide rotation and 180-degree flip over HDMI via the HPS framebuffer.
 //
-// Not done here: audio -- AUDIO_L/R are tied low and rtl/psikyo_top.sv's ym_*
-// bus is exposed but unconnected; and SDRAM_CLK phase tuning
+// Audio: jt10 (YM2610) is instantiated inside rtl/psikyo_top.sv and its output
+// reaches AUDIO_L/R here. ADPCM-A/B sample ROMs are not connected yet, so those
+// channels are silent; FM and SSG work.
+//
+// Not done here: SDRAM_CLK phase tuning
 // (rtl/pll/pll_0002.v's -3000ps is inherited, not measured on this board).
 module emu
 (
@@ -60,10 +63,12 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-// No sound yet -- jt10 isn't wired in (see module header).
-assign AUDIO_S = 0;
-assign AUDIO_L = 0;
-assign AUDIO_R = 0;
+// Audio comes from jt10 (YM2610) inside psikyo_top. Signed 16-bit, so
+// AUDIO_S = 1. YM2610 output is mono on this hardware (MAME routes
+// ALL_OUTPUTS to a single "mono" node), and jt10's snd_left/snd_right carry
+// the same content; both are wired so the framework's mixer sees a normal
+// stereo pair.
+assign AUDIO_S   = 1;
 assign AUDIO_MIX = 0;
 
 assign LED_DISK = 0;
@@ -180,6 +185,7 @@ end
 // Sound-CPU NMI status, mirrored into the input ports on both board
 // variants (bit 23 of COIN on sngkace, bit 7 of P1_P2 on gunbird).
 wire        nmi_pending;
+wire signed [15:0] snd_left, snd_right;
 
 // ---- board variant, selected at RUNTIME by the .mra ----
 // One Arcade-Psikyo.rbf has to serve every game in the family, so the board
@@ -353,9 +359,6 @@ wire [31:0] coin_in = {
 };
 wire [14:0] rgb;
 
-wire         ym_cs, ym_rd, ym_wr;
-wire [1:0]  ym_addr;
-wire [7:0]  ym_dout;
 
 psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 (
@@ -381,10 +384,9 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.dsw_in(dsw_in),
 	.coin_in(coin_in),
 	.board_gunbird(board_gunbird),
+	.snd_left(snd_left), .snd_right(snd_right),
 
 	.nmi_pending(nmi_pending),
-	.ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-	.ym_dout(ym_dout), .ym_din(8'h00), // no jt10 yet -- see module header
 
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
@@ -499,5 +501,8 @@ screen_rotate_two screen_rotate_two
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
 assign LED_USER    = act_cnt[26]  ? act_cnt[25:18]  > act_cnt[7:0]  : act_cnt[25:18]  <= act_cnt[7:0];
+
+assign AUDIO_L = snd_left;
+assign AUDIO_R = snd_right;
 
 endmodule

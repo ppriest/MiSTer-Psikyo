@@ -77,13 +77,16 @@ module sound_cpu_gunbird (
     // port itself (bit 7) rather than a separate COIN port.
     output logic         nmi_pending,
 
-    // YM2610 I/O handoff -- NOT wired to jt10 yet
+    // YM2610 I/O handoff
     output logic         ym_cs,
     output logic [1:0]  ym_addr,
     output logic         ym_rd,
     output logic         ym_wr,
     output logic [7:0]  ym_dout,       // Z80 -> YM2610
-    input  logic [7:0]  ym_din         // YM2610 -> Z80
+    input  logic [7:0]  ym_din,        // YM2610 -> Z80
+    // YM2610 IRQ, active low. MAME wires ymsnd.irq_handler() to the Z80's
+    // INT line; the FM timers drive music tempo through it.
+    input  logic         ym_irq_n
 );
 
     logic m1_n, mreq_n, iorq_n, rd_n, wr_n, rfsh_n, halt_n, busak_n;
@@ -96,7 +99,7 @@ module sound_cpu_gunbird (
         .Mode(0), .T2Write(0), .IOWait(1)
     ) u_cpu (
         .RESET_n(~reset), .CLK_n(clk), .CLKEN(1'b1), .WAIT_n(wait_n),
-        .INT_n(1'b1), .NMI_n(nmi_n), .BUSRQ_n(1'b1),
+        .INT_n(ym_irq_n), .NMI_n(nmi_n), .BUSRQ_n(1'b1),
         .M1_n(m1_n), .MREQ_n(mreq_n), .IORQ_n(iorq_n),
         .RD_n(rd_n), .WR_n(wr_n), .RFSH_n(rfsh_n), .HALT_n(halt_n), .BUSAK_n(busak_n),
         .A(a), .DI(di), .DO(d_out)
