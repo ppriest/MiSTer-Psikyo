@@ -105,6 +105,9 @@ module psikyo_core #(
     // is otherwise guesswork once sprites and tilemaps overlap.
     //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
     input  logic [2:0]  dbg_render_dis,
+    // Freeze the main CPU, so a frame can be captured and compared against a
+    // MAME dump of the same moment without the game advancing underneath it.
+    input  logic         pause,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,      // which signal group to record
     input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
@@ -166,7 +169,7 @@ module psikyo_core #(
         .vregs_wdata(vregs_cpu_wdata), .vregs_rdata(vregs_cpu_rdata),
         .workram_addr(workram_cpu_addr), .workram_wel(workram_cpu_wel), .workram_weh(workram_cpu_weh),
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
-        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird),
+        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird), .pause(pause),
         .latch_data(latch_data), .latch_write(latch_write),
         .vblank(vblank)
     );

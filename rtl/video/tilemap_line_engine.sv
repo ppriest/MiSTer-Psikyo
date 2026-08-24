@@ -13,10 +13,13 @@
 
 module tilemap_line_engine #(
     parameter int LAYER = 0,   // 0 or 1 -- passed through to tile_cell_decode
-    // Prefetch ring buffer depth -- see the buf_pixels/buf_ready declaration
+    // Prefetch ring buffer depth. 32 >= the 21 tiles fetched per line, so the
+    // ring cannot wrap mid-line; at 8 it wrapped 2.6 times per line, and an
+    // off-by-one at a wrap would shift every tile after it.
+    // See the buf_pixels/buf_ready declaration
     // below for why this became a parameter instead of a fixed 2-entry
     // ping-pong (real SDRAM contention measurement, docs/phase1_sdram_map.md).
-    parameter int PREFETCH_DEPTH = 8
+    parameter int PREFETCH_DEPTH = 32
 ) (
     input  logic        clk,
     input  logic         reset,

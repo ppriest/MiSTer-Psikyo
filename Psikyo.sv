@@ -104,6 +104,7 @@ localparam CONF_STR = {
 	"P1O[41],Tilemap 0,On,Off;",
 	"P1O[42],Tilemap 1,On,Off;",
 	"P1O[43],Sprite swap,EndOfRender,FrameStart;",
+	"P1O[50],Pause CPU,Off,On;",
 	"-;",
 	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
@@ -307,6 +308,9 @@ wire        dbg_overlay = status[56];
 // status[39:16] and the tracer controls sit at status[63:56].
 //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
 wire [2:0] dbg_render_dis = status[42:40];
+// Freeze the 68020 so a frame can be captured and compared against a MAME dump
+// of the same moment. Video and the debug overlay keep running.
+wire        pause = status[50];
 // Experimental: swap the sprite output buffer at the frame boundary rather
 // than at end-of-render. Default 0 = the behaviour known to boot.
 wire        dbg_sprite_vsync_swap = status[43];
@@ -391,7 +395,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 

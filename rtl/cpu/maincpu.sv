@@ -186,6 +186,11 @@ module maincpu (
     // P1_P2 port's low byte instead and have nothing at 0xC00008.
     input  logic         board_gunbird,
 
+    // Freeze the CPU (debug). Gates the 16 MHz clock enable, so the 68020
+    // simply stops stepping; video timing and the debug overlay keep running,
+    // which is what makes a frame comparable against a MAME dump.
+    input  logic         pause,
+
     // sound latch, to the sound CPU side
     output logic [7:0]  latch_data,
     output logic         latch_write,   // pulse: this CPU wrote a new command byte
@@ -236,6 +241,8 @@ module maincpu (
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
             ce_acc <= 11'd0;
+            cpu_ce <= 1'b0;
+        end else if (pause) begin
             cpu_ce <= 1'b0;
         end else if (ce_acc + CE_NUM >= CE_DEN) begin
             ce_acc <= 11'(ce_acc + CE_NUM - CE_DEN);
