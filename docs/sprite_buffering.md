@@ -55,10 +55,28 @@ Both positions boot and run. It is a runtime switch because an earlier attempt t
 this change stopped the core booting, and the cause was never established; a switch makes it an
 A/B on one bitstream rather than a rebuild per attempt.
 
-Measured on hardware: `FrameStart` visibly improves sprite rendering, but flicker and ghosting
-still occur. So the swap policy was part of the problem and is not the whole of it — defect 3
-(source records swapped mid-render, in `spriteram_dbuf`) is untouched by this switch and remains
-a candidate, as does anything in the per-sprite attribute decode.
+## What actually moved the needle: `$C00008` bit 0
+
+`FrameStart` gave a partial improvement. The large improvement came from something outside this
+file entirely — the `$C00008` bit-0 change (`Psikyo.sv`, OSD bit 53). That bit had been tied to
+`~vblank`; it is now constant 0.
+
+The connection is that bit 0 is not just a status flag the CPU reads, it is the gate the boot
+code spins on **before DMAing sprite RAM**. Tied to `~vblank`, every one of those DMAs was
+delayed by up to a full frame, so sprite data reached the renderer late and irregularly. That
+was mis-diagnosed here as a buffering defect for some time, and the prediction going in was the
+opposite of what happened: constant 0 was expected to make tearing *worse* by moving the DMA
+into mid-frame. It made it better.
+
+The lesson is that sprite artefacts were being attributed to the output buffer while the input
+side was being throttled. Flicker and ghosting still occur, so there is still something here —
+defect 3 (source records swapped mid-render, in `spriteram_dbuf`) is untouched by any of this,
+as is the per-sprite attribute decode — but the buffer is no longer the only suspect.
+
+Worth following up: `docs/phase1_memory_map.md` describes `$C00008` as carrying
+coin/service/vblank/**z80-nmi-status** inputs. If a bit there is a sound-CPU NMI handshake
+rather than a video flag, that would matter for sound, which has never been heard. Verify
+against MAME source before acting on it.
 
 ## The alternative: per-scanline line buffers
 
