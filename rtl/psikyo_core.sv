@@ -321,73 +321,31 @@ module psikyo_core #(
         else        frame_start_d <= frame_start;
     end
 
-    // Sprite rendering must not begin until the frame buffer has finished
-    // clearing the bank it is about to render into.
+    // NOTE: the frame-buffer swap sequencing experiment has been REVERTED.
     //
-    // sprite_frame_buffer's contract (see its header) is: pulse frame_swap,
-    // WAIT FOR swap_done, then start rendering. That wait was missing --
-    // frame_swap is pulsed from sp_frame_done (end of rendering) and the next
-    // render was kicked off directly by frame_start_d, with swap_done marked
-    // "diagnostic only, not consumed here". The clear walks all 71680 pixels
-    // at one per cycle (~0.83 ms at 85.9 MHz) and takes priority over the
-    // render engine's writes, which the buffer IGNORES while swap_busy. So
-    // whenever rendering finished late enough in a frame that the clear ran
-    // past the next frame boundary, that frame's sprites were partly written
-    // into a bank still being wiped: some dropped, and stale pixels left
-    // standing in the region the clear had not yet reached. On hardware that
-    // showed up as sprites hanging around on screen after they should have
-    // gone, intermittently and under sprite load -- which is exactly when
-    // rendering runs long.
+    // It moved frame_swap from sp_frame_done to the frame boundary and gated
+    // the render start on swap_done, to stop the display bank toggling
+    // mid-scanout. sprite_frame_buffer's header does ask for exactly that. But
+    // on hardware it stopped the game booting: the CPU ended up parked on the
+    // `bra.s *` at 0xB5E (the boot's deliberate die-here stub), with the video
+    // registers never programmed. Runtime A/B via the OSD render-disable bits
+    // ruled out the tilemap enable and the debug port borrowing as causes, and
+    // the pipelining fix (which took slack from -1.889 ns to -0.338 ns) did not
+    // help either -- so it is this sequencing change, most likely because
+    // holding the render start across frames leaves the engine rendering
+    // back-to-back and saturating the SDRAM arbiter that the CPU fetches
+    // through.
     //
-    // The start request is latched and held until the bank is actually ready,
-    // rather than dropped or issued early. bank_ready starts SET because both
-    // banks power up cleared (BRAM initialises to zero), so the very first
-    // frame is not stalled waiting for a swap that never happened.
-    //
-    // THE SWAP ITSELF ALSO HAD TO MOVE. It used to be driven straight from
-    // sp_frame_done, i.e. the banks toggled at whatever moment sprite
-    // rendering happened to finish -- typically PART-WAY DOWN THE VISIBLE
-    // FRAME. The compositor reads the display bank continuously during
-    // scanout, so a mid-frame toggle switches what it is reading half way
-    // through the picture: the top of the frame comes from one bank and the
-    // bottom from the other, and the bank that just became visible is the one
-    // about to be cleared. Delaying the render start (the first half of this
-    // fix) did not help, because the tear is in the SWAP, not the render.
-    //
-    // sprite_frame_buffer's header says to pulse frame_swap "once per frame
-    // (e.g. at vblank)" for exactly this reason. It is now driven from
-    // frame_start, so the just-rendered bank becomes visible at a frame
-    // boundary and stays visible for that whole frame.
-    //
-    // The swap is suppressed while rendering is still in flight: swapping
-    // then would yank the bank out from under the render engine mid-write.
-    // Skipping it simply repeats the previous frame, which is far less
-    // objectionable than a torn one, and cannot deadlock -- rendering
-    // finishes, and the next frame_start swaps as normal.
-    logic bank_ready, start_pending;
+    // Reverting to the known-good behaviour rather than leaving a
+    // non-booting core in the tree. The mid-scanout tear is real and still
+    // wants fixing, but it has to be done without starving the CPU -- likely
+    // by gating the engine's SDRAM requests rather than its start signal.
     logic sprite_frame_start;
     logic sp_swap_busy, sp_swap_done;
     logic sp_frame_busy, sp_frame_done;
 
-    wire want_frame     = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
-    wire sprite_swap_now = frame_start & ~sp_frame_busy;
+    assign sprite_frame_start = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
 
-    assign sprite_frame_start = start_pending & bank_ready
-                              & ~sp_frame_busy & ~sp_swap_busy;
-
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            bank_ready    <= 1'b1;   // power-up banks are already clear
-            start_pending <= 1'b0;
-        end else begin
-            if (sp_swap_done)       bank_ready    <= 1'b1;
-            if (want_frame)         start_pending <= 1'b1;
-            if (sprite_frame_start) begin
-                start_pending <= 1'b0;
-                bank_ready    <= 1'b0;
-            end
-        end
-    end
 
     logic         fb_we;
     logic [8:0]  fb_x;
@@ -416,7 +374,7 @@ module psikyo_core #(
 
     sprite_frame_buffer u_sprite_fb (
         .clk(clk), .reset(reset),
-        .frame_swap(sprite_swap_now), .swap_busy(sp_swap_busy), .swap_done(sp_swap_done),
+        .frame_swap(sp_frame_done), .swap_busy(sp_swap_busy), .swap_done(sp_swap_done),
         .fb_we(fb_we), .fb_x(fb_x), .fb_y(fb_y),
         .fb_pixel(fb_pixel), .fb_color(fb_color), .fb_priority(fb_priority),
         .rd_x(hcnt), .rd_y(vcnt_active),

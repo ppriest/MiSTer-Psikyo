@@ -111,6 +111,36 @@ module sprite_render_engine (
     sprite_zoom_lut u_zoom_lut_x (.raw_zoom(rd_zoom_x_raw), .dst_size(zl_dst_size_x), .dx(zl_dx_x));
     sprite_zoom_lut u_zoom_lut_y (.raw_zoom(rd_zoom_y_raw), .dst_size(zl_dst_size_y), .dx(zl_dx_y));
 
+    // ---- PIPELINE STAGE A: per-sprite constants, registered once per sprite ----
+    //
+    // Everything above is a pure function of sprite_record_fetch's rf_word_*
+    // outputs, which are latched per sprite and do not change again until the
+    // next one -- yet it used to be re-evaluated combinationally on every
+    // single cycle of the S_COL inner loop, in series with the sub-tile step
+    // and the screen-position arithmetic. That produced the design's worst
+    // timing path, from sprite_record_fetch.word_y all the way through to
+    // fb_pixel: 21.593 ns arrival against 19.704 ns required, -1.889 ns slack,
+    // with ~156 ns of total negative slack behind it on clk_sys.
+    //
+    // A design that misses timing does not fail predictably -- it fails
+    // according to how the fitter happened to place it, so a one-character RTL
+    // edit elsewhere could flip the whole core between booting and hanging.
+    // That made functional debugging untrustworthy, which is why this is worth
+    // fixing before anything else.
+    //
+    // Registering costs only latency, and only at points where the FSM is
+    // already waiting: stage A lands during S_RECORD_WAIT -> S_LUT_WAIT, and
+    // S_LUT_WAIT then blocks on an SDRAM round-trip anyway.
+    logic [3:0]        a_nx, a_ny;
+    logic              a_flip_x, a_flip_y;
+    logic [4:0]        a_color;
+    logic [1:0]        a_priority;
+    logic [16:0]       a_code;
+    logic signed [9:0] a_x_adj, a_y_adj;
+    logic [5:0]        a_zoom_x_t, a_zoom_y_t;
+    logic [4:0]        a_dst_size_x, a_dst_size_y;
+    logic [16:0]       a_dx_x, a_dx_y;
+
     // ---- sub-tile / row / column loop counters ----
     logic [3:0] ix, iy;
     logic [5:0] subtile_ordinal;
@@ -120,12 +150,27 @@ module sprite_render_engine (
     logic [16:0]       st_sub_code;
 
     sprite_subtile_step u_subtile_step (
-        .ix(ix), .iy(iy), .nx(rd_nx), .ny(rd_ny), .flip_x(rd_flip_x), .flip_y(rd_flip_y),
-        .x_adj(pt_x_adj), .y_adj(pt_y_adj),
-        .zoom_x_transformed(pt_zoom_x_transformed), .zoom_y_transformed(pt_zoom_y_transformed),
-        .subtile_ordinal(subtile_ordinal), .code_base(rd_code),
+        .ix(ix), .iy(iy), .nx(a_nx), .ny(a_ny), .flip_x(a_flip_x), .flip_y(a_flip_y),
+        .x_adj(a_x_adj), .y_adj(a_y_adj),
+        .zoom_x_transformed(a_zoom_x_t), .zoom_y_transformed(a_zoom_y_t),
+        .subtile_ordinal(subtile_ordinal), .code_base(a_code),
         .sub_x(st_sub_x), .sub_y(st_sub_y), .sub_code(st_sub_code)
     );
+
+    // ---- PIPELINE STAGE B: sub-tile origin, registered ----
+    // sub_x/sub_y change only when ix/iy/subtile_ordinal do, i.e. at sub-tile
+    // boundaries, and the FSM always passes through S_LUT_WAIT (an SDRAM
+    // round-trip) and S_ROW_WAIT before the S_COL loop reads them, so a
+    // free-running register is settled well before use.
+    //
+    // sub_code is deliberately NOT registered: it feeds lut_addr, which must be
+    // valid while lut_req is asserted in S_LUT_WAIT. It is only
+    // code_base + subtile_ordinal, so it is short anyway.
+    logic signed [9:0] st_sub_x_r, st_sub_y_r;
+    always_ff @(posedge clk) begin
+        st_sub_x_r <= st_sub_x;
+        st_sub_y_r <= st_sub_y;
+    end
 
     // ---- spritelut ROM address (trivial, no separate module -- masking
     // is a no-op for Phase 1's 256KB/131072-entry ROM, see phase1_video_engine.md) ----
@@ -143,10 +188,10 @@ module sprite_render_engine (
     // this deliberately rather than assuming it -- do not copy this
     // truncation pattern elsewhere without the same mod-16 justification.
     sprite_zoom_src_index u_zsi_y (
-        .col(dst_row), .dst_size(zl_dst_size_y[3:0]), .dx(zl_dx_y), .flip(rd_flip_y), .src_index(zsi_src_row)
+        .col(dst_row), .dst_size(a_dst_size_y[3:0]), .dx(a_dx_y), .flip(a_flip_y), .src_index(zsi_src_row)
     );
     sprite_zoom_src_index u_zsi_x (
-        .col(dst_col), .dst_size(zl_dst_size_x[3:0]), .dx(zl_dx_x), .flip(rd_flip_x), .src_index(zsi_src_col)
+        .col(dst_col), .dst_size(a_dst_size_x[3:0]), .dx(a_dx_x), .flip(a_flip_x), .src_index(zsi_src_col)
     );
 
     assign gfxrom_addr = {tile_code_r, zsi_src_row, 3'b000};
@@ -165,8 +210,8 @@ module sprite_render_engine (
     assign opaque = !((cur_pixel == 4'd0 && trans_pen0) || (cur_pixel == 4'd15 && trans_pen15));
 
     logic signed [10:0] screen_x_full, screen_y_full;
-    assign screen_x_full = $signed({st_sub_x[9], st_sub_x}) + $signed({7'd0, dst_col});
-    assign screen_y_full = $signed({st_sub_y[9], st_sub_y}) + $signed({7'd0, dst_row});
+    assign screen_x_full = $signed({st_sub_x_r[9], st_sub_x_r}) + $signed({7'd0, dst_col});
+    assign screen_y_full = $signed({st_sub_y_r[9], st_sub_y_r}) + $signed({7'd0, dst_row});
 
     logic onscreen;
     assign onscreen = (screen_x_full >= 0) && (screen_x_full < 11'sd320) &&
@@ -194,6 +239,12 @@ module sprite_render_engine (
             dst_row         <= 4'd0;
             dst_col         <= 4'd0;
             tile_code_r     <= 16'd0;
+            a_nx <= 4'd1; a_ny <= 4'd1; a_flip_x <= 1'b0; a_flip_y <= 1'b0;
+            a_color <= 5'd0; a_priority <= 2'd0; a_code <= 17'd0;
+            a_x_adj <= 10'sd0; a_y_adj <= 10'sd0;
+            a_zoom_x_t <= 6'd32; a_zoom_y_t <= 6'd32;
+            a_dst_size_x <= 5'd16; a_dst_size_y <= 5'd16;
+            a_dx_x <= 17'd0; a_dx_y <= 17'd0;
             for (int i = 0; i < 8; i++) row_bytes_r[i] <= 8'd0;
         end else begin
             dl_start   <= 1'b0;
@@ -225,6 +276,24 @@ module sprite_render_engine (
                         ix              <= 4'd0;
                         iy              <= 4'd0;
                         subtile_ordinal <= 6'd0;
+                        // stage A: capture everything derived from this
+                        // sprite's record, once, instead of re-deriving it
+                        // every cycle of the inner loop
+                        a_nx         <= rd_nx;
+                        a_ny         <= rd_ny;
+                        a_flip_x     <= rd_flip_x;
+                        a_flip_y     <= rd_flip_y;
+                        a_color      <= rd_color;
+                        a_priority   <= rd_priority_field;
+                        a_code       <= rd_code;
+                        a_x_adj      <= pt_x_adj;
+                        a_y_adj      <= pt_y_adj;
+                        a_zoom_x_t   <= pt_zoom_x_transformed;
+                        a_zoom_y_t   <= pt_zoom_y_transformed;
+                        a_dst_size_x <= zl_dst_size_x;
+                        a_dst_size_y <= zl_dst_size_y;
+                        a_dx_x       <= zl_dx_x;
+                        a_dx_y       <= zl_dx_y;
                         lut_req          <= 1'b1;
                         state             <= S_LUT_WAIT;
                     end
@@ -262,23 +331,23 @@ module sprite_render_engine (
                         fb_x         <= screen_x_full[8:0];
                         fb_y         <= screen_y_full[7:0];
                         fb_pixel    <= cur_pixel;
-                        fb_color    <= rd_color;
-                        fb_priority <= rd_priority_field;
+                        fb_color    <= a_color;
+                        fb_priority <= a_priority;
                     end
 
-                    if ({1'b0, dst_col} != zl_dst_size_x - 5'd1) begin
+                    if ({1'b0, dst_col} != a_dst_size_x - 5'd1) begin
                         dst_col <= dst_col + 4'd1;
                         state    <= S_COL;
-                    end else if ({1'b0, dst_row} != zl_dst_size_y - 5'd1) begin
+                    end else if ({1'b0, dst_row} != a_dst_size_y - 5'd1) begin
                         dst_row     <= dst_row + 4'd1;
                         gfxrom_req <= 1'b1;
                         state        <= S_ROW_WAIT;
-                    end else if (ix != rd_nx - 4'd1) begin
+                    end else if (ix != a_nx - 4'd1) begin
                         ix               <= ix + 4'd1;
                         subtile_ordinal <= subtile_ordinal + 6'd1;
                         lut_req          <= 1'b1;
                         state             <= S_LUT_WAIT;
-                    end else if (iy != rd_ny - 4'd1) begin
+                    end else if (iy != a_ny - 4'd1) begin
                         ix               <= 4'd0;
                         iy               <= iy + 4'd1;
                         subtile_ordinal <= subtile_ordinal + 6'd1;
