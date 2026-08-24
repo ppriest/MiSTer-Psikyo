@@ -1,12 +1,3 @@
-<!--
-    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    No ROM files included/distributed - dump your own. See ../Readme.md.
-
-    Shares gunbird's machine config/sound map but has only 3 sprite ROMs (not 4) and
-    repurposed DSW bits 20-22 (Blood Effects/Handicap/Debug instead of Lives/Bonus
-    Life). DIP status-bit positions (bit 16+) are a provisional placeholder, not yet
-    verified against real core RTL status[] wiring.
--->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Battle K-Road</name>
@@ -21,25 +12,15 @@
 	<region>Japan</region>
 
 	<rom index="0" zip="btlkroad.zip" md5="none">
-		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
-		     word-swap interleave scheme as gunbird. Actual 0x80000. -->
 		<interleave output="32">
 			<part name="4-u46.bin" crc="8a7a28b4" map="0012"/>
 			<part name="5-u39.bin" crc="933561fa" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
-		<!-- audiocpu: base 0x200000, reserved 0x040000 - LZ8420M (Z80-compatible)
-		     sound program ROM. Actual 0x20000. -->
 		<part name="3-u71.bin" crc="22411fab"/>
 		<part repeat="0x20000">FF</part>
 
-		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
-		     only THREE ROMs (see header note - one fewer than gunbird's four).
-		     Actual 0x600000. -->
-		<!-- Sprite ROMs are CONCATENATED at successive offsets, not interleaved with
-		     each other, so one single-part interleave block per file. All
-		     ROM_LOAD16_WORD_SWAP, hence map="12". -->
 		<interleave output="16">
 			<part name="u14.bin" crc="282d89c3" map="12"/>
 		</interleave>
@@ -51,50 +32,26 @@
 		</interleave>
 		<part repeat="0x200000">FF</part>
 
-		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
 		<interleave output="16">
 			<part name="u33.bin" crc="4c8577f1" map="12"/>
 		</interleave>
 
-		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="51d73682"/>
 
-		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - exact fit. -->
 		<part name="u64.bin" crc="0f33049f"/>
 
-		<!-- spritelut: base 0xDC0000, reserved 0x040000 - exact fit (also the last
-		     region - nothing follows). -->
 		<part name="u3.bin" crc="30d541ed"/>
 	</rom>
-	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
-	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
-	     coin/service folded into the P1_P2 low byte instead of a separate
-	     COIN port, and live tile banking from layer-control bit 10. -->
 	<rom index="1"><part>01</part></rom>
 
-
-	<!-- 6 buttons/player (fighting game - 3-punch/3-kick-style layout is typical
-	     for this era, but psikyo.cpp only labels them BUTTON1-6, no function names
-	     given in the driver itself, so generic labels are used here rather than
-	     asserting an unverified button-function mapping). -->
 	<buttons names="Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause" default="Y,B,A,X,L,R,Start,Select" count="6"/>
 
 	<switches default="FD,FF,00">
-		<!-- <switches> default bytes map to dip_cur bits: byte0 -> bits 7:0,
-		     byte1 -> status[31:24], byte2 -> status[39:32], fed into the upper half of
-		     the 32-bit DSW long at $C00004 with byte2 as the region jumper in its low
-		     byte. Defaults match MAME's PORT_DIPNAME defaults; region 0x00 = World; btlkroad encodes World as 0 where the others use 0x0f. -->
-		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
-		<!-- Flip Screen / Demo Sounds / Difficulty at the same bit positions as
-		     gunbird's DSW, unchanged (no PORT_MODIFY override for these fields,
-		     confirmed from source). -->
 		<dip name="Flip Screen" bits="0" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="1" ids="On,Off"/>
 		<dip name="Difficulty" bits="2,3" ids="Hardest,Hard,Easy,Normal"/>
 
-		<!-- bits 20-22 are REPURPOSED here vs. gunbird's Lives/Bonus Life  - 
-		     confirmed from source, not additive on top of the shooter's fields. -->
 		<dip name="Blood Effects" bits="4" ids="Off,On"/>
 		<dip name="Handicap Mode" bits="5" ids="On,Off"/>
 		<dip name="Use DSW 3 (Debug)" bits="6" ids="On,Off"/>
@@ -105,9 +62,6 @@
 		<dip name="Coin B" bits="12,13,14" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
 		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On (Free Play),Off"/>
 
-		<!-- Region: btlkroad's own encoding/default (Japan=0x0, World=0xf - the
-		     OPPOSITE polarity of gunbird's World=0xf/Japan-not-present scheme  - 
-		     confirmed from source, not assumed to mirror gunbird's. -->
 		<dip name="Region" bits="16,17,18,19" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
 	</switches>
 

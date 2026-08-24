@@ -1,10 +1,3 @@
-<!--
-    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    No ROM files included/distributed - dump your own. See ../../Readme.md.
-
-    MAME clone of gunbird. No Region dip (IPT_UNKNOWN on this set). See
-    "Gunbird (World).mra" for shared layout/DIP notes.
--->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Gunbird (Japan)</name>
@@ -19,19 +12,15 @@
 	<region>Japan</region>
 
 	<rom index="0" zip="gunbirdj.zip|gunbird.zip" md5="none">
-		<!-- maincpu: base 0x000000, reserved 0x200000 - this set's own revision
-		     (different CRCs than gunbird's or gunbirdk's). Actual 0x80000. -->
 		<interleave output="32">
 			<part name="1.u46" crc="474abd69" map="0012"/>
 			<part name="2.u39" crc="3e3e661f" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
-		<!-- audiocpu: base 0x200000, reserved 0x040000 - identical to gunbird's. -->
 		<part name="3.u71" crc="2168e4ba"/>
 		<part repeat="0x20000">FF</part>
 
-		<!-- sprites: base 0x240000, reserved 0x800000 - identical to gunbird's. -->
 		<interleave output="16">
 			<part name="u14.bin" crc="7d7e8a00" map="12"/>
 		</interleave>
@@ -46,24 +35,18 @@
 		</interleave>
 		<part repeat="0x100000">FF</part>
 
-		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to gunbird's. -->
 		<part name="u33.bin" crc="54494e6b"/>
 
-		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to gunbird's. -->
 		<part name="u56.bin" crc="9e07104d"/>
 
-		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - identical to gunbird's. -->
 		<part name="u64.bin" crc="e187ed4f"/>
 
-		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to gunbird's. -->
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
 	<switches default="FF,FF,FD,FF">
-		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra). No Region byte  - 
-		     gunbirdj's Region field is IPT_UNKNOWN, unlike the parent's. -->
 
 		<dip name="Flip Screen" bits="0" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="1" ids="On,Off"/>

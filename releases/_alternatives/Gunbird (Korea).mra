@@ -1,11 +1,3 @@
-<!--
-    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    No ROM files included/distributed - dump your own. See ../../Readme.md.
-
-    MAME clone of gunbird, with a larger maincpu ROM (0x100000 vs 0x80000) and its own
-    audiocpu revision. No Region dip (shares gunbirdj's IPT_UNKNOWN ports). See
-    "Gunbird (World).mra" for shared layout/DIP notes.
--->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Gunbird (Korea)</name>
@@ -20,21 +12,15 @@
 	<region>Korea</region>
 
 	<rom index="0" zip="gunbirdk.zip|gunbird.zip" md5="none">
-		<!-- maincpu: base 0x000000, reserved 0x200000 - two 0x80000 ROMs (twice
-		     the size of the parent gunbird's) word-swap-interleaved. Actual
-		     0x100000. -->
 		<interleave output="32">
 			<part name="1k.u46" crc="745cee52" map="0012"/>
 			<part name="2k.u39" crc="669632fb" map="1200"/>
 		</interleave>
 		<part repeat="0x100000">FF</part>
 
-		<!-- audiocpu: base 0x200000, reserved 0x040000 - this set's own sound ROM
-		     revision (different CRC than gunbird's). Actual 0x20000. -->
 		<part name="k3.u71" crc="11994055"/>
 		<part repeat="0x20000">FF</part>
 
-		<!-- sprites: base 0x240000, reserved 0x800000 - identical to gunbird's. -->
 		<interleave output="16">
 			<part name="u14.bin" crc="7d7e8a00" map="12"/>
 		</interleave>
@@ -49,24 +35,18 @@
 		</interleave>
 		<part repeat="0x100000">FF</part>
 
-		<!-- tiles: base 0xA40000, reserved 0x200000 - identical to gunbird's. -->
 		<part name="u33.bin" crc="54494e6b"/>
 
-		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - identical to gunbird's. -->
 		<part name="u56.bin" crc="9e07104d"/>
 
-		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - identical to gunbird's. -->
 		<part name="u64.bin" crc="e187ed4f"/>
 
-		<!-- spritelut: base 0xDC0000, reserved 0x040000 - identical to gunbird's. -->
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
 	<switches default="FF,FF,FD,FF">
-		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra). No Region byte  - 
-		     gunbirdk shares gunbirdj's ports, whose Region field is IPT_UNKNOWN. -->
 
 		<dip name="Flip Screen" bits="0" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="1" ids="On,Off"/>

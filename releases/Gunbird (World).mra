@@ -1,10 +1,3 @@
-<!--
-    Mister-Psikyo - MiSTer FPGA core for the original Psikyo shooter arcade hardware.
-    No ROM files included/distributed - dump your own. See ../Readme.md.
-
-    DIP status-bit positions (bit 16+) are a provisional placeholder, not yet verified
-    against real core RTL status[] wiring.
--->
 <misterromdescription>
 	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
 	<name>Gunbird (World)</name>
@@ -19,26 +12,15 @@
 	<region>World</region>
 
 	<rom index="0" zip="gunbird.zip" md5="none">
-		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
-		     word-swap interleave scheme as the sngkace family. Actual 0x80000. -->
 		<interleave output="32">
 			<part name="4.u46" crc="b78ec99d" map="0012"/>
 			<part name="5.u39" crc="925f095d" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
-		<!-- audiocpu: base 0x200000, reserved 0x040000 - LZ8420M (Z80-compatible)
-		     sound program ROM. Actual 0x20000. -->
 		<part name="3.u71" crc="2168e4ba"/>
 		<part repeat="0x20000">FF</part>
 
-		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
-		     four ROMs concatenated in ROM_START's own order (not interleaved with
-		     each other - each occupies its own contiguous span). Actual 0x700000,
-		     the largest of any Phase 1 set (this region's reservation size). -->
-		<!-- Sprite ROMs are CONCATENATED at successive offsets, not interleaved with
-		     each other, so one single-part interleave block per file. All
-		     ROM_LOAD16_WORD_SWAP, hence map="12". -->
 		<interleave output="16">
 			<part name="u14.bin" crc="7d7e8a00" map="12"/>
 		</interleave>
@@ -53,45 +35,22 @@
 		</interleave>
 		<part repeat="0x100000">FF</part>
 
-		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
 		<interleave output="16">
 			<part name="u33.bin" crc="54494e6b" map="12"/>
 		</interleave>
 
-		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="9e07104d"/>
 
-		<!-- ymsnd:adpcmb: base 0xD40000, reserved 0x080000 - YM2610 ADPCM-B
-		     (delta-t) samples - gunbird has this, samuraia/sngkace don't. Exact
-		     fit, no padding needed. -->
 		<part name="u64.bin" crc="e187ed4f"/>
 
-		<!-- spritelut: base 0xDC0000, reserved 0x040000 - exact fit (also the last
-		     region - nothing follows). -->
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
-	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
-	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
-	     coin/service folded into the P1_P2 low byte instead of a separate
-	     COIN port, and live tile banking from layer-control bit 10. -->
 	<rom index="1"><part>01</part></rom>
 
-
-	<!-- 3 buttons/player (shot/bomb/special), 8-way joystick - see
-	     INPUT_PORTS_START(gunbird)'s "P1_P2" port. -->
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
 	<switches default="FD,FF,0F">
-		<!-- <switches> default bytes map to dip_cur bits: byte0 -> bits 7:0,
-		     byte1 -> status[31:24], byte2 -> status[39:32], fed into the upper half of
-		     the 32-bit DSW long at $C00004 with byte2 as the region jumper in its low
-		     byte. Defaults match MAME's PORT_DIPNAME defaults; region 0x0F = World; the boot polls $C00004 bit 7 and spins until it
-		     clears, so a 0xFF byte here hangs the game. -->
-		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
-		<!-- DSW field is byte-for-byte identical to samuraia/sngkace's (same
-		     masks, same defaults, confirmed directly from source) except for the
-		     Region field's encoding below. -->
 		<dip name="Flip Screen" bits="0" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="1" ids="On,Off"/>
 		<dip name="Difficulty" bits="2,3" ids="Hardest,Hard,Easy,Normal"/>
@@ -103,9 +62,6 @@
 		<dip name="Coin B" bits="12,13,14" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
 		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On (Free Play),Off"/>
 
-		<!-- Region: real PORT_CONFNAME, same one-bit-cleared-per-region scheme as
-		     Samurai Aces but only 4 bits wide and a different value set  - 
-		     confirmed from source, not assumed to match samuraia's encoding. -->
 		<dip name="Region" bits="16,17,18,19" ids="Taiwan,Hong Kong,Korea,USA,World" values="0x7,0xb,0xd,0xe,0xf"/>
 	</switches>
 
