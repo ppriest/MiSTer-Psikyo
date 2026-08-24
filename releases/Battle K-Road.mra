@@ -23,9 +23,9 @@
 	<rom index="0" zip="btlkroad.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
 		     word-swap interleave scheme as gunbird. Actual 0x80000. -->
-		<interleave output="16">
-			<part name="4-u46.bin" crc="8a7a28b4" map="01"/>
-			<part name="5-u39.bin" crc="933561fa" map="10"/>
+		<interleave output="32">
+			<part name="4-u46.bin" crc="8a7a28b4" map="0012"/>
+			<part name="5-u39.bin" crc="933561fa" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -37,13 +37,26 @@
 		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics,
 		     only THREE ROMs (see header note - one fewer than gunbird's four).
 		     Actual 0x600000. -->
-		<part name="u14.bin" crc="282d89c3"/>
-		<part name="u24.bin" crc="bbe9d3d1"/>
-		<part name="u15.bin" crc="d4d1b07c"/>
+		<!-- 2026-08-24: these were all inside ONE <interleave output="16">, which
+		     BYTE-INTERLEAVES the four files together. MAME loads them at successive
+		     offsets (0x000000/0x200000/0x400000/0x600000), i.e. CONCATENATED, each
+		     one individually ROM_LOAD16_WORD_SWAP. One block per file, same idiom as
+		     the tiles region. -->
+		<interleave output="16">
+			<part name="u14.bin" crc="282d89c3" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u24.bin" crc="bbe9d3d1" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u15.bin" crc="d4d1b07c" map="12"/>
+		</interleave>
 		<part repeat="0x200000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
-		<part name="u33.bin" crc="4c8577f1"/>
+		<interleave output="16">
+			<part name="u33.bin" crc="4c8577f1" map="12"/>
+		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="51d73682"/>
@@ -55,6 +68,12 @@
 		     region - nothing follows). -->
 		<part name="u3.bin" crc="30d541ed"/>
 	</rom>
+	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
+	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
+	     coin/service folded into the P1_P2 low byte instead of a separate
+	     COIN port, and live tile banking from layer-control bit 10. -->
+	<rom index="1"><part>01</part></rom>
+
 
 	<!-- 6 buttons/player (fighting game - 3-punch/3-kick-style layout is typical
 	     for this era, but psikyo.cpp only labels them BUTTON1-6, no function names
@@ -62,7 +81,16 @@
 	     asserting an unverified button-function mapping). -->
 	<buttons names="Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause" default="Y,B,A,X,L,R,Start,Select" count="6"/>
 
-	<switches default="FF,FF,FD,FF,00">
+	<switches default="FD,FF,00">
+		<!-- 2026-08-24: was a five-byte default written on the assumption that
+		     <switches> bytes start at status[0]. They start at status[16]:
+		     byte0 -> status[23:16] (Flip/Demo/Difficulty/Lives/Bonus/Service),
+		     byte1 -> status[31:24] (coin settings),
+		     byte2 -> status[39:32] (the DSW's low byte = region jumper).
+		     Psikyo.sv feeds these into the 32-bit DSW long at $C00004 as
+		     {status[31:16], 8'hFF, status[39:32]}. Defaults now match MAME's own
+		     PORT_DIPNAME defaults: Demo Sounds On, Difficulty Normal, 3 Lives,
+		     Bonus 400K, Service Mode OFF (bit 23 = 1), 1C 1C; region 0x00 = World (btlkroad encodes World as 0, NOT 0x0f like the others). -->
 		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
 		<!-- Flip Screen / Demo Sounds / Difficulty at the same bit positions as

@@ -101,12 +101,21 @@
 		     the file raw here left the whole sprites region byte-pair-swapped
 		     relative to what the decoder expects - at 4bpp each byte is 2 pixels,
 		     so every group of 4 pixels in a tile row came out transposed, which on
-		     real hardware looked like structured-but-scrambled sprites. map="21"
-		     replicates the WORD_SWAP (digits are output byte lanes, value = which
-		     input byte feeds that lane, so 21 = swapped pair; confirmed against
-		     working MiSTer MRAs using the same idiom at output="64"). -->
+		     real hardware looked like structured-but-scrambled sprites.
+		     2026-08-23: map="21" was the wrong digit form and has been changed to
+		     map="12". The maincpu block above pinned the convention down against
+		     MAME's disassembly: the ASCENDING form ("0012"/"1200") is what
+		     produces the byte swap that ROM_LOAD*_WORD_SWAP implies, while the
+		     descending form ("0021"/"2100") leaves the file order alone. These
+		     gfx parts are ROM_LOAD16_WORD_SWAP in MAME, so they need the swap
+		     too, and map="21" was silently not applying one. On hardware that
+		     showed as alternate pixel PAIRS transposed (at 4bpp one byte is two
+		     pixels, so swapping bytes exchanges pixel pairs) - sprites were
+		     recognisable but visibly scrambled. map="12" renders correctly.
+		     Note the decoder itself was never at fault: rtl/video/tile_row_decode.sv
+		     correctly puts the high nibble in the left pixel per packed_msb. -->
 		<interleave output="16">
-			<part name="u14.bin" crc="00a546cb" map="21"/>
+			<part name="u14.bin" crc="00a546cb" map="12"/>
 		</interleave>
 		<part repeat="0x600000">FF</part>
 
@@ -114,15 +123,16 @@
 		     ROMs concatenated (not interleaved with each other). Exact fit, no
 		     padding needed.
 		     Both are ROM_LOAD16_WORD_SWAP in MAME, same reasoning as the sprites
-		     region above, so each gets its own map="21" interleave. They are
+		     region above, so each gets its own map="12" interleave (was "21";
+		     see the sprites block for why that form did not swap). They are
 		     CONCATENATED, not interleaved with each other (u34 at region 0x000000,
 		     u35 at 0x100000), hence two separate single-part blocks rather than one
 		     two-part block. -->
 		<interleave output="16">
-			<part name="u34.bin" crc="e6a75bd8" map="21"/>
+			<part name="u34.bin" crc="e6a75bd8" map="12"/>
 		</interleave>
 		<interleave output="16">
-			<part name="u35.bin" crc="c4ca0164" map="21"/>
+			<part name="u35.bin" crc="c4ca0164" map="12"/>
 		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - YM2610 ADPCM-A sample
@@ -139,16 +149,42 @@
 		     follows). -->
 		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
+	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
+	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
+	     coin/service folded into the P1_P2 low byte instead of a separate
+	     COIN port, and live tile banking from layer-control bit 10. -->
+	<rom index="1"><part>00</part></rom>
+
 
 	<!-- Player controls / coin / start are handled through the standard MiSTer
 	     joystick/coin input framework, not DIP switches - see psikyo.cpp
 	     INPUT_PORTS_START(samuraia)'s "P1_P2"/"COIN" ports. 3 buttons/player. -->
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
-	<switches default="FF,FF,FD,FF,FF">
-		<!-- byte0 (status bits 0-7), byte1 (bits 8-15): reserved for standard OSD
-		     options, not game DIPs - psikyo.cpp's own DSW word leaves these bits
-		     unused ("these depends by the games", i.e. no function on this title). -->
+	<switches default="FD,FF,FF">
+		<!-- The <switches> bytes start at status[16]: byte0 -> status[23:16],
+		     byte1 -> status[31:24]. Psikyo.sv feeds those straight into the upper
+		     half of the 32-bit DSW long the CPU reads at $C00004, which is where
+		     MAME puts every DIP (its lower 16 bits are IP_ACTIVE_LOW/unused).
+		     The <dip bits="..."> values below are therefore MAME's own bit
+		     numbers, unmodified.
+
+		     Defaults match MAME's PORT_DIPNAME defaults exactly:
+		       byte0 = FD -> Flip Off, Demo Sounds ON (bit17=0), Difficulty
+		               Normal, 3 Lives, Bonus 400K, Service Mode OFF (bit23=1)
+		       byte1 = FF -> Coin Slot Shared, Coin A 1C 1C, Coin B 1C 1C,
+		               2C Start/1C Continue Off
+		       byte2 = FF -> Region World (status[39:32] feeds the DSW's LOW
+		               byte, which samuraia uses as its region jumper:
+		               ff=World ef=USA and Canada df=Korea bf=Hong Kong
+		               7f=Taiwan)
+
+		     This was "FF,FF,FD,FF,FF" (five bytes), written on the assumption
+		     that the bytes began at status[0] with two reserved ones. They do
+		     not, so the 0xFD landed on status[39:32] and the real DIP bytes came
+		     out as FF,FF - which forced Demo Sounds Off and, combined with the
+		     separate status[47:16] offset bug in Psikyo.sv, left Service Mode
+		     unreachable from the OSD. -->
 
 		<dip name="Flip Screen" bits="16" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="17" ids="On,Off"/>

@@ -1,0 +1,35 @@
+Hardware VRAM dump vs MAME, Samurai Aces
+================================================================
+
+layer 0  (hardware: 392 non-zero, 131 distinct)
+   vs l0_mame          BE : exact 3704/4096 ( 90.4%)   hw-byteswapped 3704/4096
+   vs l0_mame          LE : exact 3704/4096 ( 90.4%)   hw-byteswapped 3704/4096
+   vs l0_mame-title    BE : exact 3648/4096 ( 89.1%)   hw-byteswapped 3648/4096
+   vs l0_mame-title    LE : exact 3648/4096 ( 89.1%)   hw-byteswapped 3648/4096
+
+layer 1  (hardware: 267 non-zero, 227 distinct)
+   vs l1_mame          BE : exact 3648/4096 ( 89.1%)   hw-byteswapped 3648/4096
+   vs l1_mame          LE : exact 3648/4096 ( 89.1%)   hw-byteswapped 3648/4096
+   vs l1_mame-title    BE : exact 2662/4096 ( 65.0%)   hw-byteswapped 2662/4096
+   vs l1_mame-title    LE : exact 2662/4096 ( 65.0%)   hw-byteswapped 2662/4096
+
+
+NON-ZERO CELL POSITIONS (where in VRAM the screen content sits)
+================================================================
+hw_l0            n= 392  addr 0000..01BB  rows(/64)=0..6 cols=0..59
+hw_l1            n= 267  addr 0000..01BF  rows(/64)=0..6 cols=0..63
+mame_l0_logo     n= 364  addr 0000..01B9  rows(/64)=0..6 cols=0..57
+mame_l1_logo     n= 364  addr 0000..01B9  rows(/64)=0..6 cols=0..57
+mame_l0_title    n= 448  addr 0000..01BF  rows(/64)=0..6 cols=0..63
+mame_l1_title    n=1251  addr 0014..0DEB  rows(/64)=0..55 cols=0..57
+
+POSITION OVERLAP (hardware vs MAME) -- same screen => same footprint
+================================================================
+  hw_l0   vs mame_l0_logo    overlap  364  jaccard 0.929
+  hw_l0   vs mame_l1_logo    overlap  364  jaccard 0.929
+  hw_l0   vs mame_l0_title   overlap  392  jaccard 0.875
+  hw_l0   vs mame_l1_title   overlap   84  jaccard 0.054
+  hw_l1   vs mame_l0_logo    overlap  183  jaccard 0.408
+  hw_l1   vs mame_l1_logo    overlap  183  jaccard 0.408
+  hw_l1   vs mame_l0_title   overlap  267  jaccard 0.596
+  hw_l1   vs mame_l1_title   overlap   84  jaccard 0.059

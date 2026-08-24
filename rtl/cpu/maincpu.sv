@@ -128,9 +128,7 @@
 //      win and the implicit weak pull-up supply the idle-high default,
 //      the same open-collector behavior the core's own driver expects.
 
-module maincpu #(
-    parameter bit BOARD_GUNBIRD = 1'b0
-) (
+module maincpu (
     input  logic clk,
     input  logic reset,
 
@@ -180,6 +178,13 @@ module maincpu #(
     input  logic [31:0] p1p2_in,
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,   // sngkace board only; ignored on gunbird
+
+    // Board variant, RUNTIME (from the .mra's <rom index="1"> mod byte), not a
+    // compile-time parameter: one .rbf has to serve every game in the family,
+    // and MiSTer selects the game from the .mra. sngkace has a separate
+    // coin/service port at 0xC00008; gunbird/btlkroad fold those bits into the
+    // P1_P2 port's low byte instead and have nothing at 0xC00008.
+    input  logic         board_gunbird,
 
     // sound latch, to the sound CPU side
     output logic [7:0]  latch_data,
@@ -292,7 +297,18 @@ module maincpu #(
 
     assign is_p1p2       = (addr24 >= 24'hC00000) && (addr24 <= 24'hC00003);
     assign is_dsw        = (addr24 >= 24'hC00004) && (addr24 <= 24'hC00007);
-    assign is_coin       = !BOARD_GUNBIRD && (addr24 >= 24'hC00008) && (addr24 <= 24'hC0000B);
+    // $C00008 is decoded on BOTH boards. psikyo.cpp maps 0xc00000-0xc0000b to
+    // the input reader for sngkace and gunbird alike -- three longs: P1_P2, DSW,
+    // COIN. What differs between the boards is only WHICH BITS the COIN long
+    // carries: sngkace puts coin/service/z80-nmi there, gunbird/btlkroad move
+    // those into the P1_P2 low byte. Bit 0 -- the status bit the boot polls
+    // before its sprite DMA -- is present either way.
+    //
+    // This was briefly gated with !board_gunbird, which left gunbird reading
+    // open bus (0xFFFF) at $C00008. Bit 0 could then never clear and the game
+    // hung in the poll loop at 0x4CA..0x4D8, the exact analogue of samuraia's
+    // loop at 0x436.
+    assign is_coin       = (addr24 >= 24'hC00008) && (addr24 <= 24'hC0000B);
     assign is_soundlatch = (addr24 == 24'hC00013);
 
     // word-address translation (drop bit 0 -- every region is word-granular)

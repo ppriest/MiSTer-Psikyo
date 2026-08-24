@@ -72,6 +72,7 @@ module psikyo_top #(
     input  logic [31:0] p1p2_in,
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
+    input  logic         board_gunbird,
 
     // Mirrors MAME's psikyo_state::z80_nmi_r() -- see
     // rtl/sound/sound_cpu_sngkace.sv's own comment for the full derivation.
@@ -100,6 +101,8 @@ module psikyo_top #(
     output logic [14:0] rgb,
 
     // ---- debug tracer, live-controlled from the OSD ----
+    input  logic         dbg_overlay,
+    input  logic [2:0]  dbg_render_dis,
     input  logic [1:0]  dbg_src,
     input  logic [3:0]  dbg_window,
     input  logic         dbg_rearm,
@@ -181,11 +184,11 @@ module psikyo_top #(
         .sp_gfxrom_valid(sp_gfxrom_valid), .sp_gfxrom_data(sp_gfxrom_data),
         .sp_lut_req(sp_lut_req), .sp_lut_addr(sp_lut_addr),
         .sp_lut_valid(sp_lut_valid), .sp_lut_data(sp_lut_data),
-        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
+        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird),
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb),
-        .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
         .dbg_pixel(dbg_pixel)
     );
 

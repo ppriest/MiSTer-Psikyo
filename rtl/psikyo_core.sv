@@ -34,14 +34,13 @@
 //      MAME's own early-return-from-draw when the control word's disable
 //      bit is set -- docs/phase1_video_engine.md's "sprites-disable...
 //      caller's responsibility" note).
-// sprite_render_engine.frame_done then drives sprite_frame_buffer.frame_swap
-// directly -- the OUTPUT double buffer swaps once rendering finishes, not
-// at frame_start (the write-role bank doesn't hold this frame's sprites
-// until rendering actually completes). Whether clear+render always finishes
-// before the next frame_start is a real timing-budget question (the clear
-// alone is 71680 cycles, sprite_frame_buffer.sv's own header) -- not proven
-// here, same "prove wiring first, measure the budget separately" approach
-// already used for the SDRAM contention numbers in docs/ROADMAP.md.
+// sprite_frame_buffer.frame_swap is driven from frame_start (suppressed
+// while rendering is still busy), NOT from sprite_render_engine.frame_done.
+// Swapping on frame_done toggles the display bank at whatever point in the
+// frame rendering happens to end, which is usually mid-scanout -- the
+// compositor then reads the top of the picture from one bank and the bottom
+// from the other. Swapping at the frame boundary keeps a finished bank
+// visible for a whole frame. See the sequencing block further down.
 module psikyo_core #(
     parameter bit BOARD_GUNBIRD = 1'b0,
     parameter bit DEBUG_TRACER  = 1'b1
@@ -81,6 +80,9 @@ module psikyo_core #(
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
 
+    // Board variant, runtime (from the .mra mod byte) -- see maincpu.sv.
+    input  logic         board_gunbird,
+
     // Sound latch handshake -- to a sound CPU wrapper, not instantiated here.
     output logic [7:0]  latch_data,
     output logic         latch_write,
@@ -97,6 +99,12 @@ module psikyo_core #(
     // ---- debug tracer (rtl/debug/debug_tracer.sv) ----
     // Live-controlled from the OSD; see that module's header. Compiled out
     // entirely when DEBUG_TRACER = 0.
+    input  logic         dbg_overlay,  // overlay is being displayed (frees VRAM read ports)
+    // Force-disable rendering per layer, from the OSD. Purely a debugging aid:
+    // it isolates which pipeline actually drew a given thing on screen, which
+    // is otherwise guesswork once sprites and tilemaps overlap.
+    //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
+    input  logic [2:0]  dbg_render_dis,
     input  logic [1:0]  dbg_src,      // which signal group to record
     input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
     input  logic         dbg_rearm,    // any change restarts capture
@@ -142,7 +150,7 @@ module psikyo_core #(
     logic         workram_cpu_wel, workram_cpu_weh;
     logic [15:0] workram_cpu_wdata, workram_cpu_rdata;
 
-    maincpu #(.BOARD_GUNBIRD(BOARD_GUNBIRD)) u_cpu (
+    maincpu u_cpu (
         .clk(clk), .reset(reset),
         .rom_req(cpu_rom_req), .rom_addr(cpu_rom_addr), .rom_valid(cpu_rom_valid), .rom_data(cpu_rom_data),
         .spriteram_addr(spr_cpu_addr), .spriteram_wel(spr_cpu_wel), .spriteram_weh(spr_cpu_weh),
@@ -157,7 +165,7 @@ module psikyo_core #(
         .vregs_wdata(vregs_cpu_wdata), .vregs_rdata(vregs_cpu_rdata),
         .workram_addr(workram_cpu_addr), .workram_wel(workram_cpu_wel), .workram_weh(workram_cpu_weh),
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
-        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
+        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird),
         .latch_data(latch_data), .latch_write(latch_write),
         .vblank(vblank)
     );
@@ -184,20 +192,50 @@ module psikyo_core #(
     // ---- tilemap VRAM: CPU write, per-layer tilemap engine read ----
     logic [11:0] l0_vram_addr;
     logic [15:0] l0_vram_data;
+    logic [11:0] l1_vram_addr;
+    logic [15:0] l1_vram_data;
+
+    // ---- VRAM debug dump: borrow the tilemap engines' read ports ----
+    // When the debug overlay is on it replaces the whole picture, so tilemap
+    // rendering is already discarded that frame -- which makes the layer
+    // engines' VRAM read ports free to reuse. Indexing by {vcnt[3:0],hcnt[7:0]}
+    // walks all 4096 words of a layer's VRAM across 16 scanlines, so ONE
+    // screenshot carries both layers' complete tilemap RAM for diffing against
+    // a MAME dump. A shadow BRAM would also work but costs 16KB and only ever
+    // sees CPU writes; this sees the memory itself.
+    //
+    // Nothing here touches the tilemap RTL: the engines still drive their own
+    // addresses whenever the overlay is off, which is every normal frame.
+    logic [11:0] vram0_b_addr, vram1_b_addr;
+    logic [15:0] vram0_b_rdata, vram1_b_rdata;
+
+    wire        vram_dump_active = DEBUG_TRACER && dbg_overlay && (vcnt < 9'd32);
+    // vregs dump occupies rows 32..47: words 0x000-0xFFF of the video-register
+    // region, which covers BOTH rowscroll tables (0x000-0x1FF) and the six
+    // control/scroll registers (0x201..0x20B).
+    logic [15:0] vregs_dump_data;
+    wire         vregs_dump_active = DEBUG_TRACER && dbg_overlay
+                                   && (vcnt >= 9'd32) && (vcnt < 9'd48);
+    wire [12:0] vregs_dump_addr   = {1'b0, vcnt[3:0], hcnt[7:0]};
+    wire [11:0] vram_dump_addr   = {vcnt[3:0], hcnt[7:0]};
+
+    assign vram0_b_addr = vram_dump_active ? vram_dump_addr : l0_vram_addr;
+    assign vram1_b_addr = vram_dump_active ? vram_dump_addr : l1_vram_addr;
+    assign l0_vram_data = vram0_b_rdata;
+    assign l1_vram_data = vram1_b_rdata;
+
     dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_vram0 (
         .clk(clk),
         .a_addr(vram0_cpu_addr), .a_wel(vram0_cpu_wel), .a_weh(vram0_cpu_weh),
         .a_wdata(vram0_cpu_wdata), .a_rdata(vram0_cpu_rdata),
-        .b_addr(l0_vram_addr), .b_rdata(l0_vram_data)
+        .b_addr(vram0_b_addr), .b_rdata(vram0_b_rdata)
     );
 
-    logic [11:0] l1_vram_addr;
-    logic [15:0] l1_vram_data;
     dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_vram1 (
         .clk(clk),
         .a_addr(vram1_cpu_addr), .a_wel(vram1_cpu_wel), .a_weh(vram1_cpu_weh),
         .a_wdata(vram1_cpu_wdata), .a_rdata(vram1_cpu_rdata),
-        .b_addr(l1_vram_addr), .b_rdata(l1_vram_data)
+        .b_addr(vram1_b_addr), .b_rdata(vram1_b_rdata)
     );
 
     // ---- vregs: CPU write, decoded per-layer control + row-scroll reads ----
@@ -214,7 +252,7 @@ module psikyo_core #(
 
     // BOARD_GUNBIRD selects gunbird/btlkroad, which are exactly the Phase 1
     // boards with MAME's m_ka302c_banking (s1945n is the third, Phase 2).
-    vreg_decode #(.KA302C_BANKING(BOARD_GUNBIRD)) u_vregs (
+    vreg_decode u_vregs (
         .clk(clk), .reset(reset),
         .cpu_addr(vregs_cpu_addr), .cpu_wel(vregs_cpu_wel), .cpu_weh(vregs_cpu_weh),
         .cpu_wdata(vregs_cpu_wdata), .cpu_rdata(vregs_cpu_rdata),
@@ -227,18 +265,20 @@ module psikyo_core #(
         .layer1_mode(l1_mode), .layer1_base_x_scroll(l1_base_x), .layer1_base_y_scroll(l1_base_y),
         .layer1_bank(l1_bank), .layer1_enable(l1_enable), .layer1_opaque(l1_opaque),
         .layer1_transpen_sel(l1_transpen_sel),
-        .layer1_rowscroll_enable(l1_rs_en), .layer1_rowscroll_pertile(l1_rs_pertile)
+        .layer1_rowscroll_enable(l1_rs_en), .layer1_rowscroll_pertile(l1_rs_pertile),
+        .ka302c_banking(board_gunbird), .dbg_dump_en(vregs_dump_active), .dbg_dump_addr(vregs_dump_addr),
+        .dbg_dump_data(vregs_dump_data)
     );
 
     // ---- tilemap engines ----
     logic         l0_pixel_valid, l1_pixel_valid;
     logic [3:0]  l0_pixel_index, l1_pixel_index;
     logic [6:0]  l0_pixel_color, l1_pixel_color;
-    logic         l0_fetch_overrun, l1_fetch_overrun; // diagnostic only, not consumed here
+    logic         l0_fetch_overrun, l1_fetch_overrun; // echoed in the debug overlay control band
 
     tilemap_line_engine #(.LAYER(0)) u_layer0 (
         .clk(clk), .reset(reset),
-        .vcnt(vcnt_active), .h_active(h_active), .line_start(line_start),
+        .vcnt(vcnt_active), .ce_pix(ce_pix), .h_active(h_active), .line_start(line_start),
         .mode(l0_mode), .base_x_scroll(l0_base_x), .base_y_scroll(l0_base_y), .bank(l0_bank),
         .rowscroll_enable(l0_rs_en), .rowscroll_pertile(l0_rs_pertile),
         .rowscroll_addr(l0_rowscroll_addr), .rowscroll_data(l0_rowscroll_data),
@@ -251,7 +291,7 @@ module psikyo_core #(
 
     tilemap_line_engine #(.LAYER(1)) u_layer1 (
         .clk(clk), .reset(reset),
-        .vcnt(vcnt_active), .h_active(h_active), .line_start(line_start),
+        .vcnt(vcnt_active), .ce_pix(ce_pix), .h_active(h_active), .line_start(line_start),
         .mode(l1_mode), .base_x_scroll(l1_base_x), .base_y_scroll(l1_base_y), .bank(l1_bank),
         .rowscroll_enable(l1_rs_en), .rowscroll_pertile(l1_rs_pertile),
         .rowscroll_addr(l1_rowscroll_addr), .rowscroll_data(l1_rowscroll_data),
@@ -284,10 +324,32 @@ module psikyo_core #(
         else        frame_start_d <= frame_start;
     end
 
+    // NOTE: the frame-buffer swap sequencing experiment has been REVERTED.
+    //
+    // It moved frame_swap from sp_frame_done to the frame boundary and gated
+    // the render start on swap_done, to stop the display bank toggling
+    // mid-scanout. sprite_frame_buffer's header does ask for exactly that. But
+    // on hardware it stopped the game booting: the CPU ended up parked on the
+    // `bra.s *` at 0xB5E (the boot's deliberate die-here stub), with the video
+    // registers never programmed. Runtime A/B via the OSD render-disable bits
+    // ruled out the tilemap enable and the debug port borrowing as causes, and
+    // the pipelining fix (which took slack from -1.889 ns to -0.338 ns) did not
+    // help either -- so it is this sequencing change, most likely because
+    // holding the render start across frames leaves the engine rendering
+    // back-to-back and saturating the SDRAM arbiter that the CPU fetches
+    // through.
+    //
+    // Reverting to the known-good behaviour rather than leaving a
+    // non-booting core in the tree. The mid-scanout tear is real and still
+    // wants fixing, but it has to be done without starving the CPU -- likely
+    // by gating the engine's SDRAM requests rather than its start signal.
     logic sprite_frame_start;
-    assign sprite_frame_start = frame_start_d & ~sprites_disable;
+    logic sp_swap_busy, sp_swap_done;
+    logic sp_frame_busy, sp_frame_done;
 
-    logic         sp_frame_busy, sp_frame_done;
+    assign sprite_frame_start = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
+
+
     logic         fb_we;
     logic [8:0]  fb_x;
     logic [7:0]  fb_y;
@@ -308,7 +370,6 @@ module psikyo_core #(
         .fb_pixel(fb_pixel), .fb_color(fb_color), .fb_priority(fb_priority)
     );
 
-    logic         sp_swap_busy, sp_swap_done; // diagnostic only, not consumed here
     logic         sp_present;
     logic [3:0]  sp_pixel;
     logic [4:0]  sp_color;
@@ -326,9 +387,9 @@ module psikyo_core #(
     // ---- compositor ----
     compositor u_compositor (
         .l0_valid(l0_pixel_valid), .l0_pixel(l0_pixel_index), .l0_color(l0_pixel_color),
-        .l0_ctrl_enable(l0_enable), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
+        .l0_ctrl_enable(l0_enable & ~dbg_render_dis[1]), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
         .l1_valid(l1_pixel_valid), .l1_pixel(l1_pixel_index), .l1_color(l1_pixel_color),
-        .l1_ctrl_enable(l1_enable), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
+        .l1_ctrl_enable(l1_enable & ~dbg_render_dis[2]), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
         .sp_present(sp_present), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
@@ -379,7 +440,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index({2'd0, vcnt[6:0]}),
+            .rd_index(vcnt - 9'd48),
             .rd_data(rd_addr),
             .frozen(frz_a)
         );
@@ -393,7 +454,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index({2'd0, vcnt[6:0]}),
+            .rd_index(vcnt - 9'd176),
             .rd_data(rd_data),
             .frozen(frz_d)
         );
@@ -409,15 +470,34 @@ module psikyo_core #(
         // while assuming the control input is correct, the core now reports what
         // it actually receives. If this band reads back window=0 while the CFG
         // holds window=8, the fault is in the OSD/status path, not the tracer.
-        // (dbg_overlay is not a core input -- it only gates the mux up in
-        // Psikyo.sv, and this band is only visible when it is on, so it would
-        // read back 1 unconditionally. The low bit is a constant 1 instead,
-        // giving a second fixed bit to catch a mis-decode.)
-        wire [23:0] ctl_echo = {8'hA5, 6'd0, frz_a, frz_d,
+        // (The low bit is a constant 1, giving a second fixed bit alongside
+        // the 0xA5 marker to catch a mis-decoded band.)
+        // Middle byte carries the video-engine health flags. l0/l1_fetch_overrun
+        // are STICKY: set once a tilemap line engine wanted to display a pixel
+        // whose tile had not been fetched yet, which makes it drop pixel_valid
+        // -- and the compositor then silently paints backdrop. Without this
+        // readout, a tilemap that cannot keep up is visually identical to the
+        // game legitimately drawing nothing there, so a large flat backdrop
+        // area is unattributable. The layer enables sit next to them because
+        // "no pixels" also happens when a layer is simply switched off, and
+        // those two causes need telling apart.
+        wire [23:0] ctl_echo = {8'hA5,
+                                2'd0, l0_fetch_overrun, l1_fetch_overrun,
+                                l0_enable, l1_enable, frz_a, frz_d,
                                 dbg_rearm, dbg_window, dbg_src, 1'b1};
 
+        // Overlay band layout (one screenshot carries all of it):
+        //   rows   0- 15 : layer 0 VRAM, all 4096 words  ({vcnt[3:0],hcnt[7:0]})
+        //   rows  16- 31 : layer 1 VRAM, all 4096 words
+        //   rows  32- 47 : video registers, words 0x000-0xFFF
+        //   rows  48-175 : CPU ROM read, full 19-bit address (128 entries)
+        //   rows 176-215 : CPU ROM read, {addr[7:0],data}    (40 entries)
+        //   rows 216-223 : control echo + video-engine health flags
         assign dbg_pixel = (vcnt >= 9'd216) ? ctl_echo
-                         : (vcnt <  9'd128) ? rd_addr
+                         : (vcnt <  9'd16)  ? {8'h00, vram0_b_rdata}
+                         : (vcnt <  9'd32)  ? {8'h00, vram1_b_rdata}
+                         : (vcnt <  9'd48)  ? {8'h00, vregs_dump_data}
+                         : (vcnt <  9'd176) ? rd_addr
                                             : rd_data;
     end else begin : g_no_tracer
         assign dbg_pixel = 24'd0;

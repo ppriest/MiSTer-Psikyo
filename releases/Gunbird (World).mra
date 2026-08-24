@@ -21,9 +21,9 @@
 	<rom index="0" zip="gunbird.zip" md5="none">
 		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, same
 		     word-swap interleave scheme as the sngkace family. Actual 0x80000. -->
-		<interleave output="16">
-			<part name="4.u46" crc="b78ec99d" map="01"/>
-			<part name="5.u39" crc="925f095d" map="10"/>
+		<interleave output="32">
+			<part name="4.u46" crc="b78ec99d" map="0012"/>
+			<part name="5.u39" crc="925f095d" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -36,14 +36,29 @@
 		     four ROMs concatenated in ROM_START's own order (not interleaved with
 		     each other - each occupies its own contiguous span). Actual 0x700000,
 		     the largest of any Phase 1 set (this region's reservation size). -->
-		<part name="u14.bin" crc="7d7e8a00"/>
-		<part name="u24.bin" crc="5e3ffc9d"/>
-		<part name="u15.bin" crc="a827bfb5"/>
-		<part name="u25.bin" crc="ef652e0c"/>
+		<!-- 2026-08-24: these were all inside ONE <interleave output="16">, which
+		     BYTE-INTERLEAVES the four files together. MAME loads them at successive
+		     offsets (0x000000/0x200000/0x400000/0x600000), i.e. CONCATENATED, each
+		     one individually ROM_LOAD16_WORD_SWAP. One block per file, same idiom as
+		     the tiles region. -->
+		<interleave output="16">
+			<part name="u14.bin" crc="7d7e8a00" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u24.bin" crc="5e3ffc9d" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u15.bin" crc="a827bfb5" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u25.bin" crc="ef652e0c" map="12"/>
+		</interleave>
 		<part repeat="0x100000">FF</part>
 
 		<!-- tiles: base 0xA40000, reserved 0x200000 - exact fit, no padding needed. -->
-		<part name="u33.bin" crc="54494e6b"/>
+		<interleave output="16">
+			<part name="u33.bin" crc="54494e6b" map="12"/>
+		</interleave>
 
 		<!-- ymsnd:adpcma: base 0xC40000, reserved 0x100000 - exact fit. -->
 		<part name="u56.bin" crc="9e07104d"/>
@@ -57,12 +72,29 @@
 		     region - nothing follows). -->
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
+	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
+	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
+	     coin/service folded into the P1_P2 low byte instead of a separate
+	     COIN port, and live tile banking from layer-control bit 10. -->
+	<rom index="1"><part>01</part></rom>
+
 
 	<!-- 3 buttons/player (shot/bomb/special), 8-way joystick - see
 	     INPUT_PORTS_START(gunbird)'s "P1_P2" port. -->
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
-	<switches default="FF,FF,FD,FF,0F">
+	<switches default="FD,FF,0F">
+		<!-- 2026-08-24: was a five-byte default written on the assumption that
+		     <switches> bytes start at status[0]. They start at status[16]:
+		     byte0 -> status[23:16] (Flip/Demo/Difficulty/Lives/Bonus/Service),
+		     byte1 -> status[31:24] (coin settings),
+		     byte2 -> status[39:32] (the DSW's low byte = region jumper).
+		     Psikyo.sv feeds these into the 32-bit DSW long at $C00004 as
+		     {status[31:16], 8'hFF, status[39:32]}. Defaults now match MAME's own
+		     PORT_DIPNAME defaults: Demo Sounds On, Difficulty Normal, 3 Lives,
+		     Bonus 400K, Service Mode OFF (bit 23 = 1), 1C 1C; region 0x0F = World. The upper nibble is NOT free to set: the boot polls
+		     $C00004 bit 7 and spins until it CLEARS (move.l $C00004,D0 / andi.l
+		     #$80,D0 / bne at 0x4CA-0x4D8), so a 0xFF byte here hangs the game.. -->
 		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
 		<!-- DSW field is byte-for-byte identical to samuraia/sngkace's (same

@@ -97,6 +97,10 @@ localparam CONF_STR = {
 	"P1O[58:57],Trace source,CPU addr+data,CPU fetch addr,SpriteRAM wr,Palette wr;",
 	"P1O[62:59],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
 	"P1O[63],Re-arm capture,A,B;",
+	"P1-;",
+	"P1O[40],Sprites,On,Off;",
+	"P1O[41],Tilemap 0,On,Off;",
+	"P1O[42],Tilemap 1,On,Off;",
 	"-;",
 	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
@@ -174,6 +178,29 @@ always @(posedge clk_sys) begin
 	ce_pix_cnt <= (ce_pix_cnt == 11) ? 4'd0 : ce_pix_cnt + 4'd1;
 end
 
+// Sound-CPU NMI status, mirrored into the input ports on both board
+// variants (bit 23 of COIN on sngkace, bit 7 of P1_P2 on gunbird).
+wire        nmi_pending;
+
+// ---- board variant, selected at RUNTIME by the .mra ----
+// One Arcade-Psikyo.rbf has to serve every game in the family, so the board
+// difference cannot be a compile-time parameter (it was BOARD_GUNBIRD, fixed
+// to 0, which meant only the sngkace-family games could ever work). MiSTer's
+// standard mechanism is a second ROM entry in the .mra:
+//
+//     <rom index="1"><part>01</part></rom>
+//
+// which arrives through the same ioctl download path with ioctl_index == 1.
+// Bit 0 selects gunbird/btlkroad (KA302C input + tile-banking layout) over
+// sngkace/samuraia. Latched, never reset by `reset`, because MiSTer holds the
+// core in reset for the whole download -- the same trap that silently
+// discarded every SDRAM write earlier in this project.
+reg [7:0] mod_board = 8'd0;
+always @(posedge clk_sys) begin
+	if (ioctl_wr && ioctl_index == 16'd1) mod_board <= ioctl_dout;
+end
+wire board_gunbird = mod_board[0];
+
 wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 
 ///////////////////////   INPUTS   ////////////////////////////////
@@ -189,27 +216,66 @@ wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 // board's coin/service/z80-nmi bits live in the separate COIN port
 // instead, unlike gunbird/btlkroad which fold them into THIS port's low
 // bits -- a real, confirmed board difference, not a simplification).
+// P1_P2 high half is identical on both boards. The LOW half differs: sngkace
+// leaves it unused and puts coin/service/z80-nmi in the separate COIN port at
+// $C00008, while gunbird/btlkroad have no COIN port and fold those same bits
+// into this port's low byte instead (psikyo.cpp INPUT_PORTS):
+//     bit0 COIN1, bit1 COIN2, bit4 SERVICE1, bit5 SERVICE(no toggle),
+//     bit6 TILT   -- all IP_ACTIVE_LOW -- and bit7 z80_nmi_r, ACTIVE HIGH.
+wire [15:0] p1p2_low = board_gunbird
+	? {8'hFF,                                 // bits 15:8 unused
+	   nmi_pending,                            // bit 7  z80_nmi_r, active HIGH
+	   1'b1,                                   // bit 6  TILT
+	   1'b1,                                   // bit 5  SERVICE (no toggle)
+	   1'b1,                                   // bit 4  SERVICE1
+	   2'b11,                                  // bits 3:2 unused
+	   ~joystick_1[11], ~joystick_0[11]}      // bit 1 COIN2, bit 0 COIN1
+	: 16'hFFFF;
+
 wire [31:0] p1p2_in = {
 	~joystick_0[3], ~joystick_0[2], ~joystick_0[0], ~joystick_0[1],  // P1 UP,DOWN,RIGHT,LEFT
 	~joystick_0[4], ~joystick_0[5], ~joystick_0[6], ~joystick_0[10], // P1 B1,B2,B3,START
 	~joystick_1[3], ~joystick_1[2], ~joystick_1[0], ~joystick_1[1],  // P2 UP,DOWN,RIGHT,LEFT
 	~joystick_1[4], ~joystick_1[5], ~joystick_1[6], ~joystick_1[10], // P2 B1,B2,B3,START
-	16'hFFFF
+	p1p2_low
 };
 
-// COIN port (sngkace-only): COIN1 = bit16, COIN2 = bit17, both
-// IP_ACTIVE_LOW; bit23 is MAME's z80_nmi_r() (IP_ACTIVE_HIGH, not
-// inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
-// exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
-// full derivation). Every other bit is unused by sngkace_input_r.
-// (declared further down, after the video timing wires it depends on)
+// (coin_in is declared further down, after the video timing wires it uses)
 
-// DIP switches: status[47:16] passed straight through -- every .mra's own
-// <dip bits="16,...> entries already target this exact range (confirmed
-// against the built releases/*.mra files), so no per-game RTL is needed
-// here; the CONF_STR's "DIP;" entry is what makes the OSD show the right
-// per-game menu for whichever .mra is loaded.
-wire [31:0] dsw_in = status[47:16];
+// DIP switches -> the 32-bit value the CPU reads at $C00004.
+//
+// MAME's psikyo DSW port (psikyo.cpp, PORT_START("DSW") /* c00004 -> c00007 */)
+// puts every DIP in the UPPER half of that long and leaves the lower half
+// unused:
+//     PORT_BIT( 0x0000ffff, IP_ACTIVE_LOW, IPT_UNUSED )
+//     0x00010000 Flip Screen      0x00020000 Demo Sounds
+//     0x000c0000 Difficulty       0x00300000 Lives
+//     0x00400000 Bonus Life       0x00800000 PORT_SERVICE_DIPLOC "SW2:8"
+//     0x01000000 Coin Slot        0x0e000000 Coin A
+//     0x70000000 Coin B           0x80000000 2C Start, 1C Continue
+//
+// This used to be `status[47:16]`, which mapped .mra bit 16 onto dsw_in[0] --
+// EVERY DIP LANDED 16 BITS LOW, in the half MAME defines as unused. The OSD
+// menu items therefore did nothing, and the bit the game actually reads as
+// Service Mode (dsw_in[23]) was driven by status[39], a bit no menu entry
+// touched: with a default-ish .CFG that bit is 0 and PORT_SERVICE is
+// ACTIVE_LOW, so the board came up stuck in Service Mode.
+//
+// The .mra's <dip bits="..."> entries already use MAME's own bit numbers
+// (16..31), so aligning them is just a matter of feeding status[31:16] into
+// the upper half.
+//
+// The LOW BYTE is not spare -- it is the region/country jumper. samuraia's
+// ports carry PORT_CONFNAME( 0x000000ff, 0x000000ff, Region ) with
+// ff=World, ef=USA & Canada, df=Korea, bf=Hong Kong, 7f=Taiwan (sngkace
+// overrides that same byte to IPT_UNKNOWN, which is why it looks unused if
+// you only read the sngkace block). It comes from the .mra's third
+// <switches> byte, status[39:32]. Tying it high would silently lock every
+// board to World.
+//
+// Byte 1 (dsw_in[15:8]) genuinely is unused and reads back as 1s, matching
+// MAME's IP_ACTIVE_LOW default for undefined bits.
+wire [31:0] dsw_in = {status[31:16], 8'hFF, status[39:32]};
 
 // ---- debug tracer controls (rtl/debug/debug_tracer.sv) ----
 // Live from the OSD, so the capture window can be walked across a long boot
@@ -230,6 +296,12 @@ wire [31:0] dsw_in = status[47:16];
 // /media/fat/config/<core>.CFG:
 //   bit0 overlay, bits2:1 source, bits6:3 window, bit7 re-arm
 wire        dbg_overlay = status[56];
+
+// Force-disable rendering per pipeline, for isolating what is actually drawing
+// what. status[55:40] is free: the .mra's three <switches> bytes occupy
+// status[39:16] and the tracer controls sit at status[63:56].
+//   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
+wire [2:0] dbg_render_dis = status[42:40];
 wire [1:0] dbg_src     = status[58:57];
 wire [3:0] dbg_window  = status[62:59];
 wire        dbg_rearm   = status[63];
@@ -270,12 +342,14 @@ wire [31:0] coin_in = {
 	8'hFF,                                    // bits 31:24 unused
 	nmi_pending,                                // bit 23
 	5'h1F,                                      // bits 22:18 unused
-	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
+	// COIN1/COIN2 live here on sngkace only. On gunbird/btlkroad the same
+	// buttons are read from the P1_P2 low byte instead, so hold these
+	// inactive (1) there rather than presenting the coin twice.
+	board_gunbird ? 2'b11 : {~joystick_1[11], ~joystick_0[11]},
 	15'h7FFF,                                   // bits 15:1 unused
 	~vblank                                     // bit 0 = VBLANK, active low
 };
 wire [14:0] rgb;
-wire        nmi_pending;
 
 wire         ym_cs, ym_rd, ym_wr;
 wire [1:0]  ym_addr;
@@ -304,6 +378,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.p1p2_in(p1p2_in),
 	.dsw_in(dsw_in),
 	.coin_in(coin_in),
+	.board_gunbird(board_gunbird),
 
 	.nmi_pending(nmi_pending),
 	.ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
@@ -312,7 +387,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
