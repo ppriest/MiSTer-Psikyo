@@ -16,7 +16,7 @@
 // into plain flip-flops on a matching CPU write, avoiding a third
 // (unavailable) BRAM read port and giving the tilemap engines single-cycle,
 // always-current combinational access instead of a synchronous BRAM read.
-module vreg_decode #(
+module vreg_decode (
     // Board-specific tile gfx banking -- MAME psikyo_v.cpp's
     // m_ka302c_banking. Two genuinely different schemes, and picking the
     // wrong one silently renders a whole layer from the wrong artwork:
@@ -37,8 +37,7 @@ module vreg_decode #(
     // the caller applied fixed banks; the caller (rtl/psikyo_core.sv) never
     // did. Layer 1 therefore drew u34.bin's tiles, confirmed on real
     // hardware as tilemap content bearing no resemblance to MAME's.
-    parameter bit KA302C_BANKING = 1'b0
-) (
+
     input  logic         clk,
     input  logic         reset,
 
@@ -87,6 +86,11 @@ module vreg_decode #(
     // is what distinguishes "the CPU never wrote the layer control word" from
     // "it wrote it and vreg_decode failed to latch it" -- the two have
     // completely different fixes and look identical from outside.
+    // KA302C tile banking, RUNTIME (see maincpu.sv's board_gunbird): gunbird
+    // and btlkroad take each layer's tile bank from layer-control bit 10,
+    // sngkace/samuraia have it fixed at 0 (layer 0) and 1 (layer 1).
+    input  logic         ka302c_banking,
+
     input  logic         dbg_dump_en,
     input  logic [12:0] dbg_dump_addr,
     output logic [15:0] dbg_dump_data
@@ -153,7 +157,7 @@ module vreg_decode #(
     assign layer0_mode              = l0_ctrl[7:6];
     assign layer0_rowscroll_enable  = l0_ctrl[8];
     assign layer0_rowscroll_pertile = l0_ctrl[9];
-    assign layer0_bank              = KA302C_BANKING ? {1'b0, l0_ctrl[10]} : 2'd0; // see KA302C_BANKING
+    assign layer0_bank              = ka302c_banking ? {1'b0, l0_ctrl[10]} : 2'd0; // see KA302C_BANKING
 
     assign layer1_enable            = ~l1_ctrl[0];   // active low, see layer0_enable
     assign layer1_opaque            = l1_ctrl[1];
@@ -161,7 +165,7 @@ module vreg_decode #(
     assign layer1_mode              = l1_ctrl[7:6];
     assign layer1_rowscroll_enable  = l1_ctrl[8];
     assign layer1_rowscroll_pertile = l1_ctrl[9];
-    assign layer1_bank              = KA302C_BANKING ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia -- see KA302C_BANKING
+    assign layer1_bank              = ka302c_banking ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia -- see KA302C_BANKING
 
     logic [15:0] l0_ram_b_rdata;
     dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l0 (

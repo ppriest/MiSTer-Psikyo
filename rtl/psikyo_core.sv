@@ -80,6 +80,9 @@ module psikyo_core #(
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
 
+    // Board variant, runtime (from the .mra mod byte) -- see maincpu.sv.
+    input  logic         board_gunbird,
+
     // Sound latch handshake -- to a sound CPU wrapper, not instantiated here.
     output logic [7:0]  latch_data,
     output logic         latch_write,
@@ -147,7 +150,7 @@ module psikyo_core #(
     logic         workram_cpu_wel, workram_cpu_weh;
     logic [15:0] workram_cpu_wdata, workram_cpu_rdata;
 
-    maincpu #(.BOARD_GUNBIRD(BOARD_GUNBIRD)) u_cpu (
+    maincpu u_cpu (
         .clk(clk), .reset(reset),
         .rom_req(cpu_rom_req), .rom_addr(cpu_rom_addr), .rom_valid(cpu_rom_valid), .rom_data(cpu_rom_data),
         .spriteram_addr(spr_cpu_addr), .spriteram_wel(spr_cpu_wel), .spriteram_weh(spr_cpu_weh),
@@ -162,7 +165,7 @@ module psikyo_core #(
         .vregs_wdata(vregs_cpu_wdata), .vregs_rdata(vregs_cpu_rdata),
         .workram_addr(workram_cpu_addr), .workram_wel(workram_cpu_wel), .workram_weh(workram_cpu_weh),
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
-        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in),
+        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird),
         .latch_data(latch_data), .latch_write(latch_write),
         .vblank(vblank)
     );
@@ -249,7 +252,7 @@ module psikyo_core #(
 
     // BOARD_GUNBIRD selects gunbird/btlkroad, which are exactly the Phase 1
     // boards with MAME's m_ka302c_banking (s1945n is the third, Phase 2).
-    vreg_decode #(.KA302C_BANKING(BOARD_GUNBIRD)) u_vregs (
+    vreg_decode u_vregs (
         .clk(clk), .reset(reset),
         .cpu_addr(vregs_cpu_addr), .cpu_wel(vregs_cpu_wel), .cpu_weh(vregs_cpu_weh),
         .cpu_wdata(vregs_cpu_wdata), .cpu_rdata(vregs_cpu_rdata),
@@ -263,7 +266,7 @@ module psikyo_core #(
         .layer1_bank(l1_bank), .layer1_enable(l1_enable), .layer1_opaque(l1_opaque),
         .layer1_transpen_sel(l1_transpen_sel),
         .layer1_rowscroll_enable(l1_rs_en), .layer1_rowscroll_pertile(l1_rs_pertile),
-        .dbg_dump_en(vregs_dump_active), .dbg_dump_addr(vregs_dump_addr),
+        .ka302c_banking(board_gunbird), .dbg_dump_en(vregs_dump_active), .dbg_dump_addr(vregs_dump_addr),
         .dbg_dump_data(vregs_dump_data)
     );
 

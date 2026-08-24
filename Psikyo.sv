@@ -178,6 +178,29 @@ always @(posedge clk_sys) begin
 	ce_pix_cnt <= (ce_pix_cnt == 11) ? 4'd0 : ce_pix_cnt + 4'd1;
 end
 
+// Sound-CPU NMI status, mirrored into the input ports on both board
+// variants (bit 23 of COIN on sngkace, bit 7 of P1_P2 on gunbird).
+wire        nmi_pending;
+
+// ---- board variant, selected at RUNTIME by the .mra ----
+// One Arcade-Psikyo.rbf has to serve every game in the family, so the board
+// difference cannot be a compile-time parameter (it was BOARD_GUNBIRD, fixed
+// to 0, which meant only the sngkace-family games could ever work). MiSTer's
+// standard mechanism is a second ROM entry in the .mra:
+//
+//     <rom index="1"><part>01</part></rom>
+//
+// which arrives through the same ioctl download path with ioctl_index == 1.
+// Bit 0 selects gunbird/btlkroad (KA302C input + tile-banking layout) over
+// sngkace/samuraia. Latched, never reset by `reset`, because MiSTer holds the
+// core in reset for the whole download -- the same trap that silently
+// discarded every SDRAM write earlier in this project.
+reg [7:0] mod_board = 8'd0;
+always @(posedge clk_sys) begin
+	if (ioctl_wr && ioctl_index == 16'd1) mod_board <= ioctl_dout;
+end
+wire board_gunbird = mod_board[0];
+
 wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 
 ///////////////////////   INPUTS   ////////////////////////////////
@@ -193,20 +216,31 @@ wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 // board's coin/service/z80-nmi bits live in the separate COIN port
 // instead, unlike gunbird/btlkroad which fold them into THIS port's low
 // bits -- a real, confirmed board difference, not a simplification).
+// P1_P2 high half is identical on both boards. The LOW half differs: sngkace
+// leaves it unused and puts coin/service/z80-nmi in the separate COIN port at
+// $C00008, while gunbird/btlkroad have no COIN port and fold those same bits
+// into this port's low byte instead (psikyo.cpp INPUT_PORTS):
+//     bit0 COIN1, bit1 COIN2, bit4 SERVICE1, bit5 SERVICE(no toggle),
+//     bit6 TILT   -- all IP_ACTIVE_LOW -- and bit7 z80_nmi_r, ACTIVE HIGH.
+wire [15:0] p1p2_low = board_gunbird
+	? {8'hFF,                                 // bits 15:8 unused
+	   nmi_pending,                            // bit 7  z80_nmi_r, active HIGH
+	   1'b1,                                   // bit 6  TILT
+	   1'b1,                                   // bit 5  SERVICE (no toggle)
+	   1'b1,                                   // bit 4  SERVICE1
+	   2'b11,                                  // bits 3:2 unused
+	   ~joystick_1[11], ~joystick_0[11]}      // bit 1 COIN2, bit 0 COIN1
+	: 16'hFFFF;
+
 wire [31:0] p1p2_in = {
 	~joystick_0[3], ~joystick_0[2], ~joystick_0[0], ~joystick_0[1],  // P1 UP,DOWN,RIGHT,LEFT
 	~joystick_0[4], ~joystick_0[5], ~joystick_0[6], ~joystick_0[10], // P1 B1,B2,B3,START
 	~joystick_1[3], ~joystick_1[2], ~joystick_1[0], ~joystick_1[1],  // P2 UP,DOWN,RIGHT,LEFT
 	~joystick_1[4], ~joystick_1[5], ~joystick_1[6], ~joystick_1[10], // P2 B1,B2,B3,START
-	16'hFFFF
+	p1p2_low
 };
 
-// COIN port (sngkace-only): COIN1 = bit16, COIN2 = bit17, both
-// IP_ACTIVE_LOW; bit23 is MAME's z80_nmi_r() (IP_ACTIVE_HIGH, not
-// inverted) -- rtl/psikyo_top.sv's own nmi_pending output mirrors that
-// exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
-// full derivation). Every other bit is unused by sngkace_input_r.
-// (declared further down, after the video timing wires it depends on)
+// (coin_in is declared further down, after the video timing wires it uses)
 
 // DIP switches -> the 32-bit value the CPU reads at $C00004.
 //
@@ -313,7 +347,6 @@ wire [31:0] coin_in = {
 	~vblank                                     // bit 0 = VBLANK, active low
 };
 wire [14:0] rgb;
-wire        nmi_pending;
 
 wire         ym_cs, ym_rd, ym_wr;
 wire [1:0]  ym_addr;
@@ -342,6 +375,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.p1p2_in(p1p2_in),
 	.dsw_in(dsw_in),
 	.coin_in(coin_in),
+	.board_gunbird(board_gunbird),
 
 	.nmi_pending(nmi_pending),
 	.ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),

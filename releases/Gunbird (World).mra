@@ -72,6 +72,12 @@
 		     region - nothing follows). -->
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
+	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
+	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
+	     coin/service folded into the P1_P2 low byte instead of a separate
+	     COIN port, and live tile banking from layer-control bit 10. -->
+	<rom index="1"><part>01</part></rom>
+
 
 	<!-- 3 buttons/player (shot/bomb/special), 8-way joystick - see
 	     INPUT_PORTS_START(gunbird)'s "P1_P2" port. -->

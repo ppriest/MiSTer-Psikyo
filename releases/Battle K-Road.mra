@@ -68,6 +68,12 @@
 		     region - nothing follows). -->
 		<part name="u3.bin" crc="30d541ed"/>
 	</rom>
+	<!-- Board variant for the core, read as ioctl_index==1 (see Psikyo.sv).
+	     00 = sngkace/samuraia layout, 01 = gunbird/btlkroad (KA302C):
+	     coin/service folded into the P1_P2 low byte instead of a separate
+	     COIN port, and live tile banking from layer-control bit 10. -->
+	<rom index="1"><part>01</part></rom>
+
 
 	<!-- 6 buttons/player (fighting game - 3-punch/3-kick-style layout is typical
 	     for this era, but psikyo.cpp only labels them BUTTON1-6, no function names
