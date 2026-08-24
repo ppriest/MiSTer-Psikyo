@@ -93,3 +93,7 @@ roms/
 /*.png
 /*.txt
 debug/captures/
+
+# Quartus STA scratch logs
+sta*.log
+worst_*.rpt
