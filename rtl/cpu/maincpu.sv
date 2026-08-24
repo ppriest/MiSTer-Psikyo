@@ -297,7 +297,18 @@ module maincpu (
 
     assign is_p1p2       = (addr24 >= 24'hC00000) && (addr24 <= 24'hC00003);
     assign is_dsw        = (addr24 >= 24'hC00004) && (addr24 <= 24'hC00007);
-    assign is_coin       = !board_gunbird && (addr24 >= 24'hC00008) && (addr24 <= 24'hC0000B);
+    // $C00008 is decoded on BOTH boards. psikyo.cpp maps 0xc00000-0xc0000b to
+    // the input reader for sngkace and gunbird alike -- three longs: P1_P2, DSW,
+    // COIN. What differs between the boards is only WHICH BITS the COIN long
+    // carries: sngkace puts coin/service/z80-nmi there, gunbird/btlkroad move
+    // those into the P1_P2 low byte. Bit 0 -- the status bit the boot polls
+    // before its sprite DMA -- is present either way.
+    //
+    // This was briefly gated with !board_gunbird, which left gunbird reading
+    // open bus (0xFFFF) at $C00008. Bit 0 could then never clear and the game
+    // hung in the poll loop at 0x4CA..0x4D8, the exact analogue of samuraia's
+    // loop at 0x436.
+    assign is_coin       = (addr24 >= 24'hC00008) && (addr24 <= 24'hC0000B);
     assign is_soundlatch = (addr24 == 24'hC00013);
 
     // word-address translation (drop bit 0 -- every region is word-granular)

@@ -342,7 +342,10 @@ wire [31:0] coin_in = {
 	8'hFF,                                    // bits 31:24 unused
 	nmi_pending,                                // bit 23
 	5'h1F,                                      // bits 22:18 unused
-	~joystick_1[11], ~joystick_0[11],         // bit 17 = COIN2, bit 16 = COIN1
+	// COIN1/COIN2 live here on sngkace only. On gunbird/btlkroad the same
+	// buttons are read from the P1_P2 low byte instead, so hold these
+	// inactive (1) there rather than presenting the coin twice.
+	board_gunbird ? 2'b11 : {~joystick_1[11], ~joystick_0[11]},
 	15'h7FFF,                                   // bits 15:1 unused
 	~vblank                                     // bit 0 = VBLANK, active low
 };

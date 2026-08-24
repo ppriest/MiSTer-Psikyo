@@ -83,7 +83,7 @@
 	     INPUT_PORTS_START(gunbird)'s "P1_P2" port. -->
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
-	<switches default="FD,FF,FF">
+	<switches default="FD,FF,0F">
 		<!-- 2026-08-24: was a five-byte default written on the assumption that
 		     <switches> bytes start at status[0]. They start at status[16]:
 		     byte0 -> status[23:16] (Flip/Demo/Difficulty/Lives/Bonus/Service),
@@ -92,7 +92,9 @@
 		     Psikyo.sv feeds these into the 32-bit DSW long at $C00004 as
 		     {status[31:16], 8'hFF, status[39:32]}. Defaults now match MAME's own
 		     PORT_DIPNAME defaults: Demo Sounds On, Difficulty Normal, 3 Lives,
-		     Bonus 400K, Service Mode OFF (bit 23 = 1), 1C 1C; region nibble F = World (gunbird: 0x0f=World, upper nibble unused so FF is equivalent). -->
+		     Bonus 400K, Service Mode OFF (bit 23 = 1), 1C 1C; region 0x0F = World. The upper nibble is NOT free to set: the boot polls
+		     $C00004 bit 7 and spins until it CLEARS (move.l $C00004,D0 / andi.l
+		     #$80,D0 / bne at 0x4CA-0x4D8), so a 0xFF byte here hangs the game.. -->
 		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
 		<!-- DSW field is byte-for-byte identical to samuraia/sngkace's (same
