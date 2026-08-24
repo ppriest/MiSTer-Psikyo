@@ -128,6 +128,23 @@ def main():
     print()
     c1 = report(l1, 1, args.label, args.outdir)
 
+    # ---- palette (rows 48..63) ----
+    if H >= 64:
+        pal = extract(rows, 48, 16, W)
+        pbase = os.path.join(args.outdir, '%s_palette.bin' % args.label)
+        with open(pbase, 'wb') as fh:
+            for w in pal:
+                fh.write(struct.pack('<H', w))
+        nz = sum(1 for x in pal if x)
+        print()
+        print('PALETTE: %d entries, %d non-zero, %d distinct  -> %s'
+              % (len(pal), nz, len(set(pal)), pbase))
+        # tiles live at 0x800 + colour*16, 72 colour groups (MAME GFXDECODE)
+        for grp in (0, 1, 64, 65):
+            base = 0x800 + grp * 16
+            print('   tile colour %-3d @ %04X: %s'
+                  % (grp, base, ' '.join('%04X' % pal[base + i] for i in range(8))))
+
     # ---- video registers (rows 32..47), if the capture carries them ----
     if H >= 48:
         vr = extract(rows, 32, 16, W)

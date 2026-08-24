@@ -101,6 +101,7 @@ module psikyo_top #(
     input  logic [2:0]  dbg_render_dis,
     input  logic         pause,
     input  logic         snd_irq_en,
+    input  logic         sprite_line_mode,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,
     input  logic [3:0]  dbg_window,
@@ -194,7 +195,7 @@ module psikyo_top #(
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb),
-        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .sprite_line_mode(sprite_line_mode), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
         .dbg_pixel(dbg_pixel)
     );
 

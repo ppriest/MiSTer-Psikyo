@@ -9,25 +9,37 @@ PIC protection FSM and a YMF278B, neither of which exists yet.
 
 ## Status
 
-All three Phase 1 games boot and run on real hardware. **There is no sound**, and there are
-known video defects; see below. No releases have been published.
+All three Phase 1 games boot and run on real hardware. There are known video, audio and
+speed defects; see below. No releases have been published.
 
-Working:
+Working, confirmed on hardware:
 
-* 68EC020 (TG68K kernel at 16 MHz), Z80 sound CPU wired but silent
+* 68EC020 (TG68K kernel at 16 MHz)
 * ROM loading from `.mra` for all three games
 * Both tilemap layers, sprites, palette, DIP switches, inputs
 * Runtime board-variant selection, so one `.rbf` serves all three games
-* Scandoubler / gamma / scanline effects, aspect and crop, via `sys/arcade_video.v`
+* Scandoubler / gamma / scanline effects via `sys/arcade_video.v`
 * Rotation and 180° flip over HDMI via the HPS framebuffer
+* CPU pause, and the debug overlay used for bring-up
 
-Not working or unverified:
+Not working, or built but unconfirmed:
 
-* **No audio** — `AUDIO_L/R` are tied low; jt10/YM2610 is not wired in
-* Sprites flicker and can persist between frames (see `docs/sprite_buffering.md`)
-* Colours look tinted on Gun Bird and Battle K-Road
-* `clk_sys` misses timing by about 0.5 ns
-* Rotation has not been confirmed on an HDMI display
+* **Audio has never been heard.** Z80 and jt10/YM2610 are wired and clocked, but the ADPCM-A
+  and ADPCM-B ROM interfaces are not connected — `sdram_arbiter5` has no free consumer port,
+  and no `ADPCMA_BASE`/`ADPCMB_BASE` regions are defined. FM only, at best.
+* **The game intermittently slows down.** Not the uniform half-speed that the `$C00008` bit-0
+  change addressed — that change is in and the slowdown outlives it. Leading hypothesis is
+  SDRAM contention: `sdram_arbiter5` is strict round-robin and fully serialises one
+  transaction at a time, so a heavy sprite frame takes slots away from CPU instruction fetch.
+  Untested; OSD bit 40 (Sprites Off) is the discriminating experiment.
+* **Sprites still flicker and ghost**, improved but not fixed by `Sprite swap = FrameStart`.
+  The per-scanline replacement is built and selectable (OSD bit 52) but has not been
+  evaluated. See `docs/sprite_buffering.md`.
+* Some tilemap tiles use the wrong palette (a row of the Gun Bird logo goes green); the
+  sengokua hiscore tilemap is offset by about two tiles.
+* Gun Bird sprites freeze a few seconds into each scene — suspected spriteram banking.
+* Aspect ratio Original/Full Screen: the rotation-aware fix is built but not confirmed.
+* `clk_sys` misses timing by about 0.45 ns.
 
 ## ROMs
 

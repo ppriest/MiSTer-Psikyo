@@ -153,3 +153,5 @@ set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_dcrm.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_dcrm2.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_dly.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_mave.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_engine.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_buffer.sv

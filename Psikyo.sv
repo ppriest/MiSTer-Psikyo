@@ -80,10 +80,25 @@ assign BUTTONS = 0;
 
 //////////////////////////////////////////////////////////////////
 
+// Rotation controls, declared here because the aspect ratio below depends on
+// whether the picture is rotated. Consumed by screen_rotate_two further down.
+wire [1:0] rotate_sel = status[48:47];
+wire        rotate_en  = |rotate_sel;
+wire        rotate_ccw = (rotate_sel == 2'd2);
+wire        flip_180   = status[49];
+
+// Aspect ratio. Psikyo boards are vertical, so when the picture is rotated to
+// portrait the ORIGINAL aspect is 3:4, not 4:3 -- this was hardcoded 4:3
+// regardless, which is why the Original/Full Screen toggle did not appear to
+// do anything useful. ar != 0 selects Full Screen / ARC1 / ARC2, where a zero
+// ARY means "stretch" in the framework's convention.
+//
+// Note sys/arcade_video.v does NOT wrap video_freak, so there is no crop
+// support here; these two signals are the whole aspect story.
 wire [1:0] ar = status[122:121];
 
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+assign VIDEO_ARX = (!ar) ? (rotate_en ? 13'd3 : 13'd4) : 13'({ar} - 2'd1);
+assign VIDEO_ARY = (!ar) ? (rotate_en ? 13'd4 : 13'd3) : 13'd0;
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -109,9 +124,11 @@ localparam CONF_STR = {
 	"P1O[43],Sprite swap,EndOfRender,FrameStart;",
 	"P1O[50],Pause CPU,Off,On;",
 	"P1O[51],Sound IRQ,Off,On;",
+	"P1O[52],Sprite buffer,Frame,Line;",
+	"P1O[53],C00008 bit0,Zero,VBlank;",
 	"-;",
-	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
+	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"V,v",`BUILD_DATE
 };
 
@@ -321,6 +338,11 @@ wire        pause = status[50];
 // an interrupt it cannot clear stalls the whole game. Default off until that
 // is understood; FM timers need it, so music tempo may depend on it.
 wire        snd_irq_en = status[51];
+// Frame buffer (original) vs per-scanline line buffer for sprites.
+// See docs/sprite_buffering.md.
+wire        sprite_line_mode = status[52];
+// See the coin_in comment: 0 = constant 0 (matches MAME), 1 = ~vblank.
+wire        vblank_wait_en   = status[53];
 // Experimental: swap the sprite output buffer at the frame boundary rather
 // than at end-of-render. Default 0 = the behaviour known to boot.
 wire        dbg_sprite_vsync_swap = status[43];
@@ -340,9 +362,19 @@ wire        hblank, vblank, hsync, vsync;
 // exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
 // full derivation).
 //
-// BIT 0 IS A VBLANK STATUS FLAG, ACTIVE LOW (0 while in vblank). It used to
-// be tied high with the rest of bits 15:0, which hung the boot: on hardware
-// the CPU sat forever in
+// BIT 0: the boot polls this and spins until it CLEARS, then DMAs sprite RAM.
+// Tying it HIGH hangs the boot. Tying it to ~vblank boots but makes the game
+// wait up to a whole frame at every poll, which is a strong candidate for the
+// observed HALF SPEED. In MAME the equivalent read returns 0 almost
+// immediately (the poll loop exits after a handful of iterations), so a
+// constant 0 is the MAME-matching behaviour and costs no waiting.
+//
+// vblank_wait_en (OSD bit 53) selects: 0 = constant 0 (MAME-like, default),
+// 1 = ~vblank (the previous behaviour). A switch because "it boots" was the
+// only evidence for the vblank version and that is weak.
+//
+// Original note, kept because it explains the hang: on hardware the CPU sat
+// forever in
 //     000436: move.l $c00008.l, D0
 //     00043C: addq.w #1, $fffe0000.l      (a timeout counter)
 //     000442: andi.l #$1, D0
@@ -369,7 +401,7 @@ wire [31:0] coin_in = {
 	// inactive (1) there rather than presenting the coin twice.
 	board_gunbird ? 2'b11 : {~joystick_1[11], ~joystick_0[11]},
 	15'h7FFF,                                   // bits 15:1 unused
-	~vblank                                     // bit 0 = VBLANK, active low
+	vblank_wait_en & ~vblank                    // bit 0, see above
 };
 wire [14:0] rgb;
 
@@ -405,7 +437,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .snd_irq_en(snd_irq_en), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .snd_irq_en(snd_irq_en), .sprite_line_mode(sprite_line_mode), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
@@ -470,10 +502,6 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 //
 // DDRAM was previously tied off wholesale by this core; the rotator owns it
 // now. two_screen is 0 -- that is an SKNS-specific dual-screen mode.
-wire [1:0] rotate_sel = status[48:47];
-wire        rotate_en  = |rotate_sel;
-wire        rotate_ccw = (rotate_sel == 2'd2);
-wire        flip_180   = status[49];
 
 screen_rotate_two screen_rotate_two
 (

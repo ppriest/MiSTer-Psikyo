@@ -108,6 +108,9 @@ module psikyo_core #(
     // Freeze the main CPU, so a frame can be captured and compared against a
     // MAME dump of the same moment without the game advancing underneath it.
     input  logic         pause,
+    // 0 = whole-frame sprite buffer (original), 1 = per-scanline line buffer.
+    // See docs/sprite_buffering.md.
+    input  logic         sprite_line_mode,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,      // which signal group to record
     input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
@@ -186,12 +189,22 @@ module psikyo_core #(
     // ---- palette RAM: CPU write, compositor read ----
     logic [11:0] pal_addr;
     logic [15:0] pal_data;
+    logic [11:0] pal_b_addr;
+    logic [15:0] pal_b_rdata;
     dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_palette (
         .clk(clk),
         .a_addr(pal_cpu_addr), .a_wel(pal_cpu_wel), .a_weh(pal_cpu_weh),
         .a_wdata(pal_cpu_wdata), .a_rdata(pal_cpu_rdata),
-        .b_addr(pal_addr), .b_rdata(pal_data)
+        .b_addr(pal_b_addr), .b_rdata(pal_b_rdata)
     );
+    // Palette dump: rows 48..63 carry all 4096 xRGB_555 entries, addressed as
+    // {vcnt[3:0],hcnt[7:0]}. The compositor's read port is free while the
+    // overlay is up because the picture is discarded that frame.
+    wire        pal_dump_active = DEBUG_TRACER && dbg_overlay
+                                && (vcnt >= 9'd48) && (vcnt < 9'd64);
+    wire [11:0] pal_dump_addr   = {vcnt[3:0], hcnt[7:0]};
+    assign pal_b_addr = pal_dump_active ? pal_dump_addr : pal_addr;
+    assign pal_data    = pal_b_rdata;
 
     // ---- tilemap VRAM: CPU write, per-layer tilemap engine read ----
     logic [11:0] l0_vram_addr;
@@ -399,24 +412,42 @@ module psikyo_core #(
 
 
 
-    logic         fb_we;
-    logic [8:0]  fb_x;
+    // fb_y is still needed: the frame buffer is 2D. The other fb_* signals are
+    // gone -- the frame engine drives fe_fb_* now, see the dual-path block below.
     logic [7:0]  fb_y;
-    logic [3:0]  fb_pixel;
-    logic [4:0]  fb_color;
-    logic [1:0]  fb_priority;
+
+    // ---- two sprite paths, selected at runtime by sprite_line_mode ----
+    // Both are instantiated and share the spriteram BRAM ports and the SDRAM
+    // lut/gfxrom ports; the inactive one has its *_valid inputs held low so it
+    // stalls harmlessly in a wait state and issues no requests.
+    logic [11:0] fe_dl_addr, fe_at_addr, le_dl_addr, le_at_addr;
+    logic         fe_lut_req, le_lut_req, fe_gfxrom_req, le_gfxrom_req;
+    logic [16:0] fe_lut_addr, le_lut_addr;
+    logic [22:0] fe_gfxrom_addr, le_gfxrom_addr;
+    logic         fe_fb_we, le_fb_we;
+    logic [8:0]  fe_fb_x, le_fb_x;
+    logic [3:0]  fe_fb_pixel, le_fb_pixel;
+    logic [4:0]  fe_fb_color, le_fb_color;
+    logic [1:0]  fe_fb_priority, le_fb_priority;
+
+    assign dl_addr       = sprite_line_mode ? le_dl_addr      : fe_dl_addr;
+    assign at_addr       = sprite_line_mode ? le_at_addr      : fe_at_addr;
+    assign sp_lut_req    = sprite_line_mode ? le_lut_req      : fe_lut_req;
+    assign sp_lut_addr   = sprite_line_mode ? le_lut_addr     : fe_lut_addr;
+    assign sp_gfxrom_req = sprite_line_mode ? le_gfxrom_req   : fe_gfxrom_req;
+    assign sp_gfxrom_addr= sprite_line_mode ? le_gfxrom_addr  : fe_gfxrom_addr;
 
     sprite_render_engine u_sprite_render (
         .clk(clk), .reset(reset),
         .frame_start(sprite_frame_start), .frame_busy(sp_frame_busy), .frame_done(sp_frame_done),
         .trans_pen0(trans_pen0), .trans_pen15(trans_pen15),
-        .dl_addr(dl_addr), .dl_data(dl_data),
-        .at_addr(at_addr), .at_data(at_data),
-        .lut_req(sp_lut_req), .lut_addr(sp_lut_addr), .lut_valid(sp_lut_valid), .lut_data(sp_lut_data),
-        .gfxrom_req(sp_gfxrom_req), .gfxrom_addr(sp_gfxrom_addr),
-        .gfxrom_valid(sp_gfxrom_valid), .gfxrom_data(sp_gfxrom_data),
-        .fb_we(fb_we), .fb_x(fb_x), .fb_y(fb_y),
-        .fb_pixel(fb_pixel), .fb_color(fb_color), .fb_priority(fb_priority)
+        .dl_addr(fe_dl_addr), .dl_data(dl_data),
+        .at_addr(fe_at_addr), .at_data(at_data),
+        .lut_req(fe_lut_req), .lut_addr(fe_lut_addr), .lut_valid(sp_lut_valid & ~sprite_line_mode), .lut_data(sp_lut_data),
+        .gfxrom_req(fe_gfxrom_req), .gfxrom_addr(fe_gfxrom_addr),
+        .gfxrom_valid(sp_gfxrom_valid & ~sprite_line_mode), .gfxrom_data(sp_gfxrom_data),
+        .fb_we(fe_fb_we), .fb_x(fe_fb_x), .fb_y(fb_y),
+        .fb_pixel(fe_fb_pixel), .fb_color(fe_fb_color), .fb_priority(fe_fb_priority)
     );
 
     logic         sp_present;
@@ -427,19 +458,80 @@ module psikyo_core #(
     sprite_frame_buffer u_sprite_fb (
         .clk(clk), .reset(reset),
         .frame_swap(sprite_swap_now), .swap_busy(sp_swap_busy), .swap_done(sp_swap_done),
-        .fb_we(fb_we), .fb_x(fb_x), .fb_y(fb_y),
-        .fb_pixel(fb_pixel), .fb_color(fb_color), .fb_priority(fb_priority),
+        .fb_we(fe_fb_we), .fb_x(fe_fb_x), .fb_y(fb_y),
+        .fb_pixel(fe_fb_pixel), .fb_color(fe_fb_color), .fb_priority(fe_fb_priority),
         .rd_x(hcnt), .rd_y(vcnt_active),
         .rd_present(sp_present), .rd_pixel(sp_pixel), .rd_color(sp_color), .rd_priority(sp_priority)
     );
 
     // ---- compositor ----
+    // ---- per-scanline sprite path ----
+    // Renders line N+2 during line N+1, so it gets a whole line period (5472
+    // clk cycles) rather than just hblank. The buffer swaps at line_start, so
+    // the bank swapped in already holds the line about to be displayed.
+    logic [7:0] le_render_line;
+    assign le_render_line = vcnt_active + 8'd2;
+
+    logic le_busy, lb_ready;
+
+    // Start rendering when the buffer's clear FINISHES, not at line_start.
+    // sprite_line_buffer drops `ready` at line_start to run its 320-cycle
+    // clear, so gating the start on `ready` at line_start meant the two were
+    // never true together and the engine never ran at all.
+    logic lb_ready_d;
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) lb_ready_d <= 1'b0;
+        else        lb_ready_d <= lb_ready;
+    end
+    wire le_start = sprite_line_mode & lb_ready & ~lb_ready_d;
+
+    sprite_line_engine u_sprite_line (
+        .clk(clk), .reset(reset),
+        .line_start(le_start),
+        .render_line(le_render_line),
+        .busy(le_busy),
+        .trans_pen0(trans_pen0), .trans_pen15(trans_pen15),
+        .dl_addr(le_dl_addr), .dl_data(dl_data),
+        .at_addr(le_at_addr), .at_data(at_data),
+        .lut_req(le_lut_req), .lut_addr(le_lut_addr),
+        .lut_valid(sp_lut_valid & sprite_line_mode), .lut_data(sp_lut_data),
+        .gfxrom_req(le_gfxrom_req), .gfxrom_addr(le_gfxrom_addr),
+        .gfxrom_valid(sp_gfxrom_valid & sprite_line_mode), .gfxrom_data(sp_gfxrom_data),
+        .fb_we(le_fb_we), .fb_x(le_fb_x),
+        .fb_pixel(le_fb_pixel), .fb_color(le_fb_color), .fb_priority(le_fb_priority)
+    );
+
+    logic        lb_present;
+    logic [3:0] lb_pixel;
+    logic [4:0] lb_color;
+    logic [1:0] lb_priority;
+
+    sprite_line_buffer u_sprite_linebuf (
+        .clk(clk), .reset(reset),
+        .line_start(line_start), .ready(lb_ready),
+        .we(le_fb_we & ~sprites_disable & ~dbg_render_dis[0]),
+        .wx(le_fb_x), .wpixel(le_fb_pixel), .wcolor(le_fb_color), .wpriority(le_fb_priority),
+        .rx(hcnt),
+        .rd_present(lb_present), .rd_pixel(lb_pixel),
+        .rd_color(lb_color), .rd_priority(lb_priority)
+    );
+
+    // ---- select which sprite source the compositor sees ----
+    logic        spx_present;
+    logic [3:0] spx_pixel;
+    logic [4:0] spx_color;
+    logic [1:0] spx_priority;
+    assign spx_present  = sprite_line_mode ? lb_present  : sp_present;
+    assign spx_pixel    = sprite_line_mode ? lb_pixel    : sp_pixel;
+    assign spx_color    = sprite_line_mode ? lb_color    : sp_color;
+    assign spx_priority = sprite_line_mode ? lb_priority : sp_priority;
+
     compositor u_compositor (
         .l0_valid(l0_pixel_valid), .l0_pixel(l0_pixel_index), .l0_color(l0_pixel_color),
         .l0_ctrl_enable(l0_enable & ~dbg_render_dis[1]), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
         .l1_valid(l1_pixel_valid), .l1_pixel(l1_pixel_index), .l1_color(l1_pixel_color),
         .l1_ctrl_enable(l1_enable & ~dbg_render_dis[2]), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
-        .sp_present(sp_present), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
+        .sp_present(spx_present), .sp_pixel(spx_pixel), .sp_color(spx_color), .sp_priority(spx_priority),
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
     );
@@ -489,7 +581,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index(vcnt - 9'd48),
+            .rd_index(vcnt - 9'd64),
             .rd_data(rd_addr),
             .frozen(frz_a)
         );
@@ -503,7 +595,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index(vcnt - 9'd176),
+            .rd_index(vcnt - 9'd192),
             .rd_data(rd_data),
             .frozen(frz_d)
         );
@@ -543,12 +635,14 @@ module psikyo_core #(
         //   rows 176-215 : CPU ROM read, {addr[7:0],data}    (40 entries)
         //   rows 216-223 : control echo + video-engine health flags
         // row 215 carries the worst-case sprite render length, in clk cycles
+        //   rows  48- 63 : palette RAM, all 4096 xRGB_555 entries
         assign dbg_pixel = (vcnt == 9'd215) ? {4'd0, sp_render_max}
                          : (vcnt >= 9'd216) ? ctl_echo
                          : (vcnt <  9'd16)  ? {8'h00, vram0_b_rdata}
                          : (vcnt <  9'd32)  ? {8'h00, vram1_b_rdata}
                          : (vcnt <  9'd48)  ? {8'h00, vregs_dump_data}
-                         : (vcnt <  9'd176) ? rd_addr
+                         : (vcnt <  9'd64)  ? {8'h00, pal_b_rdata}
+                         : (vcnt <  9'd192) ? rd_addr
                                             : rd_data;
     end else begin : g_no_tracer
         assign dbg_pixel = 24'd0;

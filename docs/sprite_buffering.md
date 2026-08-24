@@ -55,6 +55,11 @@ Both positions boot and run. It is a runtime switch because an earlier attempt t
 this change stopped the core booting, and the cause was never established; a switch makes it an
 A/B on one bitstream rather than a rebuild per attempt.
 
+Measured on hardware: `FrameStart` visibly improves sprite rendering, but flicker and ghosting
+still occur. So the swap policy was part of the problem and is not the whole of it — defect 3
+(source records swapped mid-render, in `spriteram_dbuf`) is untouched by this switch and remains
+a candidate, as does anything in the per-sprite attribute decode.
+
 ## The alternative: per-scanline line buffers
 
 A whole-frame sprite buffer is unusual for this class of hardware. Surveying other cores:
@@ -77,6 +82,19 @@ against roughly 5,470 clk cycles available per line. Worst-case lines would exce
 on real hardware is what per-line sprite limits produce — authentic dropout rather than the
 current artefacts.
 
-This is a rewrite of a verified module, so it is worth confirming first whether `FrameStart`
-alone resolves the visible defects. If it does, the line-buffer change is an optimisation
-rather than a fix.
+## Status of the line-buffer path
+
+Built and selectable at runtime as `Sprite buffer = Line` (OSD bit 52), alongside the original
+frame-buffer path which remains the default:
+
+* `sprite_line_buffer.sv` — two 320x12-bit banks, swapped at `line_start`, with a 320-cycle
+  clear of the render bank while `ready` is low.
+* `sprite_line_engine.sv` — per-scanline renderer reusing the verified decode modules. Its
+  `S_FIND_ROW` state searches `iy` for the sub-tile row covering `render_line`.
+
+One bug found and fixed before it was ever exercised: `le_start` was gated on `lb_ready`, which
+drops at `line_start`, so start and ready were never true together and the path rendered
+nothing. It now triggers on the rising edge of `lb_ready`.
+
+**This path has not been evaluated on hardware.** Until it has, no claim either way about
+whether it fixes the flicker and ghosting.

@@ -97,3 +97,12 @@ debug/captures/
 # Quartus STA scratch logs
 sta*.log
 worst_*.rpt
+
+# scratch CFG written by the deploy/test scripts
+cfg.bin
+__pycache__/
+*.pyc
+# raw debug frame captures -- the .txt analyses are kept, the PNG stacks are not
+debug/attract_*/
+debug/sp_*.png
+debug/spd*.png
