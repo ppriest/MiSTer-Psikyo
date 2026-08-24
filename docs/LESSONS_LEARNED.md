@@ -86,54 +86,47 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   bits. Capture the *full* address — if it does not fit alongside the data, use two buffers
   strobed by the same event, so entry N of each describes the same bus cycle.
 
-## Let the number tell you what the bug is
+## Check whether a measurement is arithmetically exact
 
-The tilemaps rendered correct-looking content across **exactly 28 columns** of every
-scanline, then backdrop for the remaining 292, with the sticky `fetch_overrun` flag set.
-That reads like a memory-bandwidth problem, and it was chased as one: SDRAM contention,
-arbiter priority, prefetch depth, whether the sprite engine was starving the tilemap
-ports. It is not a bandwidth problem at all.
+Tilemaps rendered correct content across exactly 28 columns of every scanline, backdrop for the
+remaining 292, with the sticky `fetch_overrun` flag set. That was chased as a memory-bandwidth
+problem: SDRAM contention, arbiter priority, prefetch depth, sprite engine starving the tilemap
+ports. It was none of those.
 
-`tilemap_line_engine` had **no `ce_pix` port**. Its display side advanced one pixel per
-`clk` (85.909 MHz) rather than per pixel clock (85.909/12 = 7.159 MHz), so it drained the
-line's prefetched tiles twelve times too fast:
+`tilemap_line_engine` had no `ce_pix` port. Its display side advanced one pixel per `clk`
+(85.909 MHz) instead of per pixel clock (85.909/12 = 7.159 MHz), draining each line's prefetched
+tiles twelve times too fast:
 
 ```
 21 tiles x 16 px = 336 pixels, one per clk = 336 clk cycles
-336 clk / 12 clk-per-pixel = 28 displayed pixels
+336 / 12 clk-per-pixel                     = 28 displayed pixels
 ```
 
-28. Exactly the observed number. The content was always right; it was consumed 12x too
-early, and `fetch_overrun` was a true symptom of **over-consumption**, not under-supply.
+The content was always correct; it was consumed 12x too early, and `fetch_overrun` was a real
+symptom of over-consumption rather than under-supply.
 
-**Check whether an odd measurement is arithmetically exact before theorising about it.**
-28 of 320 is not "about an eighth", it is 336/12, and that division names the bug
-immediately. A cause that predicts the number exactly beats one that merely explains the
-shape of the symptom. Contention would have produced a ragged, load-dependent boundary,
-not the same column every line.
+28 of 320 is not "about an eighth", it is 336/12, and that division identifies the cause. A
+hypothesis that predicts the number exactly is worth more than one that explains the shape of
+the symptom: contention would give a ragged, load-dependent boundary, not the same column on
+every line.
 
-Corollary for this codebase: **any module that hands pixels to the display must consume
-at `ce_pix`, not at `clk`.** The sprite path renders a frame ahead into a buffer so it is
-free to run at full clock, but the tilemap engines feed the compositor directly and must
-not. When adding a module to the video path, check which of those two it is.
+Corollary: any module feeding pixels to the display must consume at `ce_pix`, not `clk`. The
+sprite path renders a frame ahead into a buffer and may run at full clock; the tilemap engines
+feed the compositor directly and may not.
 
-## Beware a fix that starves a shared resource
+## A locally correct fix can still break a shared resource
 
-The sprite frame buffer genuinely does swap banks mid-scanout, and its own header asks the
-caller to pulse `frame_swap` at vblank and wait for `swap_done`. Implementing exactly that
-stopped the core booting: the CPU ended up parked on the boot's deliberate `bra.s *`
-die-here stub at 0xB5E with the video registers never programmed.
+`sprite_frame_buffer`'s header asks the caller to pulse `frame_swap` at vblank and wait for
+`swap_done`. Doing exactly that stopped the core booting: the CPU ended up on the boot's
+`bra.s *` stub at 0xB5E with the video registers never programmed. Holding the render start
+across frames left the engine rendering back-to-back, and it shares the SDRAM arbiter with CPU
+program fetches.
 
-Holding the sprite render start across frames left the engine rendering back-to-back, and
-it shares the SDRAM arbiter with the CPU's program fetches. A change that is locally
-correct can still be globally fatal when it alters how heavily a module uses a contended
-resource.
-
-It was isolated without rebuilding, using the OSD render-disable switches added the same
-day: forcing both tilemap layers off inside the same bitstream (overlay off, so nothing was
-borrowing a memory port either) still hung, which excluded the tilemap enable change and
-the debug instrumentation, leaving only the sequencing change. **Runtime A/B switches pay
-for themselves the first time a 12-minute build would otherwise be the only way to bisect.**
+It was isolated without rebuilding, using the OSD render-disable switches: forcing both tilemap
+layers off in the same bitstream (overlay off, so nothing was borrowing a memory port) still
+hung, which excluded the tilemap enable change and the debug instrumentation and left only the
+sequencing change. Runtime A/B switches are worth adding when the alternative is a 12-minute
+build per bisection step.
 
 ## Copy the polarity, not just the bit position
 
@@ -143,43 +136,34 @@ for themselves the first time a 12-minute build would otherwise be the only way 
 m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
 ```
 
-That `~` is the entire difference between a working tilemap layer and one that
-never draws. `vreg_decode.sv` had `assign layer0_enable = l0_ctrl[0]`, which is the
-right bit read the wrong way round, so both layers were held off for every value the
-game actually writes. The compositor then fell through to backdrop on every pixel and
-the screen showed only sprites -- which looked like a rendering-pipeline failure, and
-sent the investigation into the fetch path, the addressing, and the VRAM contents.
+`vreg_decode.sv` had `assign layer0_enable = l0_ctrl[0]` — the right bit, read the wrong way
+round — so both layers were held off for every value the game writes. The compositor fell
+through to backdrop on every pixel and only sprites appeared, which looks like a rendering
+failure and sent the investigation into the fetch path, addressing and VRAM contents.
 
-Everything *else* in that path was correct, and was verified so during the hunt:
-tile_scan for all four size modes (each reduces to row-major once masked with
-`tile_index & 0xfff`), the six vreg offsets (`0x402/0x406/0x412`, `0x40a/0x40e/0x416`),
-the control bit positions, `get_tile_info`'s tile/colour split, and the rowscroll table
-layout (`vregs[(layer*0x200)/2 + (i >> tile_rowscroll)]`, word indices, indexed by the
-RAW scanline). One inverted bit hid all of it.
+Everything else in that path was verified correct at the same time: `tile_scan` for all four
+size modes (each reduces to row-major once masked with `tile_index & 0xfff`), the six vreg
+offsets (`0x402/0x406/0x412`, `0x40a/0x40e/0x416`), the control bit positions,
+`get_tile_info`'s tile/colour split, and the rowscroll table layout
+(`vregs[(layer*0x200)/2 + (i >> tile_rowscroll)]`, word indices, indexed by the raw scanline).
 
-**When transcribing a driver's register semantics, copy the expression, including its
-operators.** A bit position that matches is not the same as a bit that means the same
-thing. Where MAME writes `~x & 1`, `!(x & 1)`, or `x & 8 ? 0 : 15`, carry the sense
-across explicitly and say so in a comment, because a polarity error is invisible in
-review -- the bit index is right there and looks correct.
+When transcribing a driver's register semantics, copy the expression including its operators.
+Where MAME writes `~x & 1`, `!(x & 1)` or `x & 8 ? 0 : 15`, carry the sense across and note it
+in a comment: a polarity error is invisible in review because the bit index looks correct.
 
-### How it was actually found
-
-Not by reading the RTL, which had been read several times. By making the hardware
-report its own state: the debug overlay was extended to dump the video-register RAM
-(borrowing `vreg_decode`'s rowscroll read port while the overlay is up, since the
-picture is discarded anyway), so one screenshot showed the layer control words the CPU
-had really written -- `0x00D0`, bit 0 clear. The core simultaneously echoed its decoded
-`layer_enable` as 0. Those two facts side by side name the bug immediately. Dump the
-register, not the intent.
+It was found by making the hardware report its own state, not by re-reading the RTL. The debug
+overlay was extended to dump the video-register RAM (borrowing `vreg_decode`'s rowscroll read
+port while the overlay is up, since the picture is discarded anyway). One screenshot showed the
+control words the CPU had written — `0x00D0`, bit 0 clear — next to the core's decoded
+`layer_enable` of 0. Dump the register, not the intent.
 
 ## A hardware-vs-image comparison cannot detect a wrong image
 
-The single most expensive mistake of 2026-08-23. A hardware trace of CPU ROM reads was checked
-against the ROM image assembled from the `.mra` and matched **128/128**, which was reported as
-"the SDRAM read path is verified sound". It was — but the same measurement was also taken as
-evidence the `.mra` was right, and it could never show that: **both sides of the comparison were
-built from the same assumption about byte order.** A wrong map is invisible to it.
+A hardware trace of CPU ROM reads was checked against the ROM image assembled from the `.mra`
+and matched 128/128, reported as "the SDRAM read path is verified sound". It was — but the same
+measurement was also taken as evidence the `.mra` was right, and it cannot show that: both sides
+of the comparison were built from the same assumption about byte order. A wrong map is invisible
+to it.
 
 The reset vector had to be byte-swapped in the analysis script to make it match MAME
 (`SP=FFFF8000 PC=00000400`). That swap was written off as a capture artifact. It was real: the CPU
@@ -202,8 +186,8 @@ Reconstructing those exact words from the two ROM files scores 18/18 for one int
 
 ## MiSTer caches the loaded ROM -- an .mra edit alone does nothing
 
-Deploying a corrected `.mra` and re-launching it produced a byte-identical trace, which nearly got
-the fix discarded as ineffective. Re-launching the game that is already loaded reuses the ROM.
+Deploying a corrected `.mra` and re-launching produced a byte-identical trace, which nearly led to
+the fix being discarded as ineffective. Re-launching a game that is already loaded reuses the ROM.
 Force a genuine reload by bouncing through the menu first:
 
 ```
@@ -211,14 +195,26 @@ POST /api/launch {"path":"/media/fat/menu.rbf"}   # then wait
 POST /api/launch {"path":"/media/fat/_Arcade/.../Game.mra"}
 ```
 
-## Writing a .CFG by hand silently rewrites the DIP switches
+## Writing a .CFG by hand rewrites the DIP switches
 
-`/media/fat/config/<setname>.CFG` is the whole 128-bit status word. Writing 16 bytes with only
-byte 7 set to enable a debug bit **zeroes every DIP switch**, because the `.mra`'s `<switches>`
-occupy `status[55:16]`. For this core that turned **Service Mode ON** (bit 23, ids `On,Off`) and
-Flip Screen on, in every capture taken that way. Either write the `<switches default>` bytes
-alongside your own (`FF,FF,FD,FF,FF` -> CFG bytes 2..6 here), or delete the CFG and let MiSTer
-write its own defaults.
+`/media/fat/config/<setname>.CFG` is the whole 128-bit status word, little-endian (byte N holds
+`status[8N+7:8N]`). Writing 16 bytes with only a debug bit set zeroes every DIP switch, because
+the `.mra`'s `<switches>` bytes live in that same word. For this core that turned Service Mode on
+(bit 23, ids `On,Off`), which is not obvious from the screen.
+
+The mapping, established by measurement and confirmed against `psikyo.cpp`:
+
+* `<switches>` bytes start at `status[16]`: byte0 -> `status[23:16]`, byte1 -> `status[31:24]`,
+  byte2 -> `status[39:32]`.
+* `Psikyo.sv` feeds those into the 32-bit DSW long at `$C00004` as
+  `{status[31:16], 8'hFF, status[39:32]}`, because MAME puts every DIP in that long's upper half
+  and the region jumper in its low byte.
+* Correct defaults are `FD,FF,FF` for samuraia and gunbird, `FD,FF,00` for btlkroad — the last
+  byte is the region jumper, and btlkroad encodes World as `0x00` where the others use `0x0f`.
+
+Either write those bytes alongside your own, or delete the `.CFG` and let MiSTer write defaults.
+Note that a value which merely looks harmless can hang a game: gunbird's boot polls `$C00004`
+bit 7 and spins until it clears, so a `0xFF` region byte never boots.
 
 ## A malformed .mra looks exactly like a core regression
 
@@ -226,7 +222,7 @@ An edited comment block left a `-->` that had already closed the comment, so the
 in the document as character data -- and it contained `<- u127`. A bare `<` is illegal XML, MiSTer
 rejected the file, and the result was: DIP switches gone from the OSD, ROM never loaded, core up on
 an all-zero image, `SP=PC=00000000`, black screen. Every symptom pointed at the RTL. The only clue
-that it was the `.mra` was the on-screen "XML parse" message, which the user saw and I did not.
+that it was the `.mra` was the on-screen "XML parse" message.
 
 `scripts/validate_mra.py` now checks well-formedness AND flags stray element text (which is how a
 prematurely-closed comment shows up). Gate every deploy on it:
@@ -327,7 +323,7 @@ Note what it does **not** prove: the trace address is truncated, so it verifies 
   design (video pipeline, SDRAM controller, sound) failed timing at all. Budget for the CPU to be
   the Fmax-limiting block in any design that includes it.
 - **`TG68K.vhd` is an async-68000-BUS ADAPTER, not the CPU. Do not rate-limit it — bypass it.**
-  This is the single most expensive mistake made on this project. `TG68K.vhd` wraps the real core
+  `TG68K.vhd` wraps the real core
   (`TG68KdotC_Kernel`) in a 68000 bus-protocol emulator that assumes `CLK` **is** the CPU clock:
   it has `falling_edge` registers (`as_e`, `rw_e`, `uds_e`, `lds_e`, `clkena_e`, `data_akt_e`,
   `cpuIPL`, `waitm`, `E`) precisely because it reproduces real 68000 bus phases. Slowing it down

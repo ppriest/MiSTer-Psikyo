@@ -16,35 +16,30 @@
 //
 //============================================================================
 //
-// Top-level HPS/DIP/CRT_Offset glue for the Phase 1 SH201B/KA302C board
-// (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road -- docs/ROADMAP.md's
-// "Hardware reality" table), wiring rtl/psikyo_top.sv (video+CPU+SDRAM+
-// sound CPU, already verified end to end in simulation, see
-// docs/ROADMAP.md's "Progress") into MiSTer-devel/Template_MiSTer's
-// framework. BOARD_GUNBIRD is fixed to sngkace's layout here (this
-// project's own Phase 1 entry point, per docs/ROADMAP.md); a gunbird/
-// btlkroad build needs its own top-level parameter value, same as
-// rtl/psikyo_top.sv itself already requires per board.
+// Top-level HPS/DIP/video glue for the Phase 1 SH201B/KA302C boards
+// (Samurai Aces / Sengoku Ace, Gun Bird, Battle K-Road), wiring
+// rtl/psikyo_top.sv into the MiSTer framework.
 //
-// Input port bit layout (P1P2 32-bit port, separate COIN port) confirmed
-// directly from psikyo.cpp's own sngkace_input_r()/INPUT_PORTS_START
-// block, not assumed -- see the p1p2_in/coin_in assignments below for the
-// exact bit positions. Standard MiSTer joystick_0/1 bit convention
-// (0=Right,1=Left,2=Down,3=Up,4=Button1,5=Button2,6=Button3,10=Start,
-// 11=Coin) confirmed against a real, already-built, similar-genre
-// MiSTer-devel core (rmonic79/Arcade-Raiden_MiSTer, already named in this
-// project's own "Component reuse map"), not assumed either.
+// The board variant is selected at RUNTIME from the .mra's mod byte
+// (<rom index="1">, arriving as ioctl_index==1), so one .rbf serves all three
+// games. It gates the $C00008 COIN-port bit assignments and KA302C tile
+// banking. It is latched and NOT reset by `reset`, because MiSTer holds the
+// core in reset for the whole ROM download.
 //
-// NOT yet done here (tracked, not silently skipped): jt10/YM2610 (silent
-// for now -- rtl/psikyo_top.sv's ym_* bus is exposed but unconnected,
-// matching docs/ROADMAP.md's own "Next steps" ordering: jt10's
-// audio-domain verification pass hasn't happened yet), per-game DIP
-// switch *labels* (the generic "DIP;" CONF_STR entry pulls them from
-// whichever .mra is loaded, matching every MiSTer arcade core's standard
-// convention -- no per-game RTL needed), and real hardware SDRAM_CLK
-// phase-shift tuning (rtl/pll/pll_0002.v's -3000ps is a starting point
-// copied from another core's ballpark, not independently verified against
-// this board).
+// Input port bit layout is taken from psikyo.cpp's INPUT_PORTS: sngkace has a
+// separate COIN port, gunbird/btlkroad fold coin/service/z80-nmi into the
+// P1_P2 low byte instead. DIPs occupy the upper half of the 32-bit DSW long at
+// $C00004 with the region jumper in its low byte; see the dsw_in assignment.
+// MiSTer joystick bit order (0=Right,1=Left,2=Down,3=Up,4..6=Buttons,
+// 10=Start,11=Coin) follows rmonic79/Arcade-Raiden_MiSTer.
+//
+// Video goes through sys/arcade_video.v (scandoubler, gamma, scanline FX,
+// aspect/crop) with rtl/video/screen_rotate_two.sv tapping the output to
+// provide rotation and 180-degree flip over HDMI via the HPS framebuffer.
+//
+// Not done here: audio -- AUDIO_L/R are tied low and rtl/psikyo_top.sv's ym_*
+// bus is exposed but unconnected; and SDRAM_CLK phase tuning
+// (rtl/pll/pll_0002.v's -3000ps is inherited, not measured on this board).
 module emu
 (
 	`include "sys/emu_ports.vh"

@@ -24,14 +24,12 @@ module tilemap_line_engine #(
     // Timing (from a not-yet-built top-level generator; see doc for the
     // hcnt/vcnt convention this module assumes)
     input  logic [7:0]  vcnt,        // 0-223, current active scanline
-    // ONE PIXEL IS CONSUMED PER ce_pix, NOT PER clk. clk is 85.909 MHz and the
-    // pixel clock is 85.909/12 = 7.159 MHz, so without this the display side
-    // advances 12x too fast: it drains the whole line's 21 prefetched tiles
-    // (21*16 = 336 pixels, one per clk) in 336 clk cycles = 336/12 = 28 pixel
-    // clocks, then reports fetch_overrun for the rest of the line. That is
-    // exactly what hardware showed -- correct-looking tilemap content in
-    // columns 0..27 of every scanline and backdrop across the remaining 292.
-    // It reads like a memory-bandwidth problem and is not one.
+    // One pixel is consumed per ce_pix, not per clk. clk is 85.909 MHz and the
+    // pixel clock is 85.909/12 = 7.159 MHz; without this the display side
+    // drains the line's 21 prefetched tiles (336 pixels, one per clk) in
+    // 336/12 = 28 pixel clocks and reports fetch_overrun for the rest of the
+    // line. That was the observed defect: correct content in columns 0..27 of
+    // every scanline, backdrop across the remaining 292.
     input  logic         ce_pix,      // 1-in-12 pixel-clock enable
     input  logic         h_active,    // 1 while the active 320-pixel window is being displayed
     input  logic         line_start,  // 1-cycle pulse during blanking, well before h_active next asserts

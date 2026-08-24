@@ -197,16 +197,11 @@ module psikyo_core #(
     logic [15:0] l1_vram_data;
 
     // ---- VRAM debug dump: borrow the tilemap engines' read ports ----
-    // When the debug overlay is on it replaces the whole picture, so tilemap
-    // rendering is already discarded that frame -- which makes the layer
-    // engines' VRAM read ports free to reuse. Indexing by {vcnt[3:0],hcnt[7:0]}
-    // walks all 4096 words of a layer's VRAM across 16 scanlines, so ONE
-    // screenshot carries both layers' complete tilemap RAM for diffing against
-    // a MAME dump. A shadow BRAM would also work but costs 16KB and only ever
-    // sees CPU writes; this sees the memory itself.
-    //
-    // Nothing here touches the tilemap RTL: the engines still drive their own
-    // addresses whenever the overlay is off, which is every normal frame.
+    // The overlay replaces the picture, so tilemap rendering is discarded that
+    // frame and the layer engines' VRAM read ports are free. Indexing by
+    // {vcnt[3:0],hcnt[7:0]} puts all 4096 words of both layers into 32
+    // scanlines, so one screenshot carries the complete tilemap RAM for
+    // comparison against a MAME dump. Touches no tilemap RTL.
     logic [11:0] vram0_b_addr, vram1_b_addr;
     logic [15:0] vram0_b_rdata, vram1_b_rdata;
 
@@ -348,28 +343,16 @@ module psikyo_core #(
     logic sp_swap_busy, sp_swap_done;
     logic sp_frame_busy, sp_frame_done;
 
-    // ---- sprite output-buffer swap policy, RUNTIME SELECTABLE ----
-    //
-    // Default (dbg_sprite_vsync_swap = 0) is the long-standing behaviour:
-    // frame_swap fires on sp_frame_done, so the display bank toggles at
-    // whatever moment rendering finishes. Measurement says that is ~61.5% of
-    // the way down the VISIBLE frame, every frame -- the compositor reads the
-    // display bank throughout scanout, so the picture tears there, and the
-    // tear moves with sprite load. That is the flicker.
-    //
-    // Setting the bit swaps at the frame boundary instead and holds the render
-    // start until the buffer's clear has finished, which is what
-    // sprite_frame_buffer's own header asks for. Measured budget supports it:
-    //   sprite render   881632 cycles (61.5% of a frame)
-    //   buffer clear     71680 cycles ( 5.0%)
-    //   frame          1433729 cycles
-    // so clear + render is about two thirds of a frame.
-    //
-    // It is a runtime switch and not simply applied, because exactly this
-    // change was tried before and stopped the core booting -- the CPU ended up
-    // parked on the boot's die-here stub. The cause was never established, and
-    // a switch makes it an A/B on one bitstream instead of a 12-minute build
-    // per attempt. Default stays on the behaviour known to boot.
+    // ---- sprite output-buffer swap policy, runtime selectable ----
+    // 0 (default): frame_swap on sp_frame_done, so the display bank toggles
+    //   wherever rendering finishes -- measured at ~61.5% down the VISIBLE
+    //   frame, which tears the picture there every frame.
+    // 1: swap at the frame boundary and hold the render start until the
+    //   buffer's clear completes, as sprite_frame_buffer's header asks.
+    // Budget supports either: render 881632 cycles, clear 71680, frame
+    // 1433729. A switch rather than an outright change because this was tried
+    // once and stopped the core booting for reasons never established; it
+    // makes the comparison an A/B on one bitstream. See docs/sprite_buffering.md.
     wire want_frame = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
 
     logic bank_ready, start_pending;
@@ -395,16 +378,11 @@ module psikyo_core #(
                                                   : sp_frame_done;
 
     // ---- sprite render budget instrumentation ----
-    // Does a sprite render pass actually finish inside one frame? Everything
-    // downstream assumes it does, and BOTH known sprite artefacts follow if it
-    // does not:
-    //   * spriteram_dbuf swaps the CPU-write / engine-read banks at
-    //     frame_start, so an overrunning pass has its SOURCE RECORDS swapped
-    //     underneath it mid-render and draws two frames' sprites mixed;
-    //   * sprite_frame_buffer's clear then overlaps the next pass, and the
-    //     buffer ignores writes while swap_busy, so sprites are dropped and
-    //     stale pixels survive where the clear had not yet reached.
-    // Sticky and not reset-coupled, so one overrun since configuration shows.
+    // Does a render pass finish inside one frame? Both sprite artefacts follow
+    // if it does not: spriteram_dbuf swaps the engine's SOURCE records at
+    // frame_start, and the frame buffer's clear then overlaps the next pass
+    // (it ignores writes while swap_busy). sp_overran is sticky since
+    // configuration, so it also catches boot transients.
     logic sp_overran = 1'b0;
     logic [19:0] sp_render_cycles = '0;
     logic [19:0] sp_render_max    = '0;

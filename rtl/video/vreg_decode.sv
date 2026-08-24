@@ -137,19 +137,11 @@ module vreg_decode (
 
     // Layer control word bits, docs/phase1_memory_map.md's "Layer control
     // word bits" table.
-    // ENABLE IS ACTIVE LOW. psikyo_v.cpp:
+    // ENABLE IS ACTIVE LOW: psikyo_v.cpp does
     //     m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
-    // This was read as active-high, which inverted the meaning of the bit and
-    // held both tilemaps OFF for every value the game actually writes. On
-    // hardware the layer control words read back as 0x00D0 -- bit 0 clear, i.e.
-    // ENABLED -- while the core reported enable=0 and the compositor fell
-    // through to backdrop on every pixel, so no tilemap ever drew anything.
-    // Everything else about the tilemap path (addressing, all four size modes,
-    // rowscroll table layout and indexing, cell decode, vreg offsets) was
-    // verified correct against MAME at the same time; this single inverted bit
-    // was the whole reason none of it was visible.
-    //
-    // Note the reset value (0x0000) therefore means ENABLED, matching MAME,
+    // Reading it active-high held both layers off for every value the game
+    // writes, so the compositor painted backdrop on every pixel and only
+    // sprites appeared. Reset value 0 therefore means ENABLED, matching MAME,
     // whose m_vregs also powers up zeroed.
     assign layer0_enable            = ~l0_ctrl[0];
     assign layer0_opaque            = l0_ctrl[1];

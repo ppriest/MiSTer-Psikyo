@@ -20,13 +20,18 @@ gotchas, testbench pitfalls, real-hardware bring-up technique) see
 next. Per-component vendoring/provenance detail lives in each module's own `PROVENANCE.md`
 (`rtl/cpu/tg68k/`, `rtl/memory/sdram/`, `rtl/sound/jt10/`, `rtl/sound/jt49/`).
 
-## Progress (kept current — last updated 2026-08-23)
+## Progress (kept current — last updated 2026-08-24)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code correctly
 in ModelSim, synthesizes/fits cleanly on real Cyclone V (2,788/41,910 ALMs).
 
-**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road): RTL
-complete for sngkace-layout boards, real hardware bring-up underway.** Branch `phase1-sh201b-ka302c`.
+**Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road):
+all three games boot and run on real hardware, without sound.** The board variant is selected at
+runtime from the `.mra` mod byte, so one `.rbf` serves all three.
+
+Remaining Phase 1 work: audio (jt10/YM2610 is not wired in at all), the sprite flicker/retention
+defects in `docs/sprite_buffering.md`, tinted colours on Gun Bird and Battle K-Road, and about
+0.5 ns of residual setup slack on `clk_sys`.
 
 Built and verified (ModelSim + real Quartus synthesis, each with its own testbench — see git
 history for individual commits):
@@ -252,11 +257,11 @@ Convention: `develop` is the working branch, `master` only gets merges when expl
   Real ROM-mastering artifact, can't be expressed in `.mra` (byte-level only), needs a per-game
   select signal. Full writeup in `docs/phase1_memory_map.md`; belongs alongside
   `sdram_download.sv` as a download-time fixup.
-- **Timing closure not yet final.** First full place-and-route produces a working `.sof`/`.rbf`
-  but had residual negative setup slack after fixing the dominant offender (a synthesized mod-768
-  divider, see LESSONS_LEARNED.md). Remaining gap is a smaller arithmetic path in
-  `sprite_record_decode.sv`/`sprite_render_engine.sv` — needs a real pipelining pass, not yet
-  attempted since it risks disturbing the render engine's per-column state machine timing.
+- **Timing closure not final.** The dominant offender was the sprite engine path
+  `sprite_record_fetch.word_y -> sprite_render_engine.fb_pixel` at -1.889 ns (TNS -156). A
+  two-stage pipelining pass (stage A registers the per-sprite constants, stage B the sub-tile
+  origin) took that to about -0.5 ns with TNS -1.5, and `sim/sprite_render_engine_tb` still
+  passes. The remainder has not been chased.
 
 ## Next steps
 

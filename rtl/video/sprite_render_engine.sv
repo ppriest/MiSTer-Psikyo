@@ -112,25 +112,14 @@ module sprite_render_engine (
     sprite_zoom_lut u_zoom_lut_y (.raw_zoom(rd_zoom_y_raw), .dst_size(zl_dst_size_y), .dx(zl_dx_y));
 
     // ---- PIPELINE STAGE A: per-sprite constants, registered once per sprite ----
-    //
     // Everything above is a pure function of sprite_record_fetch's rf_word_*
-    // outputs, which are latched per sprite and do not change again until the
-    // next one -- yet it used to be re-evaluated combinationally on every
-    // single cycle of the S_COL inner loop, in series with the sub-tile step
-    // and the screen-position arithmetic. That produced the design's worst
-    // timing path, from sprite_record_fetch.word_y all the way through to
-    // fb_pixel: 21.593 ns arrival against 19.704 ns required, -1.889 ns slack,
-    // with ~156 ns of total negative slack behind it on clk_sys.
-    //
-    // A design that misses timing does not fail predictably -- it fails
-    // according to how the fitter happened to place it, so a one-character RTL
-    // edit elsewhere could flip the whole core between booting and hanging.
-    // That made functional debugging untrustworthy, which is why this is worth
-    // fixing before anything else.
-    //
-    // Registering costs only latency, and only at points where the FSM is
-    // already waiting: stage A lands during S_RECORD_WAIT -> S_LUT_WAIT, and
-    // S_LUT_WAIT then blocks on an SDRAM round-trip anyway.
+    // outputs, which are constant for a whole sprite, but used to be
+    // re-evaluated combinationally on every cycle of the S_COL inner loop, in
+    // series with the sub-tile step and the screen-position arithmetic. That
+    // was the design's worst timing path (sprite_record_fetch.word_y ->
+    // fb_pixel, 21.593 ns against 19.704 ns required, -1.889 ns slack).
+    // Registering costs only latency, at points where the FSM already waits on
+    // an SDRAM round-trip.
     logic [3:0]        a_nx, a_ny;
     logic              a_flip_x, a_flip_y;
     logic [4:0]        a_color;
