@@ -72,3 +72,4 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/psikyo_top.sv
 
 set_global_assignment -name SDC_FILE Psikyo.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE Psikyo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv

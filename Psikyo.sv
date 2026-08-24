@@ -56,7 +56,7 @@ assign ADC_BUS  = 'Z;
 assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
+// DDRAM is driven by screen_rotate_two (HDMI framebuffer rotation), below.
 
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
@@ -88,6 +88,8 @@ localparam CONF_STR = {
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"O[48:47],Rotation,Off,CW,CCW;",
+	"O[49],Flip 180,Off,On;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -439,6 +441,64 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 	.fx(status[46:44]),
 	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus)
+);
+
+// ---- HDMI rotation / flip via the HPS framebuffer (sys DDRAM) ----
+// Psikyo boards are vertical (TATE); this core previously output the raw
+// landscape raster and did nothing about orientation, so the picture was
+// sideways on any normal monitor and there was no flip at all -- flip_screen
+// is not implemented in the video pipeline either.
+//
+// screen_rotate_two is Sorgelig's standard MiSTer rotator (GPL v2, same as
+// this project), taken from Arcade-SKNS_MiSTer. It is a TAP, not a filter:
+// VGA_R/G/B/HS/VS/DE still drive the analog output directly for CRT use,
+// while this writes a rotated (and optionally 180-flipped) copy into DDRAM
+// and points the HPS framebuffer at it for HDMI. So CRT keeps the native
+// raster and HDMI gets rotation and flip, which is why this also gives us
+// flip "for free" without touching the tilemap or sprite paths.
+//
+// DDRAM was previously tied off wholesale by this core; the rotator owns it
+// now. two_screen is 0 -- that is an SKNS-specific dual-screen mode.
+wire [1:0] rotate_sel = status[48:47];
+wire        rotate_en  = |rotate_sel;
+wire        rotate_ccw = (rotate_sel == 2'd2);
+wire        flip_180   = status[49];
+
+screen_rotate_two screen_rotate_two
+(
+	.CLK_VIDEO     (CLK_VIDEO),
+	.CE_PIXEL      (CE_PIXEL),
+
+	.VGA_R         (VGA_R),
+	.VGA_G         (VGA_G),
+	.VGA_B         (VGA_B),
+	.VGA_HS        (VGA_HS),
+	.VGA_VS        (VGA_VS),
+	.VGA_DE        (VGA_DE),
+
+	.rotate_ccw    (rotate_ccw),
+	.no_rotate     (~rotate_en),
+	.flip          (flip_180),
+	.two_screen    (1'b0),
+	.video_rotated (),
+
+	.FB_EN         (FB_EN),
+	.FB_FORMAT     (FB_FORMAT),
+	.FB_WIDTH      (FB_WIDTH),
+	.FB_HEIGHT     (FB_HEIGHT),
+	.FB_BASE       (FB_BASE),
+	.FB_STRIDE     (FB_STRIDE),
+	.FB_VBL        (FB_VBL),
+	.FB_LL         (FB_LL),
+
+	.DDRAM_CLK     (DDRAM_CLK),
+	.DDRAM_BUSY    (DDRAM_BUSY),
+	.DDRAM_BURSTCNT(DDRAM_BURSTCNT),
+	.DDRAM_ADDR    (DDRAM_ADDR),
+	.DDRAM_DIN     (DDRAM_DIN),
+	.DDRAM_BE      (DDRAM_BE),
+	.DDRAM_WE      (DDRAM_WE),
+	.DDRAM_RD      (DDRAM_RD)
 );
 
 reg  [26:0] act_cnt;
