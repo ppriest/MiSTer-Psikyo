@@ -83,13 +83,9 @@ module psikyo_top #(
     // board-specific bit layout decisions.
     output logic         nmi_pending,
 
-    // Sound chip (YM2610) bus -- to jt10, not instantiated here yet.
-    output logic         ym_cs,
-    output logic [1:0]  ym_addr,
-    output logic         ym_rd,
-    output logic         ym_wr,
-    output logic [7:0]  ym_dout,
-    input  logic [7:0]  ym_din,
+    // Audio, from the YM2610 (jt10) instantiated below.
+    output logic signed [15:0] snd_left,
+    output logic signed [15:0] snd_right,
 
     // Video output.
     output logic [8:0]  hcnt,
@@ -103,6 +99,9 @@ module psikyo_top #(
     // ---- debug tracer, live-controlled from the OSD ----
     input  logic         dbg_overlay,
     input  logic [2:0]  dbg_render_dis,
+    input  logic         pause,
+    input  logic         snd_irq_en,
+    input  logic         sprite_line_mode,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,
     input  logic [3:0]  dbg_window,
@@ -126,6 +125,13 @@ module psikyo_top #(
     logic         sp_gfxrom_valid, sp_lut_valid;
     logic [63:0] sp_gfxrom_data;
     logic [15:0] sp_lut_data;
+
+    // ---- YM2610 chip bus, sound CPU <-> jt10 ----
+    // These were previously missing, so Quartus created 1-BIT implicit nets for
+    // ym_dout/ym_din/ym_addr and the whole sound bus was truncated.
+    logic        ym_cs, ym_rd, ym_wr, ym_irq_n;
+    logic [1:0] ym_addr;
+    logic [7:0] ym_dout, ym_din;
 
     logic [7:0]  latch_data;
     logic         latch_write;
@@ -189,7 +195,7 @@ module psikyo_top #(
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb),
-        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .sprite_line_mode(sprite_line_mode), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
         .dbg_pixel(dbg_pixel)
     );
 
@@ -208,7 +214,7 @@ module psikyo_top #(
                 .latch_data(latch_data), .latch_write(latch_write),
                 .nmi_pending(nmi_pending),
                 .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-                .ym_dout(ym_dout), .ym_din(ym_din)
+                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
             );
         end else begin : g_sound_sngkace
             sound_cpu_sngkace u_sound (
@@ -218,10 +224,55 @@ module psikyo_top #(
                 .latch_data(latch_data), .latch_write(latch_write),
                 .nmi_pending(nmi_pending),
                 .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-                .ym_dout(ym_dout), .ym_din(ym_din)
+                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
             );
         end
     endgenerate
+
+    // ---- YM2610 (jt10) ----
+    // 8 MHz on both boards: sngkace XTAL(32MHz)/4, gunbird 16MHz/2 (psikyo.cpp
+    // machine configs). clk_sys is 945/11 MHz, so an exact 8 MHz enable is
+    // Bresenham 88/945 -- the same denominator as the 68020's 176/945 16 MHz
+    // enable, which it is exactly half of.
+    logic [9:0] ym_cen_acc = 10'd0;
+    logic        ym_cen;
+    always_ff @(posedge clk) begin
+        if (ym_cen_acc >= 10'd945 - 10'd88) ym_cen_acc <= ym_cen_acc + 10'd88 - 10'd945;
+        else                                  ym_cen_acc <= ym_cen_acc + 10'd88;
+    end
+    assign ym_cen = (ym_cen_acc >= 10'd945 - 10'd88);
+
+    // ADPCM-A/B sample ROMs are NOT connected yet: they need their own SDRAM
+    // read ports and the arbiter currently has none free. FM and SSG work
+    // without them; ADPCM channels stay silent. Tying the data inputs to zero
+    // is what an unpopulated sample ROM would read as.
+    logic [19:0] adpcma_addr;
+    logic [4:0]  adpcma_bank;
+    logic         adpcma_roe_n;
+    logic [23:0] adpcmb_addr;
+    logic         adpcmb_roe_n;
+
+    jt10 u_ym2610 (
+        .rst        (core_reset),
+        .clk        (clk),
+        .cen        (ym_cen),
+        .din        (ym_dout),
+        .addr       (ym_addr),
+        .cs_n       (~(ym_cs & (ym_rd | ym_wr))),
+        .wr_n       (~ym_wr),
+        .dout       (ym_din),
+        .irq_n      (ym_irq_n),
+
+        .adpcma_addr(adpcma_addr), .adpcma_bank(adpcma_bank),
+        .adpcma_roe_n(adpcma_roe_n), .adpcma_data(8'd0),
+        .adpcmb_addr(adpcmb_addr), .adpcmb_roe_n(adpcmb_roe_n), .adpcmb_data(8'd0),
+
+        .psg_A(), .psg_B(), .psg_C(), .fm_snd(), .psg_snd(),
+        .snd_right  (snd_right),
+        .snd_left   (snd_left),
+        .snd_sample (),
+        .ch_enable  (6'b111111)
+    );
 
     logic         audiocpu_rom_req;
     logic [17:0] audiocpu_rom_addr;

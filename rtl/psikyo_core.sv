@@ -105,6 +105,12 @@ module psikyo_core #(
     // is otherwise guesswork once sprites and tilemaps overlap.
     //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
     input  logic [2:0]  dbg_render_dis,
+    // Freeze the main CPU, so a frame can be captured and compared against a
+    // MAME dump of the same moment without the game advancing underneath it.
+    input  logic         pause,
+    // 0 = whole-frame sprite buffer (original), 1 = per-scanline line buffer.
+    // See docs/sprite_buffering.md.
+    input  logic         sprite_line_mode,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,      // which signal group to record
     input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
@@ -166,7 +172,7 @@ module psikyo_core #(
         .vregs_wdata(vregs_cpu_wdata), .vregs_rdata(vregs_cpu_rdata),
         .workram_addr(workram_cpu_addr), .workram_wel(workram_cpu_wel), .workram_weh(workram_cpu_weh),
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
-        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird),
+        .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird), .pause(pause),
         .latch_data(latch_data), .latch_write(latch_write),
         .vblank(vblank)
     );
@@ -183,12 +189,22 @@ module psikyo_core #(
     // ---- palette RAM: CPU write, compositor read ----
     logic [11:0] pal_addr;
     logic [15:0] pal_data;
+    logic [11:0] pal_b_addr;
+    logic [15:0] pal_b_rdata;
     dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_palette (
         .clk(clk),
         .a_addr(pal_cpu_addr), .a_wel(pal_cpu_wel), .a_weh(pal_cpu_weh),
         .a_wdata(pal_cpu_wdata), .a_rdata(pal_cpu_rdata),
-        .b_addr(pal_addr), .b_rdata(pal_data)
+        .b_addr(pal_b_addr), .b_rdata(pal_b_rdata)
     );
+    // Palette dump: rows 48..63 carry all 4096 xRGB_555 entries, addressed as
+    // {vcnt[3:0],hcnt[7:0]}. The compositor's read port is free while the
+    // overlay is up because the picture is discarded that frame.
+    wire        pal_dump_active = DEBUG_TRACER && dbg_overlay
+                                && (vcnt >= 9'd48) && (vcnt < 9'd64);
+    wire [11:0] pal_dump_addr   = {vcnt[3:0], hcnt[7:0]};
+    assign pal_b_addr = pal_dump_active ? pal_dump_addr : pal_addr;
+    assign pal_data    = pal_b_rdata;
 
     // ---- tilemap VRAM: CPU write, per-layer tilemap engine read ----
     logic [11:0] l0_vram_addr;
@@ -197,16 +213,11 @@ module psikyo_core #(
     logic [15:0] l1_vram_data;
 
     // ---- VRAM debug dump: borrow the tilemap engines' read ports ----
-    // When the debug overlay is on it replaces the whole picture, so tilemap
-    // rendering is already discarded that frame -- which makes the layer
-    // engines' VRAM read ports free to reuse. Indexing by {vcnt[3:0],hcnt[7:0]}
-    // walks all 4096 words of a layer's VRAM across 16 scanlines, so ONE
-    // screenshot carries both layers' complete tilemap RAM for diffing against
-    // a MAME dump. A shadow BRAM would also work but costs 16KB and only ever
-    // sees CPU writes; this sees the memory itself.
-    //
-    // Nothing here touches the tilemap RTL: the engines still drive their own
-    // addresses whenever the overlay is off, which is every normal frame.
+    // The overlay replaces the picture, so tilemap rendering is discarded that
+    // frame and the layer engines' VRAM read ports are free. Indexing by
+    // {vcnt[3:0],hcnt[7:0]} puts all 4096 words of both layers into 32
+    // scanlines, so one screenshot carries the complete tilemap RAM for
+    // comparison against a MAME dump. Touches no tilemap RTL.
     logic [11:0] vram0_b_addr, vram1_b_addr;
     logic [15:0] vram0_b_rdata, vram1_b_rdata;
 
@@ -348,28 +359,16 @@ module psikyo_core #(
     logic sp_swap_busy, sp_swap_done;
     logic sp_frame_busy, sp_frame_done;
 
-    // ---- sprite output-buffer swap policy, RUNTIME SELECTABLE ----
-    //
-    // Default (dbg_sprite_vsync_swap = 0) is the long-standing behaviour:
-    // frame_swap fires on sp_frame_done, so the display bank toggles at
-    // whatever moment rendering finishes. Measurement says that is ~61.5% of
-    // the way down the VISIBLE frame, every frame -- the compositor reads the
-    // display bank throughout scanout, so the picture tears there, and the
-    // tear moves with sprite load. That is the flicker.
-    //
-    // Setting the bit swaps at the frame boundary instead and holds the render
-    // start until the buffer's clear has finished, which is what
-    // sprite_frame_buffer's own header asks for. Measured budget supports it:
-    //   sprite render   881632 cycles (61.5% of a frame)
-    //   buffer clear     71680 cycles ( 5.0%)
-    //   frame          1433729 cycles
-    // so clear + render is about two thirds of a frame.
-    //
-    // It is a runtime switch and not simply applied, because exactly this
-    // change was tried before and stopped the core booting -- the CPU ended up
-    // parked on the boot's die-here stub. The cause was never established, and
-    // a switch makes it an A/B on one bitstream instead of a 12-minute build
-    // per attempt. Default stays on the behaviour known to boot.
+    // ---- sprite output-buffer swap policy, runtime selectable ----
+    // 0 (default): frame_swap on sp_frame_done, so the display bank toggles
+    //   wherever rendering finishes -- measured at ~61.5% down the VISIBLE
+    //   frame, which tears the picture there every frame.
+    // 1: swap at the frame boundary and hold the render start until the
+    //   buffer's clear completes, as sprite_frame_buffer's header asks.
+    // Budget supports either: render 881632 cycles, clear 71680, frame
+    // 1433729. A switch rather than an outright change because this was tried
+    // once and stopped the core booting for reasons never established; it
+    // makes the comparison an A/B on one bitstream. See docs/sprite_buffering.md.
     wire want_frame = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
 
     logic bank_ready, start_pending;
@@ -395,16 +394,11 @@ module psikyo_core #(
                                                   : sp_frame_done;
 
     // ---- sprite render budget instrumentation ----
-    // Does a sprite render pass actually finish inside one frame? Everything
-    // downstream assumes it does, and BOTH known sprite artefacts follow if it
-    // does not:
-    //   * spriteram_dbuf swaps the CPU-write / engine-read banks at
-    //     frame_start, so an overrunning pass has its SOURCE RECORDS swapped
-    //     underneath it mid-render and draws two frames' sprites mixed;
-    //   * sprite_frame_buffer's clear then overlaps the next pass, and the
-    //     buffer ignores writes while swap_busy, so sprites are dropped and
-    //     stale pixels survive where the clear had not yet reached.
-    // Sticky and not reset-coupled, so one overrun since configuration shows.
+    // Does a render pass finish inside one frame? Both sprite artefacts follow
+    // if it does not: spriteram_dbuf swaps the engine's SOURCE records at
+    // frame_start, and the frame buffer's clear then overlaps the next pass
+    // (it ignores writes while swap_busy). sp_overran is sticky since
+    // configuration, so it also catches boot transients.
     logic sp_overran = 1'b0;
     logic [19:0] sp_render_cycles = '0;
     logic [19:0] sp_render_max    = '0;
@@ -418,24 +412,42 @@ module psikyo_core #(
 
 
 
-    logic         fb_we;
-    logic [8:0]  fb_x;
+    // fb_y is still needed: the frame buffer is 2D. The other fb_* signals are
+    // gone -- the frame engine drives fe_fb_* now, see the dual-path block below.
     logic [7:0]  fb_y;
-    logic [3:0]  fb_pixel;
-    logic [4:0]  fb_color;
-    logic [1:0]  fb_priority;
+
+    // ---- two sprite paths, selected at runtime by sprite_line_mode ----
+    // Both are instantiated and share the spriteram BRAM ports and the SDRAM
+    // lut/gfxrom ports; the inactive one has its *_valid inputs held low so it
+    // stalls harmlessly in a wait state and issues no requests.
+    logic [11:0] fe_dl_addr, fe_at_addr, le_dl_addr, le_at_addr;
+    logic         fe_lut_req, le_lut_req, fe_gfxrom_req, le_gfxrom_req;
+    logic [16:0] fe_lut_addr, le_lut_addr;
+    logic [22:0] fe_gfxrom_addr, le_gfxrom_addr;
+    logic         fe_fb_we, le_fb_we;
+    logic [8:0]  fe_fb_x, le_fb_x;
+    logic [3:0]  fe_fb_pixel, le_fb_pixel;
+    logic [4:0]  fe_fb_color, le_fb_color;
+    logic [1:0]  fe_fb_priority, le_fb_priority;
+
+    assign dl_addr       = sprite_line_mode ? le_dl_addr      : fe_dl_addr;
+    assign at_addr       = sprite_line_mode ? le_at_addr      : fe_at_addr;
+    assign sp_lut_req    = sprite_line_mode ? le_lut_req      : fe_lut_req;
+    assign sp_lut_addr   = sprite_line_mode ? le_lut_addr     : fe_lut_addr;
+    assign sp_gfxrom_req = sprite_line_mode ? le_gfxrom_req   : fe_gfxrom_req;
+    assign sp_gfxrom_addr= sprite_line_mode ? le_gfxrom_addr  : fe_gfxrom_addr;
 
     sprite_render_engine u_sprite_render (
         .clk(clk), .reset(reset),
         .frame_start(sprite_frame_start), .frame_busy(sp_frame_busy), .frame_done(sp_frame_done),
         .trans_pen0(trans_pen0), .trans_pen15(trans_pen15),
-        .dl_addr(dl_addr), .dl_data(dl_data),
-        .at_addr(at_addr), .at_data(at_data),
-        .lut_req(sp_lut_req), .lut_addr(sp_lut_addr), .lut_valid(sp_lut_valid), .lut_data(sp_lut_data),
-        .gfxrom_req(sp_gfxrom_req), .gfxrom_addr(sp_gfxrom_addr),
-        .gfxrom_valid(sp_gfxrom_valid), .gfxrom_data(sp_gfxrom_data),
-        .fb_we(fb_we), .fb_x(fb_x), .fb_y(fb_y),
-        .fb_pixel(fb_pixel), .fb_color(fb_color), .fb_priority(fb_priority)
+        .dl_addr(fe_dl_addr), .dl_data(dl_data),
+        .at_addr(fe_at_addr), .at_data(at_data),
+        .lut_req(fe_lut_req), .lut_addr(fe_lut_addr), .lut_valid(sp_lut_valid & ~sprite_line_mode), .lut_data(sp_lut_data),
+        .gfxrom_req(fe_gfxrom_req), .gfxrom_addr(fe_gfxrom_addr),
+        .gfxrom_valid(sp_gfxrom_valid & ~sprite_line_mode), .gfxrom_data(sp_gfxrom_data),
+        .fb_we(fe_fb_we), .fb_x(fe_fb_x), .fb_y(fb_y),
+        .fb_pixel(fe_fb_pixel), .fb_color(fe_fb_color), .fb_priority(fe_fb_priority)
     );
 
     logic         sp_present;
@@ -446,19 +458,80 @@ module psikyo_core #(
     sprite_frame_buffer u_sprite_fb (
         .clk(clk), .reset(reset),
         .frame_swap(sprite_swap_now), .swap_busy(sp_swap_busy), .swap_done(sp_swap_done),
-        .fb_we(fb_we), .fb_x(fb_x), .fb_y(fb_y),
-        .fb_pixel(fb_pixel), .fb_color(fb_color), .fb_priority(fb_priority),
+        .fb_we(fe_fb_we), .fb_x(fe_fb_x), .fb_y(fb_y),
+        .fb_pixel(fe_fb_pixel), .fb_color(fe_fb_color), .fb_priority(fe_fb_priority),
         .rd_x(hcnt), .rd_y(vcnt_active),
         .rd_present(sp_present), .rd_pixel(sp_pixel), .rd_color(sp_color), .rd_priority(sp_priority)
     );
 
     // ---- compositor ----
+    // ---- per-scanline sprite path ----
+    // Renders line N+2 during line N+1, so it gets a whole line period (5472
+    // clk cycles) rather than just hblank. The buffer swaps at line_start, so
+    // the bank swapped in already holds the line about to be displayed.
+    logic [7:0] le_render_line;
+    assign le_render_line = vcnt_active + 8'd2;
+
+    logic le_busy, lb_ready;
+
+    // Start rendering when the buffer's clear FINISHES, not at line_start.
+    // sprite_line_buffer drops `ready` at line_start to run its 320-cycle
+    // clear, so gating the start on `ready` at line_start meant the two were
+    // never true together and the engine never ran at all.
+    logic lb_ready_d;
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) lb_ready_d <= 1'b0;
+        else        lb_ready_d <= lb_ready;
+    end
+    wire le_start = sprite_line_mode & lb_ready & ~lb_ready_d;
+
+    sprite_line_engine u_sprite_line (
+        .clk(clk), .reset(reset),
+        .line_start(le_start),
+        .render_line(le_render_line),
+        .busy(le_busy),
+        .trans_pen0(trans_pen0), .trans_pen15(trans_pen15),
+        .dl_addr(le_dl_addr), .dl_data(dl_data),
+        .at_addr(le_at_addr), .at_data(at_data),
+        .lut_req(le_lut_req), .lut_addr(le_lut_addr),
+        .lut_valid(sp_lut_valid & sprite_line_mode), .lut_data(sp_lut_data),
+        .gfxrom_req(le_gfxrom_req), .gfxrom_addr(le_gfxrom_addr),
+        .gfxrom_valid(sp_gfxrom_valid & sprite_line_mode), .gfxrom_data(sp_gfxrom_data),
+        .fb_we(le_fb_we), .fb_x(le_fb_x),
+        .fb_pixel(le_fb_pixel), .fb_color(le_fb_color), .fb_priority(le_fb_priority)
+    );
+
+    logic        lb_present;
+    logic [3:0] lb_pixel;
+    logic [4:0] lb_color;
+    logic [1:0] lb_priority;
+
+    sprite_line_buffer u_sprite_linebuf (
+        .clk(clk), .reset(reset),
+        .line_start(line_start), .ready(lb_ready),
+        .we(le_fb_we & ~sprites_disable & ~dbg_render_dis[0]),
+        .wx(le_fb_x), .wpixel(le_fb_pixel), .wcolor(le_fb_color), .wpriority(le_fb_priority),
+        .rx(hcnt),
+        .rd_present(lb_present), .rd_pixel(lb_pixel),
+        .rd_color(lb_color), .rd_priority(lb_priority)
+    );
+
+    // ---- select which sprite source the compositor sees ----
+    logic        spx_present;
+    logic [3:0] spx_pixel;
+    logic [4:0] spx_color;
+    logic [1:0] spx_priority;
+    assign spx_present  = sprite_line_mode ? lb_present  : sp_present;
+    assign spx_pixel    = sprite_line_mode ? lb_pixel    : sp_pixel;
+    assign spx_color    = sprite_line_mode ? lb_color    : sp_color;
+    assign spx_priority = sprite_line_mode ? lb_priority : sp_priority;
+
     compositor u_compositor (
         .l0_valid(l0_pixel_valid), .l0_pixel(l0_pixel_index), .l0_color(l0_pixel_color),
         .l0_ctrl_enable(l0_enable & ~dbg_render_dis[1]), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
         .l1_valid(l1_pixel_valid), .l1_pixel(l1_pixel_index), .l1_color(l1_pixel_color),
         .l1_ctrl_enable(l1_enable & ~dbg_render_dis[2]), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
-        .sp_present(sp_present), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
+        .sp_present(spx_present), .sp_pixel(spx_pixel), .sp_color(spx_color), .sp_priority(spx_priority),
         .pal_addr(pal_addr), .pal_data(pal_data),
         .rgb(rgb)
     );
@@ -508,7 +581,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index(vcnt - 9'd48),
+            .rd_index(vcnt - 9'd64),
             .rd_data(rd_addr),
             .frozen(frz_a)
         );
@@ -522,7 +595,7 @@ module psikyo_core #(
             .ctl_ring(dbg_src[0]),
             .ctl_trig_en(dbg_src[1]),
             .cap_trig(trig_vec4),
-            .rd_index(vcnt - 9'd176),
+            .rd_index(vcnt - 9'd192),
             .rd_data(rd_data),
             .frozen(frz_d)
         );
@@ -562,12 +635,14 @@ module psikyo_core #(
         //   rows 176-215 : CPU ROM read, {addr[7:0],data}    (40 entries)
         //   rows 216-223 : control echo + video-engine health flags
         // row 215 carries the worst-case sprite render length, in clk cycles
+        //   rows  48- 63 : palette RAM, all 4096 xRGB_555 entries
         assign dbg_pixel = (vcnt == 9'd215) ? {4'd0, sp_render_max}
                          : (vcnt >= 9'd216) ? ctl_echo
                          : (vcnt <  9'd16)  ? {8'h00, vram0_b_rdata}
                          : (vcnt <  9'd32)  ? {8'h00, vram1_b_rdata}
                          : (vcnt <  9'd48)  ? {8'h00, vregs_dump_data}
-                         : (vcnt <  9'd176) ? rd_addr
+                         : (vcnt <  9'd64)  ? {8'h00, pal_b_rdata}
+                         : (vcnt <  9'd192) ? rd_addr
                                             : rd_data;
     end else begin : g_no_tracer
         assign dbg_pixel = 24'd0;

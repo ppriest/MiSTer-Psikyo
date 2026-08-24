@@ -21,12 +21,17 @@ confirmed by documentation).
   are the range of bits that will be set in the status register."
 - **[doc]** Pages: `P{#},{Title}` declares a page; prefix options with `P{#}`. The prefix goes
   before `O#` but after conditionals like `d#`.
-- **[empirical]** An `.mra` with N `<switches>` bytes consumes **8*N bits starting at
-  status[16]**. This project's `.mra` declares five bytes (`FF,FF,FD,FF,FF`), so the DIP
-  mechanism owns **status[55:16]** -- even though the core only reads `dsw_in = status[47:16]`.
-  Debug bits placed at 48-55 were contested by it and did not respond.
-- **Practical allocation rule for this project:** put non-DIP options in **status[63:56]** --
-  above the MRA switch range and inside the documented 0-63 window.
+- **[empirical]** An `.mra` with N `<switches>` bytes consumes 8*N bits starting at
+  **status[16]**: byte0 -> `status[23:16]`, byte1 -> `status[31:24]`, and so on. This project's
+  `.mra` files declare three bytes, so the DIP mechanism owns `status[39:16]`.
+- **[doc+empirical]** MAME's psikyo DSW port puts every DIP in the UPPER half of the 32-bit long
+  at `$C00004` and the region jumper in its low byte. `Psikyo.sv` therefore feeds
+  `dsw_in = {status[31:16], 8'hFF, status[39:32]}`. An earlier `status[47:16]` mapping put every
+  DIP 16 bits low, in the half MAME defines as unused, so no OSD DIP did anything and Service
+  Mode was stuck on.
+- **Allocation in use here:** DIPs `status[39:16]`; render-disable and sprite-swap debug bits
+  `status[43:40]`; scandoubler FX `status[46:44]`; rotation/flip `status[49:47]`; tracer controls
+  `status[63:56]`; aspect ratio `status[122:121]`.
 - Validate bit assignments with **https://agg23.github.io/mister-config/** (paste the CONF_STR,
   see which bits each option claims) rather than reasoning about ranges by hand.
 
@@ -55,12 +60,19 @@ confirmed by documentation).
 ## Video
 
 - **[core]** Arcade cores normally instantiate **`arcade_video`** (`sys/arcade_video.v`), which
-  wraps `video_mixer` (scandoubler, gamma) and `video_freak` (aspect ratio / crop), and handles
-  rotation for vertical games.
-- **This core does NOT use it** -- `Psikyo.sv` drives `VGA_R/G/B`, `VGA_DE/HS/VS`, `CLK_VIDEO`
-  and `CE_PIXEL` directly. That works (real graphics have been observed on hardware through this
-  path) but forgoes scandoubler/gamma/aspect handling. `sys/arcade_video.v`, `video_freak.sv`
-  and `video_mixer.sv` are all present and unused. Worth migrating to the standard path.
+  wraps `video_mixer` (scandoubler, gamma) and `video_freak` (aspect ratio / crop).
+- This core now does. It previously drove `VGA_R/G/B`, `VGA_DE/HS/VS`, `CLK_VIDEO` and
+  `CE_PIXEL` directly, which worked but gave up the scandoubler (so no 31 kHz CRT option),
+  gamma, scanline effects and aspect handling — all of which were already compiled in via
+  `sys/sys.qip` and simply never instantiated.
+- **Rotation is a separate module.** `sys/screen_rotate.v` is not present in this tree; the copy
+  in use is `rtl/video/screen_rotate_two.sv` (Sorgelig, GPL v2, taken from
+  `Arcade-SKNS_MiSTer`). It is a TAP, not a filter: `VGA_*` still drive the analog output
+  natively, while a rotated copy is written to DDRAM and `FB_*` points the HDMI scaler at it.
+  It only honours `flip` when not rotating (`do_flip <= no_rotate && flip`), so rotation and
+  180-degree flip are alternatives.
+- The framework copy here exposes `FB_EN/FB_FORMAT/FB_BASE/FB_STRIDE/FB_VBL/FB_LL` and DDRAM,
+  but has no `video_rotated` port; that output is left unconnected, as `Arcade-SKNS` also does.
 
 ## Other developer pages worth reading before touching these areas
 

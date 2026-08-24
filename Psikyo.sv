@@ -16,35 +16,33 @@
 //
 //============================================================================
 //
-// Top-level HPS/DIP/CRT_Offset glue for the Phase 1 SH201B/KA302C board
-// (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road -- docs/ROADMAP.md's
-// "Hardware reality" table), wiring rtl/psikyo_top.sv (video+CPU+SDRAM+
-// sound CPU, already verified end to end in simulation, see
-// docs/ROADMAP.md's "Progress") into MiSTer-devel/Template_MiSTer's
-// framework. BOARD_GUNBIRD is fixed to sngkace's layout here (this
-// project's own Phase 1 entry point, per docs/ROADMAP.md); a gunbird/
-// btlkroad build needs its own top-level parameter value, same as
-// rtl/psikyo_top.sv itself already requires per board.
+// Top-level HPS/DIP/video glue for the Phase 1 SH201B/KA302C boards
+// (Samurai Aces / Sengoku Ace, Gun Bird, Battle K-Road), wiring
+// rtl/psikyo_top.sv into the MiSTer framework.
 //
-// Input port bit layout (P1P2 32-bit port, separate COIN port) confirmed
-// directly from psikyo.cpp's own sngkace_input_r()/INPUT_PORTS_START
-// block, not assumed -- see the p1p2_in/coin_in assignments below for the
-// exact bit positions. Standard MiSTer joystick_0/1 bit convention
-// (0=Right,1=Left,2=Down,3=Up,4=Button1,5=Button2,6=Button3,10=Start,
-// 11=Coin) confirmed against a real, already-built, similar-genre
-// MiSTer-devel core (rmonic79/Arcade-Raiden_MiSTer, already named in this
-// project's own "Component reuse map"), not assumed either.
+// The board variant is selected at RUNTIME from the .mra's mod byte
+// (<rom index="1">, arriving as ioctl_index==1), so one .rbf serves all three
+// games. It gates the $C00008 COIN-port bit assignments and KA302C tile
+// banking. It is latched and NOT reset by `reset`, because MiSTer holds the
+// core in reset for the whole ROM download.
 //
-// NOT yet done here (tracked, not silently skipped): jt10/YM2610 (silent
-// for now -- rtl/psikyo_top.sv's ym_* bus is exposed but unconnected,
-// matching docs/ROADMAP.md's own "Next steps" ordering: jt10's
-// audio-domain verification pass hasn't happened yet), per-game DIP
-// switch *labels* (the generic "DIP;" CONF_STR entry pulls them from
-// whichever .mra is loaded, matching every MiSTer arcade core's standard
-// convention -- no per-game RTL needed), and real hardware SDRAM_CLK
-// phase-shift tuning (rtl/pll/pll_0002.v's -3000ps is a starting point
-// copied from another core's ballpark, not independently verified against
-// this board).
+// Input port bit layout is taken from psikyo.cpp's INPUT_PORTS: sngkace has a
+// separate COIN port, gunbird/btlkroad fold coin/service/z80-nmi into the
+// P1_P2 low byte instead. DIPs occupy the upper half of the 32-bit DSW long at
+// $C00004 with the region jumper in its low byte; see the dsw_in assignment.
+// MiSTer joystick bit order (0=Right,1=Left,2=Down,3=Up,4..6=Buttons,
+// 10=Start,11=Coin) follows rmonic79/Arcade-Raiden_MiSTer.
+//
+// Video goes through sys/arcade_video.v (scandoubler, gamma, scanline FX,
+// aspect/crop) with rtl/video/screen_rotate_two.sv tapping the output to
+// provide rotation and 180-degree flip over HDMI via the HPS framebuffer.
+//
+// Audio: jt10 (YM2610) is instantiated inside rtl/psikyo_top.sv and its output
+// reaches AUDIO_L/R here. ADPCM-A/B sample ROMs are not connected yet, so those
+// channels are silent; FM and SSG work.
+//
+// Not done here: SDRAM_CLK phase tuning
+// (rtl/pll/pll_0002.v's -3000ps is inherited, not measured on this board).
 module emu
 (
 	`include "sys/emu_ports.vh"
@@ -65,10 +63,15 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-// No sound yet -- jt10 isn't wired in (see module header).
-assign AUDIO_S = 0;
-assign AUDIO_L = 0;
-assign AUDIO_R = 0;
+// Required output once MISTER_FB is enabled; the rotator has no blanking need.
+assign FB_FORCE_BLANK = 0;
+
+// Audio comes from jt10 (YM2610) inside psikyo_top. Signed 16-bit, so
+// AUDIO_S = 1. YM2610 output is mono on this hardware (MAME routes
+// ALL_OUTPUTS to a single "mono" node), and jt10's snd_left/snd_right carry
+// the same content; both are wired so the framework's mixer sees a normal
+// stereo pair.
+assign AUDIO_S   = 1;
 assign AUDIO_MIX = 0;
 
 assign LED_DISK = 0;
@@ -77,10 +80,25 @@ assign BUTTONS = 0;
 
 //////////////////////////////////////////////////////////////////
 
+// Rotation controls, declared here because the aspect ratio below depends on
+// whether the picture is rotated. Consumed by screen_rotate_two further down.
+wire [1:0] rotate_sel = status[48:47];
+wire        rotate_en  = |rotate_sel;
+wire        rotate_ccw = (rotate_sel == 2'd2);
+wire        flip_180   = status[49];
+
+// Aspect ratio. Psikyo boards are vertical, so when the picture is rotated to
+// portrait the ORIGINAL aspect is 3:4, not 4:3 -- this was hardcoded 4:3
+// regardless, which is why the Original/Full Screen toggle did not appear to
+// do anything useful. ar != 0 selects Full Screen / ARC1 / ARC2, where a zero
+// ARY means "stretch" in the framework's convention.
+//
+// Note sys/arcade_video.v does NOT wrap video_freak, so there is no crop
+// support here; these two signals are the whole aspect story.
 wire [1:0] ar = status[122:121];
 
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+assign VIDEO_ARX = (!ar) ? (rotate_en ? 13'd3 : 13'd4) : 13'({ar} - 2'd1);
+assign VIDEO_ARY = (!ar) ? (rotate_en ? 13'd4 : 13'd3) : 13'd0;
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -104,9 +122,13 @@ localparam CONF_STR = {
 	"P1O[41],Tilemap 0,On,Off;",
 	"P1O[42],Tilemap 1,On,Off;",
 	"P1O[43],Sprite swap,EndOfRender,FrameStart;",
+	"P1O[50],Pause CPU,Off,On;",
+	"P1O[51],Sound IRQ,Off,On;",
+	"P1O[52],Sprite buffer,Frame,Line;",
+	"P1O[53],C00008 bit0,Zero,VBlank;",
 	"-;",
-	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
+	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"V,v",`BUILD_DATE
 };
 
@@ -185,6 +207,7 @@ end
 // Sound-CPU NMI status, mirrored into the input ports on both board
 // variants (bit 23 of COIN on sngkace, bit 7 of P1_P2 on gunbird).
 wire        nmi_pending;
+wire signed [15:0] snd_left, snd_right;
 
 // ---- board variant, selected at RUNTIME by the .mra ----
 // One Arcade-Psikyo.rbf has to serve every game in the family, so the board
@@ -306,6 +329,20 @@ wire        dbg_overlay = status[56];
 // status[39:16] and the tracer controls sit at status[63:56].
 //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
 wire [2:0] dbg_render_dis = status[42:40];
+// Freeze the 68020 so a frame can be captured and compared against a MAME dump
+// of the same moment. Video and the debug overlay keep running.
+wire        pause = status[50];
+// YM2610 IRQ -> Z80 INT. MAME wires ymsnd.irq_handler() to the audiocpu, but
+// enabling it hung the main CPU at 0x758 with the video registers never
+// programmed -- the 68020 polls the sound-latch-acked bit, so a Z80 stuck in
+// an interrupt it cannot clear stalls the whole game. Default off until that
+// is understood; FM timers need it, so music tempo may depend on it.
+wire        snd_irq_en = status[51];
+// Frame buffer (original) vs per-scanline line buffer for sprites.
+// See docs/sprite_buffering.md.
+wire        sprite_line_mode = status[52];
+// See the coin_in comment: 0 = constant 0 (matches MAME), 1 = ~vblank.
+wire        vblank_wait_en   = status[53];
 // Experimental: swap the sprite output buffer at the frame boundary rather
 // than at end-of-render. Default 0 = the behaviour known to boot.
 wire        dbg_sprite_vsync_swap = status[43];
@@ -325,9 +362,19 @@ wire        hblank, vblank, hsync, vsync;
 // exact status (see rtl/sound/sound_cpu_sngkace.sv's own comment for the
 // full derivation).
 //
-// BIT 0 IS A VBLANK STATUS FLAG, ACTIVE LOW (0 while in vblank). It used to
-// be tied high with the rest of bits 15:0, which hung the boot: on hardware
-// the CPU sat forever in
+// BIT 0: the boot polls this and spins until it CLEARS, then DMAs sprite RAM.
+// Tying it HIGH hangs the boot. Tying it to ~vblank boots but makes the game
+// wait up to a whole frame at every poll, which is a strong candidate for the
+// observed HALF SPEED. In MAME the equivalent read returns 0 almost
+// immediately (the poll loop exits after a handful of iterations), so a
+// constant 0 is the MAME-matching behaviour and costs no waiting.
+//
+// vblank_wait_en (OSD bit 53) selects: 0 = constant 0 (MAME-like, default),
+// 1 = ~vblank (the previous behaviour). A switch because "it boots" was the
+// only evidence for the vblank version and that is weak.
+//
+// Original note, kept because it explains the hang: on hardware the CPU sat
+// forever in
 //     000436: move.l $c00008.l, D0
 //     00043C: addq.w #1, $fffe0000.l      (a timeout counter)
 //     000442: andi.l #$1, D0
@@ -354,13 +401,10 @@ wire [31:0] coin_in = {
 	// inactive (1) there rather than presenting the coin twice.
 	board_gunbird ? 2'b11 : {~joystick_1[11], ~joystick_0[11]},
 	15'h7FFF,                                   // bits 15:1 unused
-	~vblank                                     // bit 0 = VBLANK, active low
+	vblank_wait_en & ~vblank                    // bit 0, see above
 };
 wire [14:0] rgb;
 
-wire         ym_cs, ym_rd, ym_wr;
-wire [1:0]  ym_addr;
-wire [7:0]  ym_dout;
 
 psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 (
@@ -386,15 +430,14 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.dsw_in(dsw_in),
 	.coin_in(coin_in),
 	.board_gunbird(board_gunbird),
+	.snd_left(snd_left), .snd_right(snd_right),
 
 	.nmi_pending(nmi_pending),
-	.ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-	.ym_dout(ym_dout), .ym_din(8'h00), // no jt10 yet -- see module header
 
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .snd_irq_en(snd_irq_en), .sprite_line_mode(sprite_line_mode), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
@@ -459,10 +502,6 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 //
 // DDRAM was previously tied off wholesale by this core; the rotator owns it
 // now. two_screen is 0 -- that is an SKNS-specific dual-screen mode.
-wire [1:0] rotate_sel = status[48:47];
-wire        rotate_en  = |rotate_sel;
-wire        rotate_ccw = (rotate_sel == 2'd2);
-wire        flip_180   = status[49];
 
 screen_rotate_two screen_rotate_two
 (
@@ -504,5 +543,8 @@ screen_rotate_two screen_rotate_two
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
 assign LED_USER    = act_cnt[26]  ? act_cnt[25:18]  > act_cnt[7:0]  : act_cnt[25:18]  <= act_cnt[7:0];
+
+assign AUDIO_L = snd_left;
+assign AUDIO_R = snd_right;
 
 endmodule

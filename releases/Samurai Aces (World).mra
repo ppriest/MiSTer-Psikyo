@@ -19,67 +19,14 @@
 	<region>World</region>
 
 	<rom index="0" zip="samuraia.zip" md5="none">
-		<!-- maincpu: base 0x000000, reserved 0x200000 - 68EC020 program ROM, two
-		     16-bit-wide ROMs word-swap-interleaved to reconstruct MAME's
-		     ROM_LOAD32_WORD_SWAP pairing (offset 0 = high word, offset 2 = low word).
-		     Actual content 0x80000; padded to the full reservation.
-
-		     2026-08-23: briefly "corrected" this to swap 4-u127.bin/5-u126.bin based
-		     on a wrong mental model of the `map` attribute (assumed it picked which
-		     file supplies the high vs low word). Confirmed via
-		     github.com/MiSTer-devel/Main_MiSTer/wiki/Arcade-Roms-and-MRA-files that
-		     `map` actually reorders bytes WITHIN one part's own stream (e.g. map="10"
-		     swaps a byte pair), independent of file identity/order. Recomputing with
-		     the correct semantics against this file's ORIGINAL (unedited) pairing -
-		     u127 unswapped (map=01), u126 byte-pair-swapped (map=10), interleaved in
-		     listing order - decodes the reset vector as SP=0xffff8000 (top of a
-		     high-address-mirrored work RAM region, a standard 68k idiom) and
-		     PC=0x00000400 (a clean, plausible code-entry address): this original
-		     pairing is correct. Reverted.  <<< THAT CONCLUSION WAS ALSO WRONG,
-		     superseded by the note immediately below.
-		     2026-08-23 (second correction, this one verified): the block below
-		     used to be <interleave output="16"> with u127 map="01" and u126
-		     map="10". Those digits do NOT mean "swap the byte pair within this
-		     part" - that reading was wrong. Each digit is an OUTPUT BYTE LANE
-		     (leftmost = highest byte) and its VALUE selects which input byte of
-		     that part feeds the lane, with 0 meaning "this part does not supply
-		     this lane". Confirmed against working MiSTer MRAs using both a
-		     4-part output="64" form (map="00000021"/"00002100"/... ) and a
-		     4-part output="32" form (map="1000"/"0100"/"0010"/"0001").
-		     So map="01"+map="10" at output="16" produced a BYTE-level
-		     interleave, word = {u126[i] high, u127[i] low}, which decodes the
-		     reset vector as SP=0x00ff80ff - a corrupt, odd stack pointer -
-		     even though PC=0x00000400 comes out correct. On real hardware that
-		     boots and executes correctly from 0x400 and then dies at the first
-		     stack operation.
-		     MAME uses ROM_LOAD32_WORD_SWAP: u127 supplies the high 16-bit word
-		     of each long, u126 the low word, each word byte-swapped. As
-		     output="32" byte lanes that is u127 -> bytes 3,2 in order ("12")
-		     and u126 -> bytes 1,0 swapped ("21"). Decodes SP=0xffff8000
-		     PC=0x00000400, matching sim/psikyo_top_tb/gen_real_rom.py, which is
-		     the image the ModelSim real-ROM boot test runs from successfully.
-		     2026-08-23 (THIRD correction; this one proved offline against MAME,
-		     not inferred). The map above (u127="0021", u126="2100") put the right
-		     FILE in each half but delivered each 16-bit word BYTE-SWAPPED. A
-		     hardware trace of CPU ROM reads matched the assembled image 128/128,
-		     which proved only that SDRAM delivers faithfully what the MRA built;
-		     it could not detect a wrong map, because both sides of that comparison
-		     share the same assumption. The real oracle is MAME's disassembly:
-		         000404: lea $ffff7000.l,A0   -> 41F9 FFFF 7000
-		         00040A: move A0,USP          -> 4E60
-		         00040C: move.w #$1,D0        -> 303C 0001
-		         000410: movec D0,CACR        -> 4E7B 0002
-		     Reconstructing those words from the two files scores 18/18 for
-		     "even word <- u127, little-endian within part" and 5/18 for
-		     big-endian. Big-endian (what the old map produced) yields
-		     SP=FFFF0080 PC=00000004 and code F941 FFFF 0070 604E, so the CPU
-		     jumped to address 4, ran the vector table as code, hit an illegal
-		     instruction and looped on vector 4 forever. That was observed on
-		     hardware as an 8-read loop containing the vector-4 fetch.
-		     Swapping the two byte-lane digits within EACH part (0021 to 0012,
-		     2100 to 1200) keeps the file-to-half assignment and fixes the byte
-		     order. Verify any future change with scripts/verify_rom_trace.py
-		     AND against the MAME disassembly above, never with "it boots". -->
+		<!-- maincpu: base 0x000000, reserved 0x200000. Two 16-bit ROMs reconstructing
+		     MAME's ROM_LOAD32_WORD_SWAP pairing: u127 supplies the high word of each
+		     long, u126 the low word, each word byte-swapped. The ascending map digit
+		     form ("0012"/"1200") is what applies that swap; the descending form
+		     ("0021"/"2100") leaves file order alone. Verified against MAME's
+		     disassembly of the entry point, 18/18 words. Content 0x80000, padded.
+		     Do not "correct" these by reasoning about byte order - see
+		     docs/LESSONS_LEARNED.md. -->
 		<interleave output="32">
 			<part name="4-u127.bin" crc="8c9911ca" map="0012"/>
 			<part name="5-u126.bin" crc="d20c3ef0" map="1200"/>
@@ -91,43 +38,17 @@
 		<part name="3-u58.bin" crc="310f5c76"/>
 		<part repeat="0x20000">FF</part>
 
-		<!-- sprites: base 0x240000, reserved 0x800000 - zoom sprite tile graphics.
-		     Actual content 0x200000 (this family's sprites region is the smallest of
-		     any Phase 1 game - gunbird's needs the full 0x700000); padded to the
-		     full reservation.
-		     MAME loads this with ROM_LOAD16_WORD_SWAP, i.e. every 16-bit word is
-		     byte-swapped into the region, and rtl/video/tile_row_decode.sv was
-		     verified against THAT layout (MAME's gfx_16x16x4_packed_msb). Loading
-		     the file raw here left the whole sprites region byte-pair-swapped
-		     relative to what the decoder expects - at 4bpp each byte is 2 pixels,
-		     so every group of 4 pixels in a tile row came out transposed, which on
-		     real hardware looked like structured-but-scrambled sprites.
-		     2026-08-23: map="21" was the wrong digit form and has been changed to
-		     map="12". The maincpu block above pinned the convention down against
-		     MAME's disassembly: the ASCENDING form ("0012"/"1200") is what
-		     produces the byte swap that ROM_LOAD*_WORD_SWAP implies, while the
-		     descending form ("0021"/"2100") leaves the file order alone. These
-		     gfx parts are ROM_LOAD16_WORD_SWAP in MAME, so they need the swap
-		     too, and map="21" was silently not applying one. On hardware that
-		     showed as alternate pixel PAIRS transposed (at 4bpp one byte is two
-		     pixels, so swapping bytes exchanges pixel pairs) - sprites were
-		     recognisable but visibly scrambled. map="12" renders correctly.
-		     Note the decoder itself was never at fault: rtl/video/tile_row_decode.sv
-		     correctly puts the high nibble in the left pixel per packed_msb. -->
+		<!-- sprites: base 0x240000, reserved 0x800000. ROM_LOAD16_WORD_SWAP in MAME,
+		     so map="12" to apply the byte swap; rtl/video/tile_row_decode.sv expects
+		     MAME's gfx_16x16x4_packed_msb layout. Content 0x200000, padded. -->
 		<interleave output="16">
 			<part name="u14.bin" crc="00a546cb" map="12"/>
 		</interleave>
 		<part repeat="0x600000">FF</part>
 
-		<!-- tiles: base 0xA40000, reserved 0x200000 - tilemap layer 0+1 graphics, 2
-		     ROMs concatenated (not interleaved with each other). Exact fit, no
-		     padding needed.
-		     Both are ROM_LOAD16_WORD_SWAP in MAME, same reasoning as the sprites
-		     region above, so each gets its own map="12" interleave (was "21";
-		     see the sprites block for why that form did not swap). They are
-		     CONCATENATED, not interleaved with each other (u34 at region 0x000000,
-		     u35 at 0x100000), hence two separate single-part blocks rather than one
-		     two-part block. -->
+		<!-- tiles: base 0xA40000, reserved 0x200000. Two ROMs CONCATENATED (u34 at
+		     region 0x000000, u35 at 0x100000), not interleaved with each other, so one
+		     single-part interleave block each. Both ROM_LOAD16_WORD_SWAP. Exact fit. -->
 		<interleave output="16">
 			<part name="u34.bin" crc="e6a75bd8" map="12"/>
 		</interleave>
@@ -162,29 +83,12 @@
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
 	<switches default="FD,FF,FF">
-		<!-- The <switches> bytes start at status[16]: byte0 -> status[23:16],
-		     byte1 -> status[31:24]. Psikyo.sv feeds those straight into the upper
-		     half of the 32-bit DSW long the CPU reads at $C00004, which is where
-		     MAME puts every DIP (its lower 16 bits are IP_ACTIVE_LOW/unused).
-		     The <dip bits="..."> values below are therefore MAME's own bit
-		     numbers, unmodified.
-
-		     Defaults match MAME's PORT_DIPNAME defaults exactly:
-		       byte0 = FD -> Flip Off, Demo Sounds ON (bit17=0), Difficulty
-		               Normal, 3 Lives, Bonus 400K, Service Mode OFF (bit23=1)
-		       byte1 = FF -> Coin Slot Shared, Coin A 1C 1C, Coin B 1C 1C,
-		               2C Start/1C Continue Off
-		       byte2 = FF -> Region World (status[39:32] feeds the DSW's LOW
-		               byte, which samuraia uses as its region jumper:
-		               ff=World ef=USA and Canada df=Korea bf=Hong Kong
-		               7f=Taiwan)
-
-		     This was "FF,FF,FD,FF,FF" (five bytes), written on the assumption
-		     that the bytes began at status[0] with two reserved ones. They do
-		     not, so the 0xFD landed on status[39:32] and the real DIP bytes came
-		     out as FF,FF - which forced Demo Sounds Off and, combined with the
-		     separate status[47:16] offset bug in Psikyo.sv, left Service Mode
-		     unreachable from the OSD. -->
+		<!-- <switches> bytes start at status[16]: byte0 -> status[23:16],
+		     byte1 -> status[31:24], byte2 -> status[39:32]. Psikyo.sv feeds those into
+		     the upper half of the 32-bit DSW long at $C00004, with byte2 as the region
+		     jumper in its low byte. Defaults match MAME's PORT_DIPNAME defaults:
+		     Demo Sounds On, Difficulty Normal, 3 Lives, Bonus 400K, Service Mode Off,
+		     1C 1C, region World. -->
 
 		<dip name="Flip Screen" bits="16" ids="On,Off"/>
 		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
