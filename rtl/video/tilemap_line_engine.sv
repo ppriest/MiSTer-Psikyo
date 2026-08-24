@@ -24,6 +24,15 @@ module tilemap_line_engine #(
     // Timing (from a not-yet-built top-level generator; see doc for the
     // hcnt/vcnt convention this module assumes)
     input  logic [7:0]  vcnt,        // 0-223, current active scanline
+    // ONE PIXEL IS CONSUMED PER ce_pix, NOT PER clk. clk is 85.909 MHz and the
+    // pixel clock is 85.909/12 = 7.159 MHz, so without this the display side
+    // advances 12x too fast: it drains the whole line's 21 prefetched tiles
+    // (21*16 = 336 pixels, one per clk) in 336 clk cycles = 336/12 = 28 pixel
+    // clocks, then reports fetch_overrun for the rest of the line. That is
+    // exactly what hardware showed -- correct-looking tilemap content in
+    // columns 0..27 of every scanline and backdrop across the remaining 292.
+    // It reads like a memory-bandwidth problem and is not one.
+    input  logic         ce_pix,      // 1-in-12 pixel-clock enable
     input  logic         h_active,    // 1 while the active 320-pixel window is being displayed
     input  logic         line_start,  // 1-cycle pulse during blanking, well before h_active next asserts
 
@@ -347,21 +356,26 @@ module tilemap_line_engine #(
             pixel_valid <= 1'b0;
             for (int i = 0; i < PREFETCH_DEPTH; i++) disp_tog[i] <= 1'b0;
         end else if (h_active) begin
-            if (buf_ready[display_sel]) begin
-                pixel_valid <= 1'b1;
-                pixel_index <= buf_pixels[display_sel][buf_start[display_sel] + consumed];
-                pixel_color <= buf_color[display_sel];
+            // Advance only on a pixel-clock tick; between ticks hold the
+            // current pixel so the compositor sees a stable value for the
+            // whole pixel period.
+            if (ce_pix) begin
+                if (buf_ready[display_sel]) begin
+                    pixel_valid <= 1'b1;
+                    pixel_index <= buf_pixels[display_sel][buf_start[display_sel] + consumed];
+                    pixel_color <= buf_color[display_sel];
 
-                if ({1'b0, consumed} + 5'd1 >= buf_count[display_sel]) begin
-                    disp_tog[display_sel] <= ~disp_tog[display_sel];  // free this buffer
-                    display_sel            <= (display_sel == PREFETCH_DEPTH-1) ? '0 : display_sel + 1'b1;
-                    consumed                <= 4'd0;
+                    if ({1'b0, consumed} + 5'd1 >= buf_count[display_sel]) begin
+                        disp_tog[display_sel] <= ~disp_tog[display_sel];  // free this buffer
+                        display_sel            <= (display_sel == PREFETCH_DEPTH-1) ? '0 : display_sel + 1'b1;
+                        consumed                <= 4'd0;
+                    end else begin
+                        consumed <= consumed + 4'd1;
+                    end
                 end else begin
-                    consumed <= consumed + 4'd1;
+                    pixel_valid   <= 1'b0;
+                    fetch_overrun <= 1'b1;   // wanted to display but buffer wasn't ready
                 end
-            end else begin
-                pixel_valid   <= 1'b0;
-                fetch_overrun <= 1'b1;   // wanted to display but buffer wasn't ready
             end
         end else begin
             pixel_valid <= 1'b0;

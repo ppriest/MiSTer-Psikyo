@@ -275,7 +275,7 @@ module psikyo_core #(
 
     tilemap_line_engine #(.LAYER(0)) u_layer0 (
         .clk(clk), .reset(reset),
-        .vcnt(vcnt_active), .h_active(h_active), .line_start(line_start),
+        .vcnt(vcnt_active), .ce_pix(ce_pix), .h_active(h_active), .line_start(line_start),
         .mode(l0_mode), .base_x_scroll(l0_base_x), .base_y_scroll(l0_base_y), .bank(l0_bank),
         .rowscroll_enable(l0_rs_en), .rowscroll_pertile(l0_rs_pertile),
         .rowscroll_addr(l0_rowscroll_addr), .rowscroll_data(l0_rowscroll_data),
@@ -288,7 +288,7 @@ module psikyo_core #(
 
     tilemap_line_engine #(.LAYER(1)) u_layer1 (
         .clk(clk), .reset(reset),
-        .vcnt(vcnt_active), .h_active(h_active), .line_start(line_start),
+        .vcnt(vcnt_active), .ce_pix(ce_pix), .h_active(h_active), .line_start(line_start),
         .mode(l1_mode), .base_x_scroll(l1_base_x), .base_y_scroll(l1_base_y), .bank(l1_bank),
         .rowscroll_enable(l1_rs_en), .rowscroll_pertile(l1_rs_pertile),
         .rowscroll_addr(l1_rowscroll_addr), .rowscroll_data(l1_rowscroll_data),

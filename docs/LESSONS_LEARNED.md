@@ -86,6 +86,55 @@ lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/
   bits. Capture the *full* address — if it does not fit alongside the data, use two buffers
   strobed by the same event, so entry N of each describes the same bus cycle.
 
+## Let the number tell you what the bug is
+
+The tilemaps rendered correct-looking content across **exactly 28 columns** of every
+scanline, then backdrop for the remaining 292, with the sticky `fetch_overrun` flag set.
+That reads like a memory-bandwidth problem, and it was chased as one: SDRAM contention,
+arbiter priority, prefetch depth, whether the sprite engine was starving the tilemap
+ports. It is not a bandwidth problem at all.
+
+`tilemap_line_engine` had **no `ce_pix` port**. Its display side advanced one pixel per
+`clk` (85.909 MHz) rather than per pixel clock (85.909/12 = 7.159 MHz), so it drained the
+line's prefetched tiles twelve times too fast:
+
+```
+21 tiles x 16 px = 336 pixels, one per clk = 336 clk cycles
+336 clk / 12 clk-per-pixel = 28 displayed pixels
+```
+
+28. Exactly the observed number. The content was always right; it was consumed 12x too
+early, and `fetch_overrun` was a true symptom of **over-consumption**, not under-supply.
+
+**Check whether an odd measurement is arithmetically exact before theorising about it.**
+28 of 320 is not "about an eighth", it is 336/12, and that division names the bug
+immediately. A cause that predicts the number exactly beats one that merely explains the
+shape of the symptom. Contention would have produced a ragged, load-dependent boundary,
+not the same column every line.
+
+Corollary for this codebase: **any module that hands pixels to the display must consume
+at `ce_pix`, not at `clk`.** The sprite path renders a frame ahead into a buffer so it is
+free to run at full clock, but the tilemap engines feed the compositor directly and must
+not. When adding a module to the video path, check which of those two it is.
+
+## Beware a fix that starves a shared resource
+
+The sprite frame buffer genuinely does swap banks mid-scanout, and its own header asks the
+caller to pulse `frame_swap` at vblank and wait for `swap_done`. Implementing exactly that
+stopped the core booting: the CPU ended up parked on the boot's deliberate `bra.s *`
+die-here stub at 0xB5E with the video registers never programmed.
+
+Holding the sprite render start across frames left the engine rendering back-to-back, and
+it shares the SDRAM arbiter with the CPU's program fetches. A change that is locally
+correct can still be globally fatal when it alters how heavily a module uses a contended
+resource.
+
+It was isolated without rebuilding, using the OSD render-disable switches added the same
+day: forcing both tilemap layers off inside the same bitstream (overlay off, so nothing was
+borrowing a memory port either) still hung, which excluded the tilemap enable change and
+the debug instrumentation, leaving only the sequencing change. **Runtime A/B switches pay
+for themselves the first time a 12-minute build would otherwise be the only way to bisect.**
+
 ## Copy the polarity, not just the bit position
 
 `psikyo_v.cpp` enables a tilemap with
