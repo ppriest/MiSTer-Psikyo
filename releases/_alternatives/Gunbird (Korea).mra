@@ -68,16 +68,16 @@
 		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra). No Region byte  - 
 		     gunbirdk shares gunbirdj's ports, whose Region field is IPT_UNKNOWN. -->
 
-		<dip name="Flip Screen" bits="16" ids="On,Off"/>
-		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
-		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
-		<dip name="Lives" bits="20,21" ids="4,2,1,3"/>
-		<dip name="Bonus Life" bits="22" ids="600K,400K"/>
-		<dip name="Service Mode" bits="23" ids="On,Off"/>
-		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
-		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
-		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
-		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+		<dip name="Flip Screen" bits="0" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="1" ids="On,Off"/>
+		<dip name="Difficulty" bits="2,3" ids="Hardest,Hard,Easy,Normal"/>
+		<dip name="Lives" bits="4,5" ids="4,2,1,3"/>
+		<dip name="Bonus Life" bits="6" ids="600K,400K"/>
+		<dip name="Service Mode" bits="7" ids="On,Off"/>
+		<dip name="Coin Slot" bits="8" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="9,10,11" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="12,13,14" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On (Free Play),Off"/>
 	</switches>
 
 	<mratimestamp>20260822220000</mratimestamp>

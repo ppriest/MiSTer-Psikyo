@@ -64,25 +64,25 @@
 	<switches default="FF,FF,FD,FF,0C">
 		<!-- byte0/byte1: reserved (see Samurai Aces (World).mra) -->
 
-		<dip name="Flip Screen" bits="16" ids="On,Off"/>
-		<dip name="Demo Sounds" bits="17" ids="On,Off"/>
-		<dip name="Difficulty" bits="18,19" ids="Hardest,Hard,Easy,Normal"/>
+		<dip name="Flip Screen" bits="0" ids="On,Off"/>
+		<dip name="Demo Sounds" bits="1" ids="On,Off"/>
+		<dip name="Difficulty" bits="2,3" ids="Hardest,Hard,Easy,Normal"/>
 
 		<!-- bits 20-22 repurposed vs. gunbird's Lives/Bonus Life, same as btlkroad -->
-		<dip name="Blood Effects" bits="20" ids="Off,On"/>
-		<dip name="Handicap Mode" bits="21" ids="On,Off"/>
-		<dip name="Use DSW 3 (Debug)" bits="22" ids="On,Off"/>
+		<dip name="Blood Effects" bits="4" ids="Off,On"/>
+		<dip name="Handicap Mode" bits="5" ids="On,Off"/>
+		<dip name="Use DSW 3 (Debug)" bits="6" ids="On,Off"/>
 
-		<dip name="Service Mode" bits="23" ids="On,Off"/>
-		<dip name="Coin Slot" bits="24" ids="Individual (Free Play),Shared"/>
-		<dip name="Coin A" bits="25,26,27" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
-		<dip name="Coin B" bits="28,29,30" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
-		<dip name="2 Coins Start, 1 Coin Continue" bits="31" ids="On (Free Play),Off"/>
+		<dip name="Service Mode" bits="7" ids="On,Off"/>
+		<dip name="Coin Slot" bits="8" ids="Individual (Free Play),Shared"/>
+		<dip name="Coin A" bits="9,10,11" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="Coin B" bits="12,13,14" ids="1C 6C (Free Play),1C 5C,1C 4C,1C 3C,1C 2C,3C 1C,2C 1C,1C 1C"/>
+		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On (Free Play),Off"/>
 
 		<!-- Region: same value set as btlkroad's, but default = Korea (0x0C) here
 		     instead of Japan (0x0F) - confirmed from source, not assumed to mirror
 		     the parent's default. -->
-		<dip name="Region" bits="32,33,34,35" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
+		<dip name="Region" bits="16,17,18,19" ids="World,Taiwan,Hong Kong,Korea,USA and Canada (Jaleco license),Japan" values="0x0,0x6,0xa,0xc,0xe,0xf"/>
 	</switches>
 
 	<mratimestamp>20260822220000</mratimestamp>
