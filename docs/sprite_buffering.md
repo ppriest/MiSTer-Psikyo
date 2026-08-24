@@ -114,5 +114,28 @@ One bug found and fixed before it was ever exercised: `le_start` was gated on `l
 drops at `line_start`, so start and ready were never true together and the path rendered
 nothing. It now triggers on the rising edge of `lb_ready`.
 
-**This path has not been evaluated on hardware.** Until it has, no claim either way about
-whether it fixes the flicker and ghosting.
+### Hardware result: partially working, parked
+
+Sprites render, and are correct near the **top** of the screen, degrading progressively further
+down. Parked at this point rather than debugged.
+
+That gradient is the useful part of the observation. A decode bug — wrong attribute field, wrong
+palette bits, wrong zoom step — would corrupt every scanline equally, because each line is
+decoded independently. Error that grows with scanline number instead points at something
+accumulating across lines within a frame, which for this design means the per-line time budget:
+
+* Budget is about 5,470 clk cycles per line (htotal 456 at clk/12), minus 320 for the bank clear.
+* The measured worst-case frame render was 881,632 cycles, about 3,900 per line averaged — but
+  that is an average, and sprite density is not uniform down the screen.
+
+If the engine cannot finish a line inside its budget, the question is whether the next
+`line_start` hard-resynchronises it or leaves it mid-record. If it can be left behind, the
+deficit carries into the following line and compounds — which is exactly the shape of the
+reported symptom. `le_start` currently triggers on the rising edge of `lb_ready`; what happens
+when the engine is *still busy* at `line_start` is the thing to check first.
+
+Second candidate, cheaper to rule out: `S_FIND_ROW` searches `iy` for the sub-tile row covering
+`render_line`, so its cost is not constant across the screen.
+
+Note that real hardware does drop sprites when a line is oversubscribed — so some loss low on a
+busy screen is authentic, and the bar is matching MAME's dropout, not eliminating it.
