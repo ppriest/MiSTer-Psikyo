@@ -58,7 +58,6 @@ assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
 
-assign VGA_SL = 0;
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
@@ -88,6 +87,7 @@ localparam CONF_STR = {
 	"Psikyo;;",
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -101,6 +101,7 @@ localparam CONF_STR = {
 	"P1O[40],Sprites,On,Off;",
 	"P1O[41],Tilemap 0,On,Off;",
 	"P1O[42],Tilemap 1,On,Off;",
+	"P1O[43],Sprite swap,EndOfRender,FrameStart;",
 	"-;",
 	"J1,Button 1,Button 2,Button 3,Start,Coin;",
 	"R[0],Reset;",
@@ -108,6 +109,7 @@ localparam CONF_STR = {
 };
 
 wire         forced_scandoubler;
+wire  [21:0] gamma_bus;
 wire  [1:0] buttons;
 wire [127:0] status;
 wire  [10:0] ps2_key;
@@ -126,7 +128,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
 	.EXT_BUS(),
-	.gamma_bus(),
+	.gamma_bus(gamma_bus),
 
 	.forced_scandoubler(forced_scandoubler),
 
@@ -302,6 +304,9 @@ wire        dbg_overlay = status[56];
 // status[39:16] and the tracer controls sit at status[63:56].
 //   [0] sprites  [1] tilemap layer 0  [2] tilemap layer 1
 wire [2:0] dbg_render_dis = status[42:40];
+// Experimental: swap the sprite output buffer at the frame boundary rather
+// than at end-of-render. Default 0 = the behaviour known to boot.
+wire        dbg_sprite_vsync_swap = status[43];
 wire [1:0] dbg_src     = status[58:57];
 wire [3:0] dbg_window  = status[62:59];
 wire        dbg_rearm   = status[63];
@@ -387,29 +392,54 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
-assign CLK_VIDEO = clk_sys;
-assign CE_PIXEL = ce_pix;
+// ---- video output via sys/arcade_video.v ----
+// This core used to drive VGA_R/G/B, VGA_DE/HS/VS, CLK_VIDEO and CE_PIXEL by
+// hand, bypassing the framework's video path entirely. That worked, but gave
+// up everything arcade_video provides: the scandoubler (so a VGA/CRT setup got
+// no 31 kHz option), gamma correction, scanline effects, and video_freak's
+// aspect-ratio and cropping handling. sys/arcade_video.v, video_mixer.sv and
+// video_freak.sv were all sitting in the tree unused.
+//
+// The picture is xRGB_555 internally; arcade_video takes a packed bus, so each
+// 5-bit channel is expanded to 8 by replicating its top bits (NOT zero-padded,
+// which would darken full-brightness colours).
+//
+// The debug overlay is injected BEFORE arcade_video so it still works, but note
+// that scanlines/gamma will alter the pixel values the decoder reads -- keep
+// fx=0 and gamma off when capturing a trace, or the decode is meaningless.
+wire [7:0] r8 = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
+wire [7:0] g8 = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
+wire [7:0] b8 = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
 
-assign VGA_DE = ~(hblank | vblank);
-assign VGA_HS = hsync;
-assign VGA_VS = vsync;
+arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
+(
+	.clk_video(clk_sys),
+	.ce_pix(ce_pix),
 
-// xRGB_555 -> 8 bits/channel, standard MSB-replication expansion (not
-// zero-padding, which would darken max-brightness colors) -- rgb[14:10]=R,
-// rgb[9:5]=G, rgb[4:0]=B, MAME's own xRGB555 convention (R in the high
-// bits), matching docs/phase1_memory_map.md's "Palette format is xRGB_555".
-// Normal path is the real xRGB_555 picture. When the OSD's "Trace overlay"
-// is on, the debug tracer's captured entry for this scanline is driven
-// instead -- decode it with scripts/decode_debug_screenshot.py --mode
-// scanline. No rebuild is needed to switch, so instrumentation no longer
-// costs a 12-minute round trip.
-assign VGA_R = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
-assign VGA_G = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
-assign VGA_B = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
+	.RGB_in({r8, g8, b8}),
+	.HBlank(hblank),
+	.VBlank(vblank),
+	.HSync(hsync),
+	.VSync(vsync),
+
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_R(VGA_R),
+	.VGA_G(VGA_G),
+	.VGA_B(VGA_B),
+	.VGA_HS(VGA_HS),
+	.VGA_VS(VGA_VS),
+	.VGA_DE(VGA_DE),
+	.VGA_SL(VGA_SL),
+
+	.fx(status[46:44]),
+	.forced_scandoubler(forced_scandoubler),
+	.gamma_bus(gamma_bus)
+);
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;
