@@ -27,14 +27,15 @@ Not working, or built but unconfirmed:
 * **Audio has never been heard.** Z80 and jt10/YM2610 are wired and clocked, but the ADPCM-A
   and ADPCM-B ROM interfaces are not connected — `sdram_arbiter5` has no free consumer port,
   and no `ADPCMA_BASE`/`ADPCMB_BASE` regions are defined. FM only, at best.
-* **The game intermittently slows down.** Not the uniform half-speed that the `$C00008` bit-0
-  change addressed — that change is in and the slowdown outlives it. Leading hypothesis is
-  SDRAM contention: `sdram_arbiter5` is strict round-robin and fully serialises one
-  transaction at a time, so a heavy sprite frame takes slots away from CPU instruction fetch.
-  Untested; OSD bit 40 (Sprites Off) is the discriminating experiment.
-* **Sprites still flicker and ghost**, improved but not fixed by `Sprite swap = FrameStart`.
-  The per-scanline replacement is built and selectable (OSD bit 52) but has not been
-  evaluated. See `docs/sprite_buffering.md`.
+* **Some slowdown may remain.** The `$C00008` bit-0 change (see below) made this much better.
+  If any residual turns out to be load-dependent, the candidate is SDRAM contention:
+  `sdram_arbiter5` is strict round-robin and fully serialises one transaction at a time, so a
+  heavy sprite frame takes slots away from CPU instruction fetch — something that cannot
+  happen on the real board, where CPU program ROM and sprite GFX ROM are separate chips. OSD
+  bit 40 (Sprites Off) tests it without a rebuild.
+* **Sprites still flicker and ghost**, though much improved by the bit-0 change. The
+  per-scanline replacement is built and selectable (OSD bit 52) but has not been evaluated.
+  See `docs/sprite_buffering.md`.
 * Some tilemap tiles use the wrong palette (a row of the Gun Bird logo goes green); the
   sengokua hiscore tilemap is offset by about two tiles.
 * Gun Bird sprites freeze a few seconds into each scene — suspected spriteram banking.
