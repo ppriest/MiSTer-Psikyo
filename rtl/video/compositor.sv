@@ -82,14 +82,22 @@ module compositor (
     //    That is the clouds-drawn-under-sprites / blossoms-over-backdrop
     //    defect.
     //
-    // Mask table verbatim from get_sprites():
+    // Mask table. psikyo_v.cpp's get_sprites() has:
     //     static const int pri[] = { 0, 0xfc, 0xff, 0xff };
-    //     primask = pri[(attr & 0xc0) >> 6];
+    // but index 2 is 0xFE here, deliberately. With the one-hot test the
+    // priority-bitmap values 0/1/2/3 shift to 0x01/0x02/0x04/0x08, so:
     //
-    // NOTE: with the one-hot test, 0xFF blocks every priority value
-    // including 0 (backdrop), so sprite priorities 2 and 3 never draw at
-    // all. That is what the driver says; flagged for confirmation rather
-    // than "corrected" to a guess.
+    //     0x00  blocks nothing               in front of both layers
+    //     0xFC  blocks 0x04,0x08             in front of L0, behind L1
+    //     0xFE  blocks 0x02,0x04,0x08        behind both, over backdrop
+    //     0xFF  blocks everything incl 0x01  never drawn
+    //
+    // 0xFE is the only value expressing "behind both tilemaps but still
+    // visible against the backdrop"; the driver's 0xFF collapses that into
+    // invisible. The two are indistinguishable whenever layer 0 is drawn
+    // opaque (layer_ctrl[0] & 2), because then the bitmap value is never 0
+    // and 1<<v is never 0x01 -- which is why the driver's value is harmless
+    // in most scenes and wrong in the rest.
     logic [1:0] priority_val;
     assign priority_val = {l1_draws, l0_draws};
 
@@ -101,7 +109,7 @@ module compositor (
         unique case (sp_priority)
             2'd0: primask = 8'h00;
             2'd1: primask = 8'hFC;
-            2'd2: primask = 8'hFF;
+            2'd2: primask = 8'hFE;
             2'd3: primask = 8'hFF;
         endcase
     end

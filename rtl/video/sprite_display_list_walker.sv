@@ -51,23 +51,25 @@ module sprite_display_list_walker (
     output logic         done            // pulses once when the walk ends (sentinel or exhausted)
 );
 
+    // DO NOT "fix" this to walk backward. It was changed once to scan for
+    // the terminator and then emit entries from last down to entry 0, on the
+    // reading that psikyo_v.cpp's draw loop
+    //     while (sprite_ptr != m_spritelist.get()) { sprite_ptr--; ... }
+    // draws the list in reverse and therefore puts list entry 0 on top.
+    // On hardware that inverted sprite-vs-sprite depth ordering, and the
+    // extra scan pass measurably slowed the game. Reverted.
+    //
+    // The forward walk here, with later writes overwriting earlier ones in
+    // sprite_frame_buffer (its write_en is unconditional), reproduces the
+    // hardware's ordering. Whatever m_sprite_ptr_pre's fill order is during
+    // parsing, the net effect of MAME's parse-then-draw pair matches a plain
+    // forward walk -- which was not verified before changing it, and the
+    // change cost a build and a bad test session.
+
     localparam logic [11:0] DL_BASE       = 12'hC00;
     localparam int          DL_MAX_ENTRIES = 1023;
 
-    // MAME appends display-list entries forward but DRAWS them backward:
-    //     while (sprite_ptr != m_spritelist.get()) { sprite_ptr--; ... }
-    // so list entry 0 is drawn LAST and therefore ends up on TOP. This
-    // module used to walk forward and let later writes overwrite earlier
-    // ones, which puts the LAST entry on top -- sprite-vs-sprite ordering
-    // inverted against the hardware.
-    //
-    // Fixed by matching MAME's structure: a scan pass finds the terminator,
-    // then entries are emitted from the last one down to entry 0. The scan
-    // costs up to 1023 extra reads per frame (~2 cycles each) against a
-    // frame of 1.43M cycles, which is not worth avoiding with a
-    // read-modify-write "first writer wins" buffer instead.
-    typedef enum logic [2:0] {S_IDLE, S_SCAN_FETCH, S_SCAN_CHECK,
-                               S_FETCH, S_PROCESS, S_HOLD} state_t;
+    typedef enum logic [1:0] {S_IDLE, S_FETCH, S_PROCESS, S_HOLD} state_t;
     state_t state;
 
     logic [11:0] addr_r;
@@ -124,55 +126,33 @@ module sprite_display_list_walker (
                     if (start) begin
                         addr_r  <= DL_BASE;
                         count_r <= 10'd0;
-                        state    <= S_SCAN_FETCH;
+                        state    <= S_FETCH;
                     end
                 end
 
-                // ---- pass 1: locate the terminator ----
-                S_SCAN_FETCH: begin
-                    state <= S_SCAN_CHECK;
-                end
-
-                S_SCAN_CHECK: begin
-                    if (sram_data == 16'hFFFF || count_r == DL_MAX_ENTRIES - 1) begin
-                        if (count_r == 10'd0) begin
-                            // Terminator at entry 0: no sprites this frame.
-                            done  <= 1'b1;
-                            state <= S_IDLE;
-                        end else begin
-                            // Start from the last real entry and work down.
-                            addr_r  <= DL_BASE + {2'd0, count_r} - 12'd1;
-                            count_r <= count_r - 10'd1;
-                            state    <= S_FETCH;
-                        end
-                    end else begin
-                        addr_r  <= addr_r + 12'd1;
-                        count_r <= count_r + 10'd1;
-                        state    <= S_SCAN_FETCH;
-                    end
-                end
-
-                // ---- pass 2: emit entries backward, so entry 0 draws last ----
                 S_FETCH: begin
                     state <= S_PROCESS;
                 end
 
                 S_PROCESS: begin
-                    // No terminator test here: pass 1 already bounded the
-                    // range, and every entry in it is a real one.
-                    entry_valid  <= 1'b1;
-                    sprite_index <= mod768(sram_data);
-                    state          <= S_HOLD;
+                    if (sram_data == 16'hFFFF) begin
+                        done  <= 1'b1;
+                        state <= S_IDLE;
+                    end else begin
+                        entry_valid  <= 1'b1;
+                        sprite_index <= mod768(sram_data);
+                        state          <= S_HOLD;
+                    end
                 end
 
                 S_HOLD: begin
                     if (advance) begin
-                        if (count_r == 10'd0) begin
+                        if (count_r == DL_MAX_ENTRIES - 1) begin
                             done  <= 1'b1;
                             state <= S_IDLE;
                         end else begin
-                            addr_r  <= addr_r - 12'd1;
-                            count_r <= count_r - 10'd1;
+                            addr_r  <= addr_r + 12'd1;
+                            count_r <= count_r + 10'd1;
                             state    <= S_FETCH;
                         end
                     end
