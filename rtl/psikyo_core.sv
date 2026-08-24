@@ -18,16 +18,17 @@
 // of control logic this module adds, not just wiring) ----
 // video_timing's frame_start pulse drives THREE things, deliberately in
 // two stages one cycle apart:
-//   1. Same cycle: spriteram_dbuf.frame_start -- swaps which physical bank
-//      the CPU writes into vs. which one is frozen for the render engine
-//      to read, and latches this frame's sprites_disable/trans_pen* control
-//      bits (docs/phase1_memory_map.md's spriteram control word).
-//   2. One cycle later (frame_start_d): sprite_render_engine.frame_start,
-//      gated by the NOW-updated sprites_disable -- spriteram_dbuf's own
-//      control latch is itself registered on the frame_start edge, so
-//      sprites_disable isn't valid until the cycle after the swap; waiting
-//      one cycle is what makes the gating correct rather than reading last
-//      frame's stale disable bit. If sprites are disabled, the render
+//   1. Same cycle: spriteram_dbuf.frame_start -- begins a full COPY of the
+//      live sprite RAM into the frozen snapshot the render engine reads,
+//      and latches this frame's sprites_disable/trans_pen* control bits
+//      (docs/phase1_memory_map.md's spriteram control word). This was a
+//      bank swap until it was found to be the cause of stale sprites and
+//      breakdown under load -- see spriteram_dbuf.sv's header.
+//   2. ~4098 cycles later (snapshot_done, the falling edge of copy_busy):
+//      sprite_render_engine.frame_start, gated by sprites_disable, which
+//      was latched back at frame_start and is long since valid. Starting
+//      any earlier would render from a half-copied snapshot. If sprites
+//      are disabled, the render
 //      engine is simply never kicked -- sprite_frame_buffer's write-role
 //      bank keeps whatever an earlier frame_swap already cleared it to
 //      (rd_present all-0), which is exactly "no sprites drawn" (matches
@@ -318,23 +319,33 @@ module psikyo_core #(
     logic [11:0] dl_addr, at_addr;
     logic [15:0] dl_data, at_data;
     logic         sprites_disable, trans_pen0, trans_pen15;
+    logic         spr_copy_busy;
 
     spriteram_dbuf u_spriteram (
         .clk(clk), .reset(reset), .frame_start(frame_start),
+        .copy_busy(spr_copy_busy),
         .cpu_addr(spr_cpu_addr), .cpu_wel(spr_cpu_wel), .cpu_weh(spr_cpu_weh),
         .cpu_wdata(spr_cpu_wdata), .cpu_rdata(spr_cpu_rdata),
         .dl_addr(dl_addr), .dl_data(dl_data), .at_addr(at_addr), .at_data(at_data),
         .sprites_disable(sprites_disable), .trans_pen0(trans_pen0), .trans_pen15(trans_pen15)
     );
 
-    // frame_start also swaps spriteram_dbuf's roles combinationally with
-    // the sprites_disable output latched on that SAME edge -- one cycle
-    // late relative to the pulse itself (see module header).
-    logic frame_start_d;
+    // spriteram_dbuf now takes a real COPY of sprite RAM at frame_start
+    // rather than swapping banks (see its header for why the swap was wrong).
+    // The render engine must not start until that snapshot is complete, so
+    // the start pulse is the FALLING edge of copy_busy, not frame_start
+    // itself. The copy is ~4098 cycles against vblank's 207,936, so this
+    // costs about 2% of vblank.
+    //
+    // This also removes the reason the old code delayed the start by one
+    // cycle: sprites_disable is latched at frame_start and is therefore
+    // valid thousands of cycles before the snapshot finishes.
+    logic spr_copy_busy_d, snapshot_done;
     always_ff @(posedge clk or posedge reset) begin
-        if (reset) frame_start_d <= 1'b0;
-        else        frame_start_d <= frame_start;
+        if (reset) spr_copy_busy_d <= 1'b0;
+        else        spr_copy_busy_d <= spr_copy_busy;
     end
+    assign snapshot_done = spr_copy_busy_d & ~spr_copy_busy;
 
     // NOTE: the frame-buffer swap sequencing experiment has been REVERTED.
     //
@@ -369,7 +380,7 @@ module psikyo_core #(
     // 1433729. A switch rather than an outright change because this was tried
     // once and stopped the core booting for reasons never established; it
     // makes the comparison an A/B on one bitstream. See docs/sprite_buffering.md.
-    wire want_frame = frame_start_d & ~sprites_disable & ~dbg_render_dis[0];
+    wire want_frame = snapshot_done & ~sprites_disable & ~dbg_render_dis[0];
 
     logic bank_ready, start_pending;
     always_ff @(posedge clk or posedge reset) begin
@@ -483,7 +494,10 @@ module psikyo_core #(
         if (reset) lb_ready_d <= 1'b0;
         else        lb_ready_d <= lb_ready;
     end
-    wire le_start = sprite_line_mode & lb_ready & ~lb_ready_d;
+    // Also held off while the sprite-RAM snapshot is in flight: line_start
+    // fires on vblank lines too, and the snapshot bank's attribute port
+    // reads garbage during the copy.
+    wire le_start = sprite_line_mode & lb_ready & ~lb_ready_d & ~spr_copy_busy;
 
     sprite_line_engine u_sprite_line (
         .clk(clk), .reset(reset),

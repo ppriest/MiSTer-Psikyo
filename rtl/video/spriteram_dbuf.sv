@@ -1,47 +1,59 @@
-// Hardware double-buffered sprite RAM (0x400000-0x401FFF,
-// docs/phase1_memory_map.md "Sprite RAM layout"). MAME models this with
-// buffered_spriteram32_device: the CPU freely reads/writes one buffer all
-// frame, and the ENTIRE buffer is copied into a second, separate buffer on
-// vblank's rising edge -- the sprite engine only ever renders from that
-// frozen copy, never from the buffer the CPU is currently mid-write on.
+// Hardware-buffered sprite RAM (0x400000-0x401FFF, docs/phase1_memory_map.md
+// "Sprite RAM layout"), modelling MAME's buffered_spriteram32_device.
 //
-// Implemented here as true ping-pong (2 physical banks, roles swapped each
-// frame_start) rather than an actual bulk copy -- behaviorally identical to
-// MAME's copy-based model as long as the CPU never touches the render-role
-// bank, which holds here structurally (the CPU port is only ever wired to
-// the write-role bank). Same pattern rtl/video/sprite_frame_buffer.sv
-// already uses on the *output* side of the sprite pipeline; this is the
-// equivalent on the input (attribute table + display list) side.
+// THE CONTRACT THAT MATTERS: the CPU sees ONE persistent RAM for the whole
+// life of the game. On vblank's rising edge the entire contents are COPIED
+// into a second buffer, and the sprite engine renders only from that frozen
+// copy.
 //
-// Render-side needs 2 concurrent read streams into the SAME render bank
-// (sprite_render_engine's dl_addr display-list walk and at_addr attribute
-// fetch run concurrently, docs/phase1_video_engine.md "Sprite render
-// engine: pipeline design") -- exactly rtl/memory/dpram.sv's 2-port shape
-// (port A idle-or-CPU, port B always dl_addr), so only ONE dpram instance
-// per bank is needed (unlike vreg_decode.sv, which genuinely needed 3
-// simultaneous roles on one un-buffered bank).
+// This was previously implemented as a ping-pong swap of two banks, with a
+// header claiming that was "behaviorally identical to MAME's copy-based
+// model as long as the CPU never touches the render-role bank". That
+// condition was met and the claim was still wrong, because it is not the
+// condition that makes a swap equal a copy. Under ping-pong the CPU writes
+// bank A one frame and bank B the next, so its view of sprite RAM alternates
+// between two different memories: any entry the game does not rewrite every
+// single frame reads back what was written TWO frames ago, not last frame.
 //
-// The control word (word 0xFFF, docs/phase1_memory_map.md "Control word")
-// is deliberately NOT read back out through at_addr/dl_addr (the render
-// engine's ports only ever address 0x000-0xFFE) -- it's tracked separately
-// as a per-bank shadow register, latched into the active/rendering value
-// at the same frame_start edge that swaps bank roles, so sprite_render_
-// engine's trans_pen0/trans_pen15 see this frame's frozen value without
-// needing a third RAM read port just for one word.
+// Games update sprite RAM incrementally and terminate the display list with
+// an end-of-list marker. Under ping-pong, a frame where the game does not
+// get as far as writing the marker inherits the marker from two frames ago,
+// which can sit much further down the list -- so the engine renders far more
+// sprites than intended, the pass takes longer, and the failure compounds
+// under load until the scene simplifies. That is the observed "ghosting,
+// stale sprites, and breakdown under load", and it is a consequence of the
+// swap, not of the output-side buffering.
+//
+// Cost of doing it correctly: 4096 words copied one per clk = ~4098 cycles.
+// vblank is 38 lines x 456 pixel clocks x 12 clk = 207,936 clk cycles, so
+// the copy occupies about 2% of vblank. copy_busy is exported so the render
+// engine can be held off until the snapshot is complete.
+//
+// Render side needs 2 concurrent read streams into the snapshot bank (the
+// display-list walk on dl_addr and the attribute fetch on at_addr run
+// concurrently, docs/phase1_video_engine.md) -- that is dpram.sv's 2-port
+// shape. The live bank's port B, previously unused for this purpose, now
+// carries the copy read.
+//
+// The control word (word 0xFFF) is not read back through at_addr/dl_addr
+// (the render engine only addresses 0x000-0xFFE), so it is tracked as a
+// single shadow register on the live side and latched into ctrl_active at
+// the same frame_start edge that starts the copy.
 module spriteram_dbuf (
     input  logic clk,
     input  logic reset,
 
-    input  logic frame_start,   // pulse: swap write/render bank roles (video_timing.sv's vblank-rising pulse)
+    input  logic frame_start,   // pulse: snapshot the live RAM (video_timing.sv's vblank-rising pulse)
+    output logic copy_busy,     // 1 while the snapshot is being taken; render must not start
 
-    // CPU-facing port -- always addresses the current write-role bank.
+    // CPU-facing port -- always the live bank, never swapped.
     input  logic [11:0] cpu_addr,
     input  logic         cpu_wel,
     input  logic         cpu_weh,
     input  logic [15:0] cpu_wdata,
     output logic [15:0] cpu_rdata,
 
-    // Render-facing ports -- always address the current render-role bank.
+    // Render-facing ports -- always the frozen snapshot bank.
     input  logic [11:0] dl_addr,
     output logic [15:0] dl_data,
     input  logic [11:0] at_addr,
@@ -55,70 +67,84 @@ module spriteram_dbuf (
 );
 
     localparam logic [11:0] CTRL_ADDR = 12'hFFF;
+    localparam int          DEPTH      = 4096;
 
-    logic write_bank_sel; // 0: bank0 is write-role (bank1 render-role); 1: reversed
+    // ---- copy sequencer ----
+    // copy_rd_addr is presented to the live bank's port B; dpram registers
+    // its read, so the word arrives one cycle later and is written to the
+    // snapshot at copy_wr_addr, which trails by exactly that one cycle.
+    logic         copying;
+    logic [11:0] copy_rd_addr;
+    logic [11:0] copy_wr_addr;
+    logic         copy_wr_en;
 
-    logic bank0_is_write;
-    assign bank0_is_write = ~write_bank_sel;
+    assign copy_busy = copying | copy_wr_en;
 
-    logic [15:0] bank0_a_rdata, bank0_b_rdata;
-    logic [15:0] bank1_a_rdata, bank1_b_rdata;
+    logic [15:0] live_b_rdata;
 
-    dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_bank0 (
+    // ---- live bank: CPU on port A, copy read on port B ----
+    logic [15:0] live_a_rdata;
+    dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_live (
         .clk(clk),
-        .a_addr(bank0_is_write ? cpu_addr : at_addr),
-        .a_wel(bank0_is_write ? cpu_wel : 1'b0),
-        .a_weh(bank0_is_write ? cpu_weh : 1'b0),
+        .a_addr(cpu_addr),
+        .a_wel(cpu_wel),
+        .a_weh(cpu_weh),
         .a_wdata(cpu_wdata),
-        .a_rdata(bank0_a_rdata),
-        .b_addr(dl_addr),
-        .b_rdata(bank0_b_rdata)
+        .a_rdata(live_a_rdata),
+        .b_addr(copy_rd_addr),
+        .b_rdata(live_b_rdata)
     );
 
-    dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_bank1 (
+    // ---- snapshot bank: copy write / attribute read on port A, display
+    // list read on port B. at_addr's read is meaningless during the copy,
+    // which is safe because copy_busy holds the render engine off.
+    logic [15:0] snap_a_rdata;
+    dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_snap (
         .clk(clk),
-        .a_addr(bank0_is_write ? at_addr : cpu_addr),
-        .a_wel(bank0_is_write ? 1'b0 : cpu_wel),
-        .a_weh(bank0_is_write ? 1'b0 : cpu_weh),
-        .a_wdata(cpu_wdata),
-        .a_rdata(bank1_a_rdata),
+        .a_addr(copy_wr_en ? copy_wr_addr : at_addr),
+        .a_wel(copy_wr_en),
+        .a_weh(copy_wr_en),
+        .a_wdata(live_b_rdata),
+        .a_rdata(snap_a_rdata),
         .b_addr(dl_addr),
-        .b_rdata(bank1_b_rdata)
+        .b_rdata(dl_data)
     );
 
-    assign cpu_rdata = bank0_is_write ? bank0_a_rdata : bank1_a_rdata;
-    assign at_data   = bank0_is_write ? bank1_a_rdata : bank0_a_rdata;
-    assign dl_data   = bank0_is_write ? bank1_b_rdata : bank0_b_rdata;
+    assign cpu_rdata = live_a_rdata;
+    assign at_data   = snap_a_rdata;
 
-    // Per-bank shadow of the control word, updated whenever the CPU
-    // writes word 0xFFF within whichever bank is currently the write-role
-    // bank.
-    logic [15:0] ctrl_shadow_bank0, ctrl_shadow_bank1;
+    // ---- control word shadow (live side) and this frame's frozen value ----
+    logic [15:0] ctrl_shadow;
+    logic [15:0] ctrl_active;
     wire         cpu_we = cpu_wel | cpu_weh;
 
     always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            ctrl_shadow_bank0 <= 16'h0000;
-            ctrl_shadow_bank1 <= 16'h0000;
-        end else if (cpu_we && cpu_addr == CTRL_ADDR) begin
-            if (bank0_is_write) ctrl_shadow_bank0 <= cpu_wdata;
-            else                 ctrl_shadow_bank1 <= cpu_wdata;
-        end
+        if (reset)                                   ctrl_shadow <= 16'h0000;
+        else if (cpu_we && cpu_addr == CTRL_ADDR)  ctrl_shadow <= cpu_wdata;
     end
-
-    logic [15:0] ctrl_active;
 
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
-            write_bank_sel <= 1'b0;
+            copying      <= 1'b0;
+            copy_rd_addr <= 12'd0;
+            copy_wr_addr <= 12'd0;
+            copy_wr_en   <= 1'b0;
             // Sprites held disabled (bit 0) until the first real frame_start
             // latches genuine CPU-written content -- a safe power-on default.
-            ctrl_active     <= 16'h0001;
-        end else if (frame_start) begin
-            // The bank that was just the write-role bank becomes this
-            // frame's render-role bank; adopt its shadowed control word.
-            ctrl_active     <= bank0_is_write ? ctrl_shadow_bank0 : ctrl_shadow_bank1;
-            write_bank_sel  <= ~write_bank_sel;
+            ctrl_active  <= 16'h0001;
+        end else begin
+            copy_wr_en <= 1'b0;
+
+            if (frame_start) begin
+                copying      <= 1'b1;
+                copy_rd_addr <= 12'd0;
+                ctrl_active  <= ctrl_shadow;
+            end else if (copying) begin
+                copy_wr_en   <= 1'b1;
+                copy_wr_addr <= copy_rd_addr;
+                if (copy_rd_addr == DEPTH - 1) copying      <= 1'b0;
+                else                             copy_rd_addr <= copy_rd_addr + 12'd1;
+            end
         end
     end
 

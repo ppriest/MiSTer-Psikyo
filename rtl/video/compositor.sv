@@ -63,8 +63,38 @@ module compositor (
     assign l1_draws = l1_valid && l1_ctrl_enable && (l1_ctrl_opaque || (l1_pixel != l1_transpen));
 
     // ---- priority resolution + sprite gating ----
+    // Priority, matching psikyo_v.cpp exactly. Two things here were wrong
+    // before and both collapsed the four sprite priorities into two.
+    //
+    // 1. The tilemaps OR their priority into MAME's priority bitmap:
+    //        m_tilemap[0]->draw(..., 1);   // layer 0 contributes 1
+    //        m_tilemap[1]->draw(..., 2);   // layer 1 contributes 2
+    //    so a pixel where BOTH drew is 3. The old expression was
+    //    `l1_draws ? 2 : (l0_draws ? 1 : 0)`, which can never produce 3 --
+    //    it reported only the topmost layer and lost the overlap case.
+    //    It is a bitmask, not a magnitude.
+    //
+    // 2. MAME's prio_transmask tests the priority bitmap value ONE-HOT:
+    //        if (((1 << (priority & 0x1f)) & pmask) == 0) draw;
+    //    The old code ANDed the raw value against the mask. Over a 2-bit
+    //    value 0xFC matches nothing, so sprite priorities 0 and 1 behaved
+    //    identically (both always in front) and 2 and 3 behaved identically.
+    //    That is the clouds-drawn-under-sprites / blossoms-over-backdrop
+    //    defect.
+    //
+    // Mask table verbatim from get_sprites():
+    //     static const int pri[] = { 0, 0xfc, 0xff, 0xff };
+    //     primask = pri[(attr & 0xc0) >> 6];
+    //
+    // NOTE: with the one-hot test, 0xFF blocks every priority value
+    // including 0 (backdrop), so sprite priorities 2 and 3 never draw at
+    // all. That is what the driver says; flagged for confirmation rather
+    // than "corrected" to a guess.
     logic [1:0] priority_val;
-    assign priority_val = l1_draws ? 2'd2 : (l0_draws ? 2'd1 : 2'd0);
+    assign priority_val = {l1_draws, l0_draws};
+
+    logic [7:0] priority_onehot;
+    assign priority_onehot = 8'd1 << priority_val;
 
     logic [7:0] primask;
     always_comb begin
@@ -77,7 +107,7 @@ module compositor (
     end
 
     logic sprite_wins;
-    assign sprite_wins = sp_present && ((({6'd0, priority_val}) & primask) == 8'h00);
+    assign sprite_wins = sp_present && ((priority_onehot & primask) == 8'h00);
 
     // ---- palette address mux ----
     // tilemap: 0x800 + color*16 + pixel (color already includes layer 1's +64);
