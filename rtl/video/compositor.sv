@@ -63,41 +63,21 @@ module compositor (
     assign l1_draws = l1_valid && l1_ctrl_enable && (l1_ctrl_opaque || (l1_pixel != l1_transpen));
 
     // ---- priority resolution + sprite gating ----
-    // Priority, matching psikyo_v.cpp exactly. Two things here were wrong
-    // before and both collapsed the four sprite priorities into two.
+    // Sprite-vs-tilemap priority, per psikyo_v.cpp.
     //
-    // 1. The tilemaps OR their priority into MAME's priority bitmap:
-    //        m_tilemap[0]->draw(..., 1);   // layer 0 contributes 1
-    //        m_tilemap[1]->draw(..., 2);   // layer 1 contributes 2
-    //    so a pixel where BOTH drew is 3. The old expression was
-    //    `l1_draws ? 2 : (l0_draws ? 1 : 0)`, which can never produce 3 --
-    //    it reported only the topmost layer and lost the overlap case.
-    //    It is a bitmask, not a magnitude.
+    // Tilemaps OR their priority into the priority bitmap -- layer 0 contributes
+    // 1, layer 1 contributes 2 -- so a pixel where both drew is 3. The test is
+    // one-hot, as MAME's prio_transmask does it:
+    //     if (((1 << (priority & 0x1f)) & pmask) == 0) draw;
     //
-    // 2. MAME's prio_transmask tests the priority bitmap value ONE-HOT:
-    //        if (((1 << (priority & 0x1f)) & pmask) == 0) draw;
-    //    The old code ANDed the raw value against the mask. Over a 2-bit
-    //    value 0xFC matches nothing, so sprite priorities 0 and 1 behaved
-    //    identically (both always in front) and 2 and 3 behaved identically.
-    //    That is the clouds-drawn-under-sprites / blossoms-over-backdrop
-    //    defect.
+    // Masks: 0x00 in front of both; 0xFC in front of L0, behind L1; 0xFE behind
+    // both but visible over backdrop; 0xFF never drawn. The driver has 0xFF at
+    // index 2; 0xFE is used here because it is the only value expressing
+    // "behind both, over backdrop". The two are indistinguishable wherever
+    // layer 0 is drawn opaque.
     //
-    // Mask table. psikyo_v.cpp's get_sprites() has:
-    //     static const int pri[] = { 0, 0xfc, 0xff, 0xff };
-    // but index 2 is 0xFE here, deliberately. With the one-hot test the
-    // priority-bitmap values 0/1/2/3 shift to 0x01/0x02/0x04/0x08, so:
-    //
-    //     0x00  blocks nothing               in front of both layers
-    //     0xFC  blocks 0x04,0x08             in front of L0, behind L1
-    //     0xFE  blocks 0x02,0x04,0x08        behind both, over backdrop
-    //     0xFF  blocks everything incl 0x01  never drawn
-    //
-    // 0xFE is the only value expressing "behind both tilemaps but still
-    // visible against the backdrop"; the driver's 0xFF collapses that into
-    // invisible. The two are indistinguishable whenever layer 0 is drawn
-    // opaque (layer_ctrl[0] & 2), because then the bitmap value is never 0
-    // and 1<<v is never 0x01 -- which is why the driver's value is harmless
-    // in most scenes and wrong in the rest.
+    // OPEN: whether the rule is this one-hot mask or a magnitude compare with
+    // ties going to the sprite is unresolved.
     logic [1:0] priority_val;
     assign priority_val = {l1_draws, l0_draws};
 

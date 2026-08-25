@@ -19,22 +19,12 @@
 // video_timing's frame_start pulse drives THREE things, deliberately in
 // two stages one cycle apart:
 //   1. Same cycle: spriteram_dbuf.frame_start -- begins a full COPY of the
-//      live sprite RAM into the frozen snapshot the render engine reads,
-//      and latches this frame's sprites_disable/trans_pen* control bits
-//      (docs/phase1_memory_map.md's spriteram control word). This was a
-//      bank swap until it was found to be the cause of stale sprites and
-//      breakdown under load -- see spriteram_dbuf.sv's header.
+//      live sprite RAM into the snapshot the render engine reads, and latches
+//      this frame's sprites_disable/trans_pen* control bits.
 //   2. ~4098 cycles later (snapshot_done, the falling edge of copy_busy):
-//      sprite_render_engine.frame_start, gated by sprites_disable, which
-//      was latched back at frame_start and is long since valid. Starting
-//      any earlier would render from a half-copied snapshot. If sprites
-//      are disabled, the render
-//      engine is simply never kicked -- sprite_frame_buffer's write-role
-//      bank keeps whatever an earlier frame_swap already cleared it to
-//      (rd_present all-0), which is exactly "no sprites drawn" (matches
-//      MAME's own early-return-from-draw when the control word's disable
-//      bit is set -- docs/phase1_video_engine.md's "sprites-disable...
-//      caller's responsibility" note).
+//      sprite_render_engine.frame_start, gated by sprites_disable. Starting
+//      earlier would render from a half-copied snapshot. If sprites are
+//      disabled the engine is never kicked, which is "no sprites drawn".
 // sprite_frame_buffer.frame_swap is driven from frame_start (suppressed
 // while rendering is still busy), NOT from sprite_render_engine.frame_done.
 // Swapping on frame_done toggles the display bank at whatever point in the
@@ -330,16 +320,8 @@ module psikyo_core #(
         .sprites_disable(sprites_disable), .trans_pen0(trans_pen0), .trans_pen15(trans_pen15)
     );
 
-    // spriteram_dbuf now takes a real COPY of sprite RAM at frame_start
-    // rather than swapping banks (see its header for why the swap was wrong).
-    // The render engine must not start until that snapshot is complete, so
-    // the start pulse is the FALLING edge of copy_busy, not frame_start
-    // itself. The copy is ~4098 cycles against vblank's 207,936, so this
-    // costs about 2% of vblank.
-    //
-    // This also removes the reason the old code delayed the start by one
-    // cycle: sprites_disable is latched at frame_start and is therefore
-    // valid thousands of cycles before the snapshot finishes.
+    // Render must not start until the sprite-RAM snapshot is complete, so the
+    // start pulse is the falling edge of copy_busy, not frame_start.
     logic spr_copy_busy_d, snapshot_done;
     always_ff @(posedge clk or posedge reset) begin
         if (reset) spr_copy_busy_d <= 1'b0;

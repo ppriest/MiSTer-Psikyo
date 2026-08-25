@@ -1,44 +1,20 @@
-// Hardware-buffered sprite RAM (0x400000-0x401FFF, docs/phase1_memory_map.md
-// "Sprite RAM layout"), modelling MAME's buffered_spriteram32_device.
+// Hardware-buffered sprite RAM (0x400000-0x401FFF), modelling MAME's
+// buffered_spriteram32_device.
 //
-// THE CONTRACT THAT MATTERS: the CPU sees ONE persistent RAM for the whole
-// life of the game. On vblank's rising edge the entire contents are COPIED
-// into a second buffer, and the sprite engine renders only from that frozen
-// copy.
+// Contract: the CPU sees ONE persistent RAM. On vblank's rising edge the whole
+// contents are COPIED into a second buffer, and the sprite engine renders only
+// from that frozen copy.
 //
-// This was previously implemented as a ping-pong swap of two banks, with a
-// header claiming that was "behaviorally identical to MAME's copy-based
-// model as long as the CPU never touches the render-role bank". That
-// condition was met and the claim was still wrong, because it is not the
-// condition that makes a swap equal a copy. Under ping-pong the CPU writes
-// bank A one frame and bank B the next, so its view of sprite RAM alternates
-// between two different memories: any entry the game does not rewrite every
-// single frame reads back what was written TWO frames ago, not last frame.
+// A bank swap is NOT equivalent: under ping-pong the CPU writes bank A one
+// frame and bank B the next, so any entry it does not rewrite every frame reads
+// back what was written two frames ago -- including the display list's
+// end-of-list marker. See docs/LESSONS_LEARNED.md.
 //
-// Games update sprite RAM incrementally and terminate the display list with
-// an end-of-list marker. Under ping-pong, a frame where the game does not
-// get as far as writing the marker inherits the marker from two frames ago,
-// which can sit much further down the list -- so the engine renders far more
-// sprites than intended, the pass takes longer, and the failure compounds
-// under load until the scene simplifies. That is the observed "ghosting,
-// stale sprites, and breakdown under load", and it is a consequence of the
-// swap, not of the output-side buffering.
+// The copy is 4096 words, ~4098 cycles against vblank's 207,936. copy_busy is
+// exported so the render engine can be held off until it completes.
 //
-// Cost of doing it correctly: 4096 words copied one per clk = ~4098 cycles.
-// vblank is 38 lines x 456 pixel clocks x 12 clk = 207,936 clk cycles, so
-// the copy occupies about 2% of vblank. copy_busy is exported so the render
-// engine can be held off until the snapshot is complete.
-//
-// Render side needs 2 concurrent read streams into the snapshot bank (the
-// display-list walk on dl_addr and the attribute fetch on at_addr run
-// concurrently, docs/phase1_video_engine.md) -- that is dpram.sv's 2-port
-// shape. The live bank's port B, previously unused for this purpose, now
-// carries the copy read.
-//
-// The control word (word 0xFFF) is not read back through at_addr/dl_addr
-// (the render engine only addresses 0x000-0xFFE), so it is tracked as a
-// single shadow register on the live side and latched into ctrl_active at
-// the same frame_start edge that starts the copy.
+// The control word (0xFFF) is not read back through at_addr/dl_addr, so it is
+// shadowed on the live side and latched into ctrl_active at frame_start.
 module spriteram_dbuf (
     input  logic clk,
     input  logic reset,

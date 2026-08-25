@@ -747,3 +747,36 @@ Note what it does **not** prove: the trace address is truncated, so it verifies 
   directory so that `modelsim.ini` is picked up. To re-test after an RTL change, recompile only
   the changed files into the existing library (`vcom <file>.vhd`, `vlog -sv <file>.sv`) rather
   than rebuilding everything.
+
+## Read both halves of a mechanism before changing it
+
+Sprite-vs-sprite depth ordering was inverted on the strength of MAME's draw loop
+alone -- `while (sprite_ptr != m_spritelist.get()) { sprite_ptr--; ... }` reads as
+"draws the list backward, so entry 0 lands on top". Two things were never checked:
+`sprite_frame_buffer`'s `write_en` is unconditional, so later writes win; and the
+*append* side of `get_sprites()` was never read, which is what decides the net
+order. On hardware the change inverted ordering and slowed the game, and it was
+reverted. Half a mechanism is enough to build a confident wrong change.
+
+## Check the framework's source before inventing its behaviour
+
+DIP switches were assumed to arrive through the status word. Two fixes were built
+on that assumption -- a `.CFG` generator, and a `base="16"` attribute added to
+`<switches>` -- and both were invented. One fetch of `Main_MiSTer`'s
+`mra_loader.cpp` showed DIPs arrive as an ioctl download with index 254, are saved
+to `config/dips/<mra name>` rather than the `.CFG`, and that `<switches>` has no
+`base` attribute at all because `hexstr_to_char()` is always hex. The hand-written
+`.CFG` files appeared to work only because they fed the wrong path the core
+happened to read, which masked the real bug for hours.
+
+## A swap is not a copy
+
+`spriteram_dbuf` ping-ponged two banks and its own header argued this was
+"behaviorally identical to MAME's copy-based model as long as the CPU never
+touches the render-role bank". That condition held and the claim was still wrong:
+under ping-pong the CPU's view alternates between two memories, so any entry it
+does not rewrite every frame reads back what was written two frames ago --
+including the display list's end-of-list marker. A frame that ran long and missed
+the marker inherited a stale one further down the list, so the engine rendered far
+more sprites, and the failure compounded under load. Fixing it to a real copy
+removed the ghosting, the stale sprites, and Gun Bird's per-scene sprite freeze.

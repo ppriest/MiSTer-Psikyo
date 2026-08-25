@@ -288,41 +288,18 @@ wire [31:0] p1p2_in = {
 // touched: with a default-ish .CFG that bit is 0 and PORT_SERVICE is
 // ACTIVE_LOW, so the board came up stuck in Service Mode.
 //
-// DIP switches do NOT arrive through the status word. MiSTer delivers them
-// as an ioctl DOWNLOAD with index 254 -- 8 bytes, little-endian uint64 --
-// see Main_MiSTer/support/arcade/mra_loader.cpp:
+// DIP switches arrive as an ioctl download with index 254 (8 bytes, LE
+// uint64), NOT through the status word -- see mra_loader.cpp's
+// arcade_sw_send(). Saved state lives in config/dips/<mra name>, not the .CFG.
 //
-//     void arcade_sw_send() {
-//         user_io_set_index(254);
-//         user_io_set_download(1);
-//         user_io_file_tx_data((uint8_t*)&sw->dip_cur, sizeof(sw->dip_cur));
-//         user_io_set_download(0);
-//     }
+// The .mra's <dip bits="..."> numbering must match dip_cur's layout: dip_def
+// |= binary[i] << (i*8), so <switches> default byte 0 is bits 7:0, byte 1 is
+// 15:8, byte 2 is 23:16. There is no 16-bit offset.
 //
-// This core previously read status[31:16]/status[39:32] instead, which is
-// simply not where DIPs come from, and produced three symptoms at once:
-// editing DIPs in the OSD did nothing, the changes never appeared in the
-// .CFG (they are saved to config/dips/<mra name>, not the status word), and
-// with no .CFG present every DIP bit read 0 -- which for Service Mode
-// (ids="On,Off", so 0 = On) meant booting straight into service mode.
-// Hand-written .CFG files appeared to "work" only because they fed the wrong
-// path this core happened to read, masking the real bug.
-//
-// The .mra's <dip bits="..."> numbering must match dip_cur's own layout:
-// arcade_sw_parse does `dip_def |= binary[i] << (i * 8)`, so <switches>
-// default byte 0 is bits 7:0, byte 1 is bits 15:8, byte 2 is bits 23:16.
-// There is no 16-bit offset -- an earlier numbering assumed one.
-//
-// The LOW BYTE is not spare -- it is the region/country jumper. samuraia's
-// ports carry PORT_CONFNAME( 0x000000ff, 0x000000ff, Region ) with
-// ff=World, ef=USA & Canada, df=Korea, bf=Hong Kong, 7f=Taiwan (sngkace
-// overrides that same byte to IPT_UNKNOWN, which is why it looks unused if
-// you only read the sngkace block). It comes from the .mra's third
-// <switches> byte, status[39:32]. Tying it high would silently lock every
-// board to World.
-//
-// Byte 1 (dsw_in[15:8]) genuinely is unused and reads back as 1s, matching
-// MAME's IP_ACTIVE_LOW default for undefined bits.
+// Byte 2 is the region/country jumper, not spare: samuraia has
+// PORT_CONFNAME(0x000000ff, ..., Region) with ff=World, ef=USA & Canada,
+// df=Korea, bf=Hong Kong, 7f=Taiwan. dsw_in[15:8] genuinely is unused and
+// reads as 1s, matching MAME's IP_ACTIVE_LOW default.
 reg [63:0] dip_sw;
 always @(posedge clk_sys) begin
 	if (ioctl_wr && (ioctl_index == 254) && !ioctl_addr[24:3])
@@ -341,10 +318,9 @@ wire [31:0] dsw_in = {dip_sw[15:8], dip_sw[7:0], 8'hFF, dip_sw[23:16]};
 //   * The official docs state the classic O/o option syntax addresses bits
 //     0-63 ONLY (O = upper 32, o = lower 32, i.e. +32). Bits placed at 64-71
 //     were outside that window and the source select never responded.
-//   * This .mra declares FIVE <switches> bytes, and MRA switches consume
-//     8*N bits from status[16], so the DIP mechanism owns status[55:16] --
-//     even though the core only reads dsw_in = status[47:16]. Bits at 48-55
-//     were contested by it.
+//   * At the time, DIPs were (wrongly) read from the status word, so bits
+//     48-55 were contested. DIPs now arrive via ioctl index 254 and consume
+//     no status bits, but these controls are left where they are.
 // status[63:56] is above the DIP range and inside the documented window, and
 // still lands in a single CFG byte so all four controls are one byte write to
 // /media/fat/config/<core>.CFG:
