@@ -63,39 +63,21 @@ module compositor (
     assign l1_draws = l1_valid && l1_ctrl_enable && (l1_ctrl_opaque || (l1_pixel != l1_transpen));
 
     // ---- priority resolution + sprite gating ----
-    // Sprite-vs-tilemap priority, per psikyo_v.cpp.
-    //
-    // Tilemaps OR their priority into the priority bitmap -- layer 0 contributes
-    // 1, layer 1 contributes 2 -- so a pixel where both drew is 3. The test is
-    // one-hot, as MAME's prio_transmask does it:
-    //     if (((1 << (priority & 0x1f)) & pmask) == 0) draw;
-    //
-    // Masks: 0x00 in front of both; 0xFC in front of L0, behind L1; 0xFE behind
-    // both but visible over backdrop; 0xFF never drawn. The driver has 0xFF at
-    // index 2; 0xFE is used here because it is the only value expressing
-    // "behind both, over backdrop". The two are indistinguishable wherever
-    // layer 0 is drawn opaque.
-    //
-    // OPEN: whether the rule is this one-hot mask or a magnitude compare with
-    // ties going to the sprite is unresolved.
     logic [1:0] priority_val;
-    assign priority_val = {l1_draws, l0_draws};
-
-    logic [7:0] priority_onehot;
-    assign priority_onehot = 8'd1 << priority_val;
+    assign priority_val = l1_draws ? 2'd2 : (l0_draws ? 2'd1 : 2'd0);
 
     logic [7:0] primask;
     always_comb begin
         unique case (sp_priority)
             2'd0: primask = 8'h00;
             2'd1: primask = 8'hFC;
-            2'd2: primask = 8'hFE;
+            2'd2: primask = 8'hFF;
             2'd3: primask = 8'hFF;
         endcase
     end
 
     logic sprite_wins;
-    assign sprite_wins = sp_present && ((priority_onehot & primask) == 8'h00);
+    assign sprite_wins = sp_present && ((({6'd0, priority_val}) & primask) == 8'h00);
 
     // ---- palette address mux ----
     // tilemap: 0x800 + color*16 + pixel (color already includes layer 1's +64);
