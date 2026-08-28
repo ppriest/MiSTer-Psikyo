@@ -11,6 +11,7 @@
 	<joystick>8-way</joystick>
 	<region>Japan</region>
 
+	<rom index="1"><part>02</part></rom>
 	<rom index="0" zip="sngkacea.zip|samuraia.zip" md5="none">
 		<interleave output="32">
 			<part name="1.-u127.bin" crc="3a43708d" map="0012"/>

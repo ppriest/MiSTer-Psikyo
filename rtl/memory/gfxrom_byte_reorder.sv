@@ -10,25 +10,19 @@
 // gfx_16x16x4_packed_msb tile format, see rtl/video/tile_row_decode.sv's
 // header for that format's own derivation).
 //
-// Real, previously-undetected integration bug this module exists to fix,
-// found while wiring sim/port2_sdram_tb/tb_port2_sdram.sv (Port 2's sprite
-// gfxrom path) with genuinely non-uniform gfx ROM content: sdram.sv and the
-// gfx-row consumers were each built and verified independently against
-// self-consistent but OPPOSITE byte-order conventions -- sdram.sv's is
-// ordinary ascending-address-ascending-bit-position, matching standard
-// little-endian ROM/CPU word semantics (and still correct as-is for
+// This module is the seam between two self-consistent but OPPOSITE
+// byte-order conventions: sdram.sv's is ordinary
+// ascending-address-ascending-bit-position, matching standard little-endian
+// ROM/CPU word semantics (and correct as-is for
 // rtl/memory/sdram_narrow_bridge.sv's 16-bit-word/8-bit-byte consumers --
 // spritelut, maincpu, audiocpu -- which must NOT be routed through this
-// module); the gfx-row consumers' is MAME's packed-MSB tile format. Neither
-// side was wrong on its own, so the fix belongs at this specific seam, not
-// in sdram.sv (already correct for general ROM access) or in
-// tilemap_line_engine.sv/sprite_render_engine.sv (already correct against
-// MAME's real tile format, and already independently unit-tested that way).
-//
-// sim/video_pipeline_tb/tb_video_pipeline_sdram.sv's tilemap integration
-// test never caught this because its gfx ROM content was uniform (all
-// 0x0000), which is byte-order-invariant -- worth remembering as a real gap
-// in that test's coverage, not just a footnote (see docs/phase1_sdram_map.md).
+// module); the gfx-row consumers' is MAME's packed-MSB tile format.
+// Neither side is wrong on its own, so the reorder belongs here, not in
+// sdram.sv (correct for general ROM access) or in
+// tilemap_line_engine.sv/sprite_render_engine.sv (correct against MAME's
+// real tile format, and independently unit-tested that way). Note that
+// uniform gfx ROM content is byte-order-invariant -- a testbench must use
+// non-uniform content to exercise this at all (docs/phase1_sdram_map.md).
 
 module gfxrom_byte_reorder (
     input  logic [63:0] sdram_granule,

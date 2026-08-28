@@ -24,6 +24,10 @@ module tb_tilemap_line_engine;
     logic reset;
     logic [7:0] vcnt;
     logic       h_active, line_start;
+    // ce_pix: added to the engine after this TB was written; tie 1 per the
+    // project-wide TB convention (every counter advances every clk).
+    logic       ce_pix;
+    assign ce_pix = 1'b1;
 
     logic [1:0]  mode;
     logic [15:0] base_x_scroll, base_y_scroll;
@@ -168,9 +172,14 @@ module tb_tilemap_line_engine;
         repeat (5) @(posedge clk);  // let the last few registered captures settle
 
         for (int p = 0; p < 320; p++) begin
-            exp_tile_col = ((int'(BASE_X) + p) / 16) % 64;  // mode0: 64-wide, wraps
+            // BASE_X + 1: the engine applies a one-pixel alignment bias to
+            // the effective scroll (screen_x shows tilemap pixel
+            // scroll + screen_x + 1), corrected 2026-08-29 (same day) from
+            // an initial -1 that moved it the wrong direction -- see
+            // line_x_scroll's comment in tilemap_line_engine.sv.
+            exp_tile_col = ((int'(BASE_X) + 1 + p) / 16) % 64;  // mode0: 64-wide, wraps
             exp_color    = exp_tile_col % 8;
-            exp_index    = (int'(BASE_X) + p) & 15;
+            exp_index    = (int'(BASE_X) + 1 + p) & 15;
             if (got_index[p] !== exp_index[3:0] || got_color[p] !== exp_color[6:0]) begin
                 errors++;
                 if (errors <= 15)

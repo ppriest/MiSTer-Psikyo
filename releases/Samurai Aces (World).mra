@@ -11,6 +11,7 @@
 	<joystick>8-way</joystick>
 	<region>World</region>
 
+	<rom index="1"><part>02</part></rom>
 	<rom index="0" zip="samuraia.zip" md5="none">
 		<interleave output="32">
 			<part name="4-u127.bin" crc="8c9911ca" map="0012"/>
@@ -39,7 +40,6 @@
 
 		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
-	<rom index="1"><part>00</part></rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 

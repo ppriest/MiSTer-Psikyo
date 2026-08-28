@@ -32,11 +32,6 @@ module vreg_decode (
     //     computes `(code & 0x1fff) + 0x2000 * bank`, so layer 1 must read
     //     the SECOND half of the tiles region -- u35.bin, at region offset
     //     0x100000 = 0x2000 tiles x 128 bytes.
-    //
-    // Both banks were previously hardcoded to 0 here, with a comment saying
-    // the caller applied fixed banks; the caller (rtl/psikyo_core.sv) never
-    // did. Layer 1 therefore drew u34.bin's tiles, confirmed on real
-    // hardware as tilemap content bearing no resemblance to MAME's.
 
     input  logic         clk,
     input  logic         reset,

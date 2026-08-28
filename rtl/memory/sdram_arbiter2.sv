@@ -2,9 +2,18 @@
 // same round-robin/hold-until-ack design as ddram_arbiter.sv (fixed-pointer
 // rotation: whoever's served rotates to the back, so sustained pressure from
 // one consumer can't starve the other), just narrowed to two consumers and
-// no download-write path, matching docs/phase1_sdram_map.md's port-grouping
-// table (Port 0: tilemap layer 0 + 1 gfxrom; Port 1: sprite gfxrom +
-// spritelut -- two instances of this same module cover both groups).
+// no download-write path.
+//
+// Current use (2026-08-29 SDRAM re-partition, rtl/memory/psikyo_sdram_top.sv):
+// ONE instance, on Port 0, arbitrating tilemap layer 0 gfxrom against layer 1
+// gfxrom. Sprite gfxrom is NOT behind this module -- it got its own truly
+// dedicated Port 1 (no arbiter at all, single client straight onto
+// sdram_phy). The port-grouping this header used to describe (Port 0 =
+// tilemap only, Port 1 = sprite + spritelut sharing a second instance of
+// this module) was the ORIGINAL plan tb_video_pipeline_sdram validated but
+// is not what shipped -- spritelut ended up staying on the Port 2 5-way
+// arbiter (sdram_arbiter6) instead. Corrected so this comment matches the
+// actual instantiation, not the superseded plan.
 //
 // Request contract, both ports (c0_req/c1_req): HOLD req asserted until the
 // matching valid acknowledgment -- same reasoning as ddram_arbiter.sv (a

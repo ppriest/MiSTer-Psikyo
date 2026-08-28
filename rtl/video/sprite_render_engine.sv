@@ -113,13 +113,11 @@ module sprite_render_engine (
 
     // ---- PIPELINE STAGE A: per-sprite constants, registered once per sprite ----
     // Everything above is a pure function of sprite_record_fetch's rf_word_*
-    // outputs, which are constant for a whole sprite, but used to be
-    // re-evaluated combinationally on every cycle of the S_COL inner loop, in
-    // series with the sub-tile step and the screen-position arithmetic. That
-    // was the design's worst timing path (sprite_record_fetch.word_y ->
-    // fb_pixel, 21.593 ns against 19.704 ns required, -1.889 ns slack).
-    // Registering costs only latency, at points where the FSM already waits on
-    // an SDRAM round-trip.
+    // outputs, which are constant for a whole sprite -- evaluating it
+    // combinationally inside the S_COL inner loop, in series with the
+    // sub-tile step and screen-position arithmetic, is the design's worst
+    // timing path. Registering costs only latency, at points where the FSM
+    // already waits on an SDRAM round-trip.
     logic [3:0]        a_nx, a_ny;
     logic              a_flip_x, a_flip_y;
     logic [4:0]        a_color;

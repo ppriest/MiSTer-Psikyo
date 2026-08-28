@@ -1,4 +1,4 @@
-# Sprite buffering: current design, known defects, and the alternative
+# Sprite buffering: current design and known defects
 
 ## Current design
 
@@ -75,67 +75,33 @@ as is the per-sprite attribute decode — but the buffer is no longer the only s
 
 Worth following up: `docs/phase1_memory_map.md` describes `$C00008` as carrying
 coin/service/vblank/**z80-nmi-status** inputs. If a bit there is a sound-CPU NMI handshake
-rather than a video flag, that would matter for sound, which has never been heard. Verify
-against MAME source before acting on it.
+rather than a video flag, that would matter for sound -- not yet checked against this angle.
+Sound is no longer silent (see `docs/ROADMAP.md`'s "Fix sound" item), but this specific
+`$C00008` question was never revisited once the actual root causes turned out to be
+elsewhere. Verify against MAME source before acting on it.
 
-## The alternative: per-scanline line buffers
 
-A whole-frame sprite buffer is unusual for this class of hardware. Surveying other cores:
+## The alternative that was tried: per-scanline line buffers (removed 2026-08-29)
 
-* JTFRAME exposes `JTFRAME_LF_BUFFER` ("line-based frame buffer") and `JTFRAME_LF_ZOOM`, so
-  even zoom sprites are handled per-scanline across dozens of cores.
-* [Arcade-Tecmo issue 6](https://github.com/MiSTer-devel/Arcade-Tecmo_MiSTer/issues/6) is
-  gyurco asking why a line buffer cannot be used, noting that original hardware did not use
-  frame buffers and that the approach "consumes huge BRAM resources".
-* [Arcade-Cave](https://github.com/MiSTer-devel/Arcade-Cave_MiSTer) is the justified
-  exception: CAVE's real hardware has a frame buffer.
+A per-scanline alternative (`sprite_line_engine.sv` + `sprite_line_buffer.sv`, selectable at
+runtime via `Sprite buffer = Line`, OSD bit 52) was built and evaluated against the whole-frame
+approach above — the motivation being that a line buffer structurally can't suffer defects 1/2
+(cleared as it's read, swaps at hblank) and costs a fraction of the BRAM (two 320x12-bit banks
+vs. 1.7 Mbit). On hardware it rendered correctly only near the top of the screen, degrading
+progressively further down — a shape consistent with a per-line time budget deficit compounding
+across lines (budget ~5,470 clk/line, measured worst-case average ~3,900 clk/line, but averages
+hide non-uniform sprite density) rather than a decode bug, which would have corrupted every line
+equally. Parked at that diagnosis rather than pursued further, and deleted once the frame-buffer
+approach was settled on as the one to keep — this section is kept as a record of what was tried
+and why, not as a live option.
 
-For this core, two line buffers would be about 7.7 kbit against the current 1.7 Mbit. More
-importantly the defects above stop being possible rather than being sequenced around: a line
-buffer is cleared as it is read, so retention cannot occur, and it swaps at hblank, so there is
-no mid-scanout tear.
+## Defect 4: sprites briefly visible between scenes -- FIXED
 
-Feasibility from our own measurement: 881,632 / 224 lines is about 3,900 cycles per line,
-against roughly 5,470 clk cycles available per line. Worst-case lines would exceed that, which
-on real hardware is what per-line sprite limits produce — authentic dropout rather than the
-current artefacts.
-
-## Status of the line-buffer path
-
-Built and selectable at runtime as `Sprite buffer = Line` (OSD bit 52), alongside the original
-frame-buffer path which remains the default:
-
-* `sprite_line_buffer.sv` — two 320x12-bit banks, swapped at `line_start`, with a 320-cycle
-  clear of the render bank while `ready` is low.
-* `sprite_line_engine.sv` — per-scanline renderer reusing the verified decode modules. Its
-  `S_FIND_ROW` state searches `iy` for the sub-tile row covering `render_line`.
-
-One bug found and fixed before it was ever exercised: `le_start` was gated on `lb_ready`, which
-drops at `line_start`, so start and ready were never true together and the path rendered
-nothing. It now triggers on the rising edge of `lb_ready`.
-
-### Hardware result: partially working, parked
-
-Sprites render, and are correct near the **top** of the screen, degrading progressively further
-down. Parked at this point rather than debugged.
-
-That gradient is the useful part of the observation. A decode bug — wrong attribute field, wrong
-palette bits, wrong zoom step — would corrupt every scanline equally, because each line is
-decoded independently. Error that grows with scanline number instead points at something
-accumulating across lines within a frame, which for this design means the per-line time budget:
-
-* Budget is about 5,470 clk cycles per line (htotal 456 at clk/12), minus 320 for the bank clear.
-* The measured worst-case frame render was 881,632 cycles, about 3,900 per line averaged — but
-  that is an average, and sprite density is not uniform down the screen.
-
-If the engine cannot finish a line inside its budget, the question is whether the next
-`line_start` hard-resynchronises it or leaves it mid-record. If it can be left behind, the
-deficit carries into the following line and compounds — which is exactly the shape of the
-reported symptom. `le_start` currently triggers on the rising edge of `lb_ready`; what happens
-when the engine is *still busy* at `line_start` is the thing to check first.
-
-Second candidate, cheaper to rule out: `S_FIND_ROW` searches `iy` for the sub-tile row covering
-`render_line`, so its cost is not constant across the screen.
-
-Note that real hardware does drop sprites when a line is oversubscribed — so some loss low on a
-busy screen is authentic, and the bar is matching MAME's dropout, not eliminating it.
+At scene transitions, sprites that should not be on screen flashed up
+briefly. First observed on the build with the priority fix but WITHOUT the
+sprite-palette snapshot; gone on the snapshot build (20260874), confirmed on
+hardware. So it was the palette side of the same transition problem after
+all: stale sprite-frame-buffer pixels being recolored by the new scene's
+live palette made them READ as wrongly-present sprites, and snapshotting the
+sprite palette at frame_start (psikyo_core.sv) removed the visible symptom.
+Defects 1-3 above stand on their own evidence and remain tracked.

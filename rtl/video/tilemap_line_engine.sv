@@ -56,6 +56,25 @@ module tilemap_line_engine #(
     input  logic [15:0] vram_data,
 
     // gfx ROM read port: request/valid handshake, latency not assumed.
+    //
+    // gfxrom_req deasserts COMBINATIONALLY on gfxrom_valid (see the
+    // assign below) -- the registered clear alone left req visibly high
+    // for the one cycle after valid, and rtl/memory/sdram_phy.sv is back
+    // in S_IDLE sampling req that exact cycle, so it launched a DUPLICATE
+    // transaction for the address it had just served. From then on every
+    // response the engine consumed belonged to the PREVIOUS request:
+    // tile shape from cell N-1 rendered at position N with position N's
+    // own (correctly latched) colour -- the single off-by-one behind both
+    // the one-tile layer offset and the wrong-palette tiles
+    // (docs/TILEMAP_BUG.md). Latency-dependent and invisible to every
+    // short-latency behavioral testbench: the duplicate happened there
+    // too, but its response landed while the FSM was between states and
+    // was silently dropped; the real controller's longer latency landed
+    // it squarely in the next S_GFXROM_WAIT. Root-caused via
+    // sim/tilemap_addr_trace_tb/tb_tilemap_screen_sdram.sv, which
+    // reproduced the real-hardware screen pixel-for-pixel and traced the
+    // phy's transaction address diverging from the engine's request
+    // address from the second fetch of every line onward.
     output logic         gfxrom_req,
     output logic [21:0] gfxrom_addr,   // tile_number*128 + fine_y*8
     input  logic         gfxrom_valid,
@@ -65,6 +84,21 @@ module tilemap_line_engine #(
     output logic [3:0]  pixel_index,
     output logic [6:0]  pixel_color,
     output logic         fetch_overrun  // sticky: fetch pipeline didn't keep up with display
+`ifdef DEBUG_ISSP
+    ,
+    // Every stage of the fetch pipeline for the wrong-palette/one-tile-shift
+    // investigation, latched by the caller (not here -- see psikyo_core.sv's
+    // issp_probe instance) at the moment the bad tile is displayed. No cost
+    // to the shipping build.
+    output logic [11:0] dbg_fetch_vram_addr,
+    output logic [15:0] dbg_vram_data,
+    output logic [14:0] dbg_cell_tile_number,
+    output logic [6:0]  dbg_cell_color,
+    output logic [1:0]  dbg_mode_latched,
+    output logic [1:0]  dbg_bank_latched,
+    output logic [11:0] dbg_pixel_src_addr,
+    output logic [15:0] dbg_pixel_src_word
+`endif
 );
 
     // Declared here (top of the body), not next to buf_pixels/buf_ready
@@ -149,10 +183,28 @@ module tilemap_line_engine #(
     logic        rowscroll_en_latched;
 
     logic [15:0] line_x_scroll;
-    assign line_x_scroll = base_x_scroll_latched + (rowscroll_en_latched ? rowscroll_data : 16'd0);
+    // One-PIXEL alignment bias, measured on real hardware against the MAME
+    // reference (reported by the author of MAME's Psikyo renderer):
+    // screen_x shows tilemap pixel (scroll + screen_x + 1), moving the
+    // image one pixel LEFT of the unbiased sum. Applied to the shared
+    // per-line sum so rowscroll lines get the same bias; both layers
+    // inherit it (same module). The SIGN is hardware-verified -- do not
+    // flip it from re-derivation alone (docs/LESSONS_LEARNED.md,
+    // "Don't guess a sign twice").
+    assign line_x_scroll = base_x_scroll_latched + (rowscroll_en_latched ? rowscroll_data : 16'd0) + 16'd1;
 
     logic [14:0] tile_number_reg;
     logic [6:0]  color_reg;
+`ifdef DEBUG_ISSP
+    // Frozen at the SAME cycle as color_reg (S_CELLDEC), not read live
+    // later at S_GFXROM_WAIT -- vram_data can change between those two
+    // points if the CPU writes this exact VRAM cell while its GFX-ROM
+    // fetch is still in flight (a real, legitimate CPU write, not a bug),
+    // which would otherwise make buf_src_word disagree with buf_color for
+    // a reason that has nothing to do with the render pipeline -- a false
+    // positive in the debug tag itself, not evidence of corruption.
+    logic [15:0] vram_data_reg;
+`endif
 
     // Prefetch ring buffer, PREFETCH_DEPTH tiles deep. Was a fixed 2-entry
     // ping-pong (fetch always exactly one tile ahead of display) until real
@@ -173,6 +225,24 @@ module tilemap_line_engine #(
     // separate, larger task.
     logic [3:0] buf_pixels [0:PREFETCH_DEPTH-1][0:15];
     logic [6:0] buf_color  [0:PREFETCH_DEPTH-1];
+`ifdef DEBUG_ISSP
+    // Tags each buffer slot with the VRAM address it was fetched from, so
+    // the DISPLAY side can report which address the pixel it is CURRENTLY
+    // showing actually came from -- a genuine same-tile correlation.
+    // Comparing the fetch side's cell_color (whatever tile is being
+    // prefetched right now, dozens of tiles ahead) against the display
+    // side's pixel_color (whatever tile is on screen right now) compares
+    // two DIFFERENT tiles and proved nothing; this fixes that.
+    logic [11:0] buf_src_addr [0:PREFETCH_DEPTH-1];
+    // Raw VRAM word fetched into this slot. Combined with buf_color, this
+    // lets the display side self-check: does buf_color[slot] genuinely
+    // match what buf_src_word[slot]'s OWN color field predicts? If they
+    // ever disagree for the same slot, that is proof of a buffer-level
+    // corruption (a write-after-read race, wraparound bug, etc) -- not
+    // inferred from an external reference or precise timing, just internal
+    // consistency of our own storage.
+    logic [15:0] buf_src_word [0:PREFETCH_DEPTH-1];
+`endif
     logic [3:0] buf_start  [0:PREFETCH_DEPTH-1];
     logic [4:0] buf_count  [0:PREFETCH_DEPTH-1];
 
@@ -197,17 +267,24 @@ module tilemap_line_engine #(
         end
     endgenerate
 
+    // Registered request flag, gated combinationally so the EXTERNAL req
+    // line drops the same cycle gfxrom_valid pulses -- the registered
+    // clear in S_GFXROM_WAIT is one cycle too late for sdram_phy.sv, which
+    // is back in S_IDLE sampling req that very cycle and would start a
+    // duplicate transaction (see the gfxrom_req port comment above and
+    // docs/TILEMAP_BUG.md for the full root-cause trail).
+    logic gfxrom_req_r;
+    assign gfxrom_req = gfxrom_req_r & ~gfxrom_valid;
+
     always_ff @(posedge clk) begin
         if (reset) begin
             state          <= S_IDLE;
             for (int i = 0; i < PREFETCH_DEPTH; i++) fetch_tog[i] <= 1'b0;
-            gfxrom_req     <= 1'b0;
+            gfxrom_req_r   <= 1'b0;
         end else if (line_start) begin
             // A new line always takes priority over whatever the fetch FSM
             // was still doing for the previous one -- checked here BEFORE
-            // the state case, not as a branch inside S_IDLE only (an
-            // earlier version had it there, matching S_IDLE being the
-            // "expected" resting state between lines). Real bug: with a
+            // the state case, NOT as a branch inside S_IDLE only: with a
             // fixed 21-tile-per-line fetch budget throttled by the
             // display's own consumption rate (S_WAIT_FREE), the fetch
             // FSM's last tile for a line routinely finishes at or after
@@ -236,7 +313,7 @@ module tilemap_line_engine #(
             fetch_target          <= '0;
             first_tile            <= 1'b1;
             tiles_to_fetch        <= 5'd21;  // fixed worst-case count, see doc
-            gfxrom_req            <= 1'b0;   // abort any in-flight request cleanly
+            gfxrom_req_r          <= 1'b0;   // abort any in-flight request cleanly
             // stash what S_ROWSCROLL_WAIT needs that isn't re-derivable there
             eff_y_latched         <= base_y_scroll + {8'd0, vcnt};
             state                 <= S_ROWSCROLL_WAIT;
@@ -259,13 +336,10 @@ module tilemap_line_engine #(
 
                 // Throttle: only start the next fetch once the target
                 // buffer has actually been consumed by the display side.
-                // An earlier version skipped this and looped straight back
-                // to S_COORD from S_STORE_DONE -- it raced through all 21
-                // tiles back-to-back during blanking, repeatedly
-                // overwriting both buffers with tiles far past the correct
-                // starting one before display ever began. Caught via
-                // waveform tracing (dut.buf_start/buf_color kept changing
-                // long after the correct first fetch), not by inspection.
+                // Without it the FSM races through all 21 tiles
+                // back-to-back during blanking, repeatedly overwriting
+                // both buffers with tiles far past the correct starting
+                // one before display ever begins.
                 S_WAIT_FREE: begin
                     if (!buf_ready[fetch_target])
                         state <= S_COORD;
@@ -284,17 +358,24 @@ module tilemap_line_engine #(
                     // output is valid combinationally this cycle.
                     tile_number_reg <= cell_tile_number;
                     color_reg       <= cell_color;
+`ifdef DEBUG_ISSP
+                    vram_data_reg    <= vram_data;
+`endif
                     gfxrom_addr     <= {cell_tile_number, fine_y, 3'b000};
-                    gfxrom_req      <= 1'b1;
+                    gfxrom_req_r    <= 1'b1;
                     state           <= S_GFXROM_WAIT;
                 end
 
                 S_GFXROM_WAIT: begin
                     if (gfxrom_valid) begin
-                        gfxrom_req <= 1'b0;
+                        gfxrom_req_r <= 1'b0;
                         for (int i = 0; i < 16; i++)
                             buf_pixels[fetch_target][i] <= decoded_pixel[i];
                         buf_color[fetch_target] <= color_reg;
+`ifdef DEBUG_ISSP
+                        buf_src_addr[fetch_target] <= fetch_vram_addr;
+                        buf_src_word[fetch_target] <= vram_data_reg;
+`endif
                         if (first_tile) begin
                             buf_start[fetch_target] <= fine_x_initial;
                             buf_count[fetch_target] <= 5'd16 - {1'b0, fine_x_initial};
@@ -349,6 +430,10 @@ module tilemap_line_engine #(
             pixel_valid   <= 1'b0;
             pixel_index   <= 4'd0;
             pixel_color   <= 7'd0;
+`ifdef DEBUG_ISSP
+            dbg_pixel_src_addr <= 12'd0;
+            dbg_pixel_src_word <= 16'd0;
+`endif
             fetch_overrun <= 1'b0;
             for (int i = 0; i < PREFETCH_DEPTH; i++) disp_tog[i] <= 1'b0;
         end else if (line_start) begin
@@ -365,6 +450,10 @@ module tilemap_line_engine #(
                     pixel_valid <= 1'b1;
                     pixel_index <= buf_pixels[display_sel][buf_start[display_sel] + consumed];
                     pixel_color <= buf_color[display_sel];
+`ifdef DEBUG_ISSP
+                    dbg_pixel_src_addr <= buf_src_addr[display_sel];
+                    dbg_pixel_src_word <= buf_src_word[display_sel];
+`endif
 
                     if ({1'b0, consumed} + 5'd1 >= buf_count[display_sel]) begin
                         disp_tog[display_sel] <= ~disp_tog[display_sel];  // free this buffer
@@ -382,5 +471,20 @@ module tilemap_line_engine #(
             pixel_valid <= 1'b0;
         end
     end
+
+`ifdef DEBUG_ISSP
+    // Direct pass-through of the internal fetch-pipeline signals, for the
+    // wrong-palette/one-tile-shift investigation (see the port declarations
+    // above). Deliberately not latched here -- the caller (psikyo_core.sv's
+    // issp_probe instance) captures a snapshot at a chosen moment; keeping
+    // these combinational avoids adding any register this module doesn't
+    // already have.
+    assign dbg_fetch_vram_addr  = fetch_vram_addr;
+    assign dbg_vram_data         = vram_data;
+    assign dbg_cell_tile_number = cell_tile_number;
+    assign dbg_cell_color        = cell_color;
+    assign dbg_mode_latched      = mode_latched;
+    assign dbg_bank_latched      = bank_latched;
+`endif
 
 endmodule

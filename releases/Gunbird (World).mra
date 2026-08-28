@@ -11,6 +11,7 @@
 	<joystick>8-way</joystick>
 	<region>World</region>
 
+	<rom index="1"><part>01</part></rom>
 	<rom index="0" zip="gunbird.zip" md5="none">
 		<interleave output="32">
 			<part name="4.u46" crc="b78ec99d" map="0012"/>
@@ -45,7 +46,6 @@
 
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
-	<rom index="1"><part>01</part></rom>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 

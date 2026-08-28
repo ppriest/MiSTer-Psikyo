@@ -25,8 +25,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/maincpu.sv
 
 # Sound CPU wrappers (T80 + this board's own memory map/bank/latch/NMI
 # handling).
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu_sngkace.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu_gunbird.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu.sv
 
 # Memory glue: CPU<->video-engine shared RAM.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/dpram.sv
@@ -58,12 +57,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/psikyo_core.sv
 # SDRAM backend: burst-4 controller (vendored/adapted, see
 # rtl/memory/sdram/PROVENANCE.md), req/valid wrapper, 5-way arbiter, narrow
 # client bridge, gfx-ROM byte reorder, HPS download bridge, full assembly.
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram/sdram.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_phy.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_arbiter5.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_narrow_bridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/gfxrom_byte_reorder.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_download.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram/sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_phy.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_arbiter6.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_narrow_bridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/psikyo_sdram_top.sv
 
 # Video+CPU+SDRAM+sound CPU integration -- the module Psikyo.sv itself
@@ -155,3 +154,4 @@ set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_dly.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_mave.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_engine.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_buffer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv

@@ -113,17 +113,11 @@ module debug_tracer #(
     wire full        = wptr[AW];
 
     // Skip step is ctl_window * 8191 -- deliberately ODD, and deliberately not
-    // a multiple of DEPTH.
-    //
-    // It used to be ctl_window * 256. That was actively misleading: a skip that
-    // is always a multiple of 256 lands on a period boundary of ANY event
-    // stream whose period divides 256, so such a stream produces a
-    // byte-identical capture at every window setting. On 2026-08-23 that made
-    // "the CPU resets every 256 reads" and "the ROM read path aliases every 256
-    // words" indistinguishable -- both predict identical captures at windows
-    // 0/8/15, which is exactly what was observed. An odd step cannot alias with
-    // a power-of-two period, so differing windows now give genuinely different
-    // views. 8191 also makes the range useful: window 15 skips ~123k events,
+    // a multiple of DEPTH: a power-of-two step lands on a period boundary of
+    // any event stream whose period divides it, making every window setting
+    // produce a byte-identical capture -- indistinguishable from a genuine
+    // periodic fault. An odd step cannot alias with a power-of-two period.
+    // 8191 also makes the range useful: window 15 skips ~123k events,
     // enough to walk past the boot ROM checksum (~96k long reads).
     wire [19:0] skip_target = ({16'd0, ctl_window} << 13) - {16'd0, ctl_window};
 

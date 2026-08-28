@@ -73,7 +73,14 @@ module tb_maincpu;
     logic         latch_write;
     logic         vblank;
 
-    maincpu #(.BOARD_GUNBIRD(1'b0)) dut (.*);
+    // board_gunbird became a runtime input when board select moved to the
+    // .mra mod byte (this TB predates that); .* binds it to this signal.
+    logic board_gunbird;
+    assign board_gunbird = 1'b0;
+    // pause: also added after this TB was written; never asserted here.
+    logic pause;
+    assign pause = 1'b0;
+    maincpu dut (.*);
 
     // ---- ROM model: real req/valid, fixed 5-cycle round trip (matches
     // sound_cpu_sngkace_tb's model exactly) ----

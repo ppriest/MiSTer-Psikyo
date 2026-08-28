@@ -94,7 +94,7 @@ module tb_sdram_narrow_bridge;
     logic [63:0] b1_g_data;
 
     sdram_narrow_bridge #(.WORD_BYTES(1)) bridge_byte (
-        .clk(clk), .reset(reset),
+        .clk(clk), .reset(reset), .inval(1'b0),
         .req(b1_req), .addr(b1_addr), .valid(b1_valid), .data(b1_data),
         .g_req(b1_g_req), .g_addr(b1_g_addr), .g_valid(b1_g_valid), .g_data(b1_g_data)
     );
@@ -117,7 +117,7 @@ module tb_sdram_narrow_bridge;
     logic [63:0] b2_g_data;
 
     sdram_narrow_bridge #(.WORD_BYTES(2)) bridge_word (
-        .clk(clk), .reset(reset),
+        .clk(clk), .reset(reset), .inval(1'b0),
         .req(b2_req), .addr(b2_addr), .valid(b2_valid), .data(b2_data),
         .g_req(b2_g_req), .g_addr(b2_g_addr), .g_valid(b2_g_valid), .g_data(b2_g_data)
     );

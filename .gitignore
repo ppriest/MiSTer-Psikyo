@@ -51,7 +51,13 @@ sim/**/*.log
 # screenshots are only meaningful alongside the temporary debug build that
 # produced them.
 quartus_*.log
+q_*.log
 scratch_*.png
+
+# Staged-build worktree (scripts/build_staged.py): every build compiles a
+# snapshot of HEAD here, so Quartus scratch (db/, output_files/, logs) stays
+# out of the repo root and the main tree stays editable mid-build.
+build/
 
 # Local MiSTer connection settings (host/user/password) for
 # scripts/mister_hw_test.py -- never committed, see the file's own header.
@@ -86,13 +92,13 @@ sim/**/*.hex
 roms/
 
 # Ad-hoc hardware capture scratch. Screenshots pulled off the MiSTer and their
-# decoded traces pile up fast during bring-up; the ones worth keeping are named
-# and committed under debug/ explicitly. scripts/decode_trace.py writes every
-# decode to debug/captures/ keyed by capture type and settings, so those persist
-# locally as a comparison record without entering the repo.
+# decoded traces pile up fast during bring-up -- entirely local working
+# material, never committed. scripts/decode_trace.py writes every decode to
+# debug/captures/ keyed by capture type and settings, so those persist locally
+# as a comparison record without entering the repo.
 /*.png
 /*.txt
-debug/captures/
+debug/
 
 # Quartus STA scratch logs
 sta*.log
@@ -102,7 +108,8 @@ worst_*.rpt
 cfg.bin
 __pycache__/
 *.pyc
-# raw debug frame captures -- the .txt analyses are kept, the PNG stacks are not
-debug/attract_*/
-debug/sp_*.png
-debug/spd*.png
+
+# Simulation output data -- decoded channel dumps, raw audio, screen dumps.
+sim/**/*.raw
+sim/**/*.dec
+sim/**/*dump*.txt

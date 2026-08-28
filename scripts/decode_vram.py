@@ -109,14 +109,48 @@ def report(words, layer, label, outdir):
     return c
 
 
+NATIVE_W, NATIVE_H = 320, 224   # this core's raw output -- rtl/psikyo_top.sv screen timing.
+                                  # Every row/column index in this file (extract(), the vreg
+                                  # word/palette offsets, everything) assumes the PNG is
+                                  # pixel-exact at this resolution. If MiSTer's HDMI output is
+                                  # running any integer/fractional scaling (the OSD's video mode,
+                                  # NOT the core itself), the screenshot comes back scaled
+                                  # (observed: 1440x1080, a non-integer 4.5x/4.82x split) and
+                                  # every row this tool reads is silently the WRONG source row --
+                                  # rows near the top still look plausible (small drift), rows
+                                  # near the bottom are total garbage (even the ctl_echo band's
+                                  # fixed 0xA5 marker byte came back 0x00). That looked exactly
+                                  # like a real "layers never enabled" hardware bug until the
+                                  # dimensions were actually checked. Refuse rather than repeat
+                                  # that -- set the OSD's video output to 1:1/no scaling before
+                                  # capturing, or pass --force to get a best-effort (unreliable)
+                                  # decode anyway.
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('png')
     ap.add_argument('--label', default='vram')
     ap.add_argument('--outdir', default='debug/captures')
+    ap.add_argument('--force', action='store_true',
+                    help='decode anyway even if the capture is not %dx%d (unreliable -- '
+                         'every row index below this size assumes native, unscaled '
+                         'pixels)' % (NATIVE_W, NATIVE_H))
     args = ap.parse_args()
 
     W, H, rows = load_png(args.png)
+    if (W, H) != (NATIVE_W, NATIVE_H) and not args.force:
+        sys.exit(
+            'REFUSING TO DECODE: %s is %dx%d, not the core\'s native %dx%d.\n'
+            'This tool reads fixed row/column indices assuming a pixel-exact, unscaled\n'
+            'capture -- fed a scaled screenshot, it produces PLAUSIBLE-LOOKING GARBAGE\n'
+            '(this exact mismatch once read back as "both tilemap layers permanently\n'
+            'disabled", which was actually just wrong-row sampling, not a real bug).\n\n'
+            'Fix: in the MiSTer OSD, set video output/scaling to 1:1 (no scaling) before\n'
+            'taking the screenshot, then retake it. Or pass --force to decode anyway\n'
+            '(unreliable -- only use this if you understand the scale factor and are\n'
+            'prepared to distrust the result).'
+            % (args.png, W, H, NATIVE_W, NATIVE_H))
     if H < 32:
         sys.exit('capture is only %d rows; need at least 32 for the VRAM bands' % H)
     os.makedirs(args.outdir, exist_ok=True)
@@ -162,9 +196,18 @@ def main():
             v = vr[a]
             line = '  %04X  %-16s = %04X' % (a, name, v)
             if 'CONTROL' in name:
+                # enable is ACTIVE LOW (rtl/video/vreg_decode.sv: layer0_enable =
+                # ~l0_ctrl[0], matching MAME's own
+                # m_tilemap[layer]->enable(~layer_ctrl[layer] & 1)) -- bit0=0
+                # means ENABLED. An earlier version of this tool read bit0
+                # directly as enable (active-high), which made two genuinely
+                # active, correctly-rendering layers (control word 0x00D0, bit0
+                # clear) print as "enable=0" -- indistinguishable from a real
+                # "layers never enabled" bug until the RTL was actually checked.
+                enable = 1 - (v & 1)
                 line += ('   enable=%d opaque=%d transp=%s size=%d rowscroll=%d'
                          ' pertile=%d bank=%d'
-                         % (v & 1, (v >> 1) & 1, 'pen0' if (v >> 3) & 1 else 'pen15',
+                         % (enable, (v >> 1) & 1, 'pen0' if (v >> 3) & 1 else 'pen15',
                             (v >> 6) & 3, (v >> 8) & 1, (v >> 9) & 1, (v >> 10) & 1))
             print(line)
         rs0 = vr[0x000:0x100]
@@ -174,15 +217,14 @@ def main():
         print('  rowscroll layer1 (0x100-0x1FF): %d non-zero, %d distinct'
               % (sum(1 for x in rs1 if x), len(set(rs1))))
         print('  -> %s' % base)
-        if vr[0x209] == 0 and vr[0x20B] == 0:
+        l0_enabled = not (vr[0x209] & 1)
+        l1_enabled = not (vr[0x20B] & 1)
+        if not l0_enabled and not l1_enabled:
             print()
-            print('  BOTH CONTROL WORDS ARE ZERO IN THE VREGS RAM ITSELF.')
-            print('  That means the CPU never wrote them -- vreg_decode latching is')
-            print('  NOT at fault. Look at why the game does not program the layers.')
-        elif (vr[0x209] & 1) or (vr[0x20B] & 1):
-            print()
-            print('  A control word HAS its enable bit set in RAM. If the overlay')
-            print('  still reports enable=0, vreg_decode is failing to latch it.')
+            print('  BOTH LAYERS READ AS DISABLED (enable is active-low: bit0=1 means')
+            print('  off). If unexpected, check whether the CPU wrote these control')
+            print('  words at all -- e.g. compare against a fresh 0x0000 capture --')
+            print('  rather than assume vreg_decode is failing to latch them.')
 
     print()
     if len(c0) <= 1 and len(c1) <= 1:

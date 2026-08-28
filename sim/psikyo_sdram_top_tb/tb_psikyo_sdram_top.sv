@@ -24,6 +24,7 @@ module tb_psikyo_sdram_top;
     localparam logic [24:0] AUDIOCPU_BASE  = 25'h0200000;
     localparam logic [24:0] SPRITES_BASE   = 25'h0240000;
     localparam logic [24:0] TILES_BASE      = 25'h0A40000;
+    localparam logic [24:0] ADPCMA_BASE     = 25'h0C40000;
     localparam logic [24:0] SPRITELUT_BASE = 25'h0DC0000;
 
     logic         ioctl_download;
@@ -55,6 +56,16 @@ module tb_psikyo_sdram_top;
     logic         audiocpu_rom_valid;
     logic [7:0]  audiocpu_rom_data;
 
+    logic         adpcma_rom_req;
+    logic [19:0] adpcma_rom_addr;
+    logic         adpcma_rom_valid;
+    logic [7:0]  adpcma_rom_data;
+    logic         adpcmb_rom_req;
+    logic [19:0] adpcmb_rom_addr;
+    logic         adpcmb_rom_valid;
+    logic [7:0]  adpcmb_rom_data;
+    logic         needs_adpcma_swap;
+
     wire [15:0] SDRAM_DQ;
     logic [12:0] SDRAM_A;
     logic         SDRAM_DQML, SDRAM_DQMH;
@@ -69,7 +80,7 @@ module tb_psikyo_sdram_top;
         .SDRAM_CLK(SDRAM_CLK), .SDRAM_CKE(SDRAM_CKE), .SDRAM_DQ(SDRAM_DQ),
         .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
         .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
-        .ioctl_wait(ioctl_wait),
+        .ioctl_wait(ioctl_wait), .needs_adpcma_swap(needs_adpcma_swap),
         .l0_gfxrom_req(l0_gfxrom_req), .l0_gfxrom_addr(l0_gfxrom_addr),
         .l0_gfxrom_valid(l0_gfxrom_valid), .l0_gfxrom_data(l0_gfxrom_data),
         .l1_gfxrom_req(l1_gfxrom_req), .l1_gfxrom_addr(l1_gfxrom_addr),
@@ -81,7 +92,11 @@ module tb_psikyo_sdram_top;
         .cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
         .cpu_rom_valid(cpu_rom_valid), .cpu_rom_data(cpu_rom_data),
         .audiocpu_rom_req(audiocpu_rom_req), .audiocpu_rom_addr(audiocpu_rom_addr),
-        .audiocpu_rom_valid(audiocpu_rom_valid), .audiocpu_rom_data(audiocpu_rom_data)
+        .audiocpu_rom_valid(audiocpu_rom_valid), .audiocpu_rom_data(audiocpu_rom_data),
+        .adpcma_rom_req(adpcma_rom_req), .adpcma_rom_addr(adpcma_rom_addr),
+        .adpcma_rom_valid(adpcma_rom_valid), .adpcma_rom_data(adpcma_rom_data),
+        .adpcmb_rom_req(adpcmb_rom_req), .adpcmb_rom_addr(adpcmb_rom_addr),
+        .adpcmb_rom_valid(adpcmb_rom_valid), .adpcmb_rom_data(adpcmb_rom_data)
     );
 
     sdram_chip_model chip (
@@ -143,6 +158,8 @@ module tb_psikyo_sdram_top;
         sp_lut_req = 0; sp_lut_addr = 0;
         cpu_rom_req = 0; cpu_rom_addr = 0;
         audiocpu_rom_req = 0; audiocpu_rom_addr = 0;
+        adpcma_rom_req = 0; adpcma_rom_addr = 0; needs_adpcma_swap = 0;
+        adpcmb_rom_req = 0; adpcmb_rom_addr = 0;
         repeat (5) @(posedge clk);
         reset = 0;
         repeat (5) @(posedge clk);
@@ -176,11 +193,74 @@ module tb_psikyo_sdram_top;
         check64(l1_gfxrom_data, 64'h0001020304050607, "l1_gfxrom_data");
         l1_gfxrom_req = 0;
 
+        // Concurrent stress test for sdram_arbiter2 (Port 0), added
+        // 2026-08-29 after live hardware reported tilemap corruption
+        // alongside the confirmed sprite Port 1 bug. Both layers now share
+        // ONE physical port through this arbiter (they had one dedicated
+        // port each before the re-partition) -- the sequential checks above
+        // never exercise the round-robin picker or c0_data/c1_data (both
+        // wired to the SAME phy_rdata bus, gated only by c0_valid/c1_valid)
+        // under real contention. This asserts both requests on the SAME
+        // cycle, for two DIFFERENT addresses/patterns, and checks each
+        // layer gets its OWN data back regardless of which the arbiter
+        // serves first -- would catch cross-talk (one layer latching the
+        // other's data) or a starved/dropped grant that the sequential
+        // checks structurally cannot.
+        for (int i = 0; i < 8; i++) dl_write_byte(TILES_BASE + 25'd16 + i[24:0], (8'h30 + i[7:0]));
+        for (int i = 0; i < 8; i++) dl_write_byte(TILES_BASE + 25'd24 + i[24:0], (8'h40 + i[7:0]));
+        l0_gfxrom_addr = 22'd16; l1_gfxrom_addr = 22'd24;
+        l0_gfxrom_req  = 1;      l1_gfxrom_req  = 1;
+        fork
+            begin
+                while (!l0_gfxrom_valid) @(posedge clk);
+                check64(l0_gfxrom_data, 64'h3031323334353637, "l0_gfxrom_data (concurrent w/ l1)");
+                l0_gfxrom_req = 0;
+            end
+            begin
+                while (!l1_gfxrom_valid) @(posedge clk);
+                check64(l1_gfxrom_data, 64'h4041424344454647, "l1_gfxrom_data (concurrent w/ l0)");
+                l1_gfxrom_req = 0;
+            end
+        join
+        @(posedge clk);
+
         for (int i = 0; i < 8; i++) dl_write_byte(SPRITES_BASE + i[24:0], (8'h10 + i));
         sp_gfxrom_addr = 23'd0; sp_gfxrom_req = 1;
         @(posedge clk);
         while (!sp_gfxrom_valid) @(posedge clk);
         check64(sp_gfxrom_data, 64'h1011121314151617, "sp_gfxrom_data");
+        sp_gfxrom_req = 0;
+
+        // Regression for the 2026-08-29 spurious-re-request bug (confirmed
+        // live on hardware: corrupted/wobbly sprites, worse sp_render_max).
+        // The check above clears sp_gfxrom_req in the SAME simulation delta
+        // it observes valid -- that does NOT reproduce the real consumer's
+        // timing. sprite_render_engine.sv's own always_ff needs a full extra
+        // clock edge just to SEE gfxrom_valid (ordinary register-to-register
+        // latency: it can only react to the value gfxrom_valid held during
+        // the PREVIOUS cycle), and only THEN schedules gfxrom_req<=0 -- so
+        // in real hardware, gfxrom_req is still asserted going into the very
+        // edge where sdram_phy (back in S_IDLE) samples req again. An
+        // immediate same-delta clear here never gives the DUT that window.
+        // Reproduce it explicitly: hold req for one MORE full clock past the
+        // edge that first shows valid before clearing it, then immediately
+        // ask for a different granule the way the real engine's next-row
+        // fetch would -- if a spurious transaction snuck into that window,
+        // this either hangs (the real request gets silently dropped because
+        // the bogus transaction still owns the port) or comes back with the
+        // wrong granule's data.
+        for (int i = 0; i < 8; i++) dl_write_byte(SPRITES_BASE + 25'd8 + i[24:0], (8'h20 + i[7:0]));
+        sp_gfxrom_addr = 23'd0; sp_gfxrom_req = 1;
+        @(posedge clk);
+        while (!sp_gfxrom_valid) @(posedge clk);
+        check64(sp_gfxrom_data, 64'h1011121314151617, "sp_gfxrom_data (held-req regression, granule 0)");
+        @(posedge clk);   // the extra cycle real hardware gets for free
+        sp_gfxrom_req = 0;
+        sp_gfxrom_addr = 23'd8;
+        sp_gfxrom_req = 1;
+        @(posedge clk);
+        while (!sp_gfxrom_valid) @(posedge clk);
+        check64(sp_gfxrom_data, 64'h2021222324252627, "sp_gfxrom_data (held-req regression, granule 1)");
         sp_gfxrom_req = 0;
 
         dl_write_byte(SPRITELUT_BASE + 25'd0, 8'hAA);
@@ -211,6 +291,46 @@ module tb_psikyo_sdram_top;
         while (!audiocpu_rom_valid) @(posedge clk);
         check8(audiocpu_rom_data, 8'hEE, "audiocpu_rom_data");
         audiocpu_rom_req = 0;
+
+        // samuraia/sngkace ADPCM-A bit 6/7 swap regression. 0x40 (bit6 set,
+        // bit7 clear) becomes 0x80 (bit7 set, bit6 clear) when swapped --
+        // both bits distinguishable from each other and from 0, so a wrong
+        // bit position or a no-op bug both show up as a mismatch.
+        needs_adpcma_swap = 0;
+        dl_write_byte(ADPCMA_BASE + 25'd0, 8'h40);
+        adpcma_rom_addr = 20'd0; adpcma_rom_req = 1;
+        @(posedge clk);
+        while (!adpcma_rom_valid) @(posedge clk);
+        check8(adpcma_rom_data, 8'h40, "adpcma_rom_data (swap off)");
+        adpcma_rom_req = 0;
+
+        needs_adpcma_swap = 1;
+        dl_write_byte(ADPCMA_BASE + 25'd8, 8'h40);   // different granule: force a real re-fetch, not a cache hit on the swap-off value above
+        adpcma_rom_addr = 20'd8; adpcma_rom_req = 1;
+        @(posedge clk);
+        while (!adpcma_rom_valid) @(posedge clk);
+        check8(adpcma_rom_data, 8'h80, "adpcma_rom_data (swap on)");
+        adpcma_rom_req = 0;
+        needs_adpcma_swap = 0;
+
+        // ADPCM-B reads the SAME region through its own bridge/client (c0):
+        // read back the swap-off byte written above through the B port, and
+        // check B's swap coverage too (region-gated, so B sees it as well).
+        dl_write_byte(ADPCMA_BASE + 25'd16, 8'h40);
+        adpcmb_rom_addr = 20'd16; adpcmb_rom_req = 1;
+        @(posedge clk);
+        while (!adpcmb_rom_valid) @(posedge clk);
+        check8(adpcmb_rom_data, 8'h40, "adpcmb_rom_data (swap off)");
+        adpcmb_rom_req = 0;
+
+        needs_adpcma_swap = 1;
+        dl_write_byte(ADPCMA_BASE + 25'd24, 8'h40);
+        adpcmb_rom_addr = 20'd24; adpcmb_rom_req = 1;
+        @(posedge clk);
+        while (!adpcmb_rom_valid) @(posedge clk);
+        check8(adpcmb_rom_data, 8'h80, "adpcmb_rom_data (swap on)");
+        adpcmb_rom_req = 0;
+        needs_adpcma_swap = 0;
 
         ioctl_download = 0;
 

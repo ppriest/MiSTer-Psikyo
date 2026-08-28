@@ -11,6 +11,7 @@
 	<joystick>8-way</joystick>
 	<region>Korea</region>
 
+	<rom index="1"><part>01</part></rom>
 	<rom index="0" zip="gunbirdk.zip|gunbird.zip" md5="none">
 		<interleave output="32">
 			<part name="1k.u46" crc="745cee52" map="0012"/>

@@ -3,8 +3,8 @@
 // built with matching ROM port shapes specifically so this step would be a
 // straight port-to-port connection, not new logic (docs/ROADMAP.md's Next
 // steps) -- plus the board-appropriate sound CPU wrapper
-// (rtl/sound/sound_cpu_sngkace.sv or sound_cpu_gunbird.sv, selected by
-// BOARD_GUNBIRD, same parameter psikyo_core.sv already uses), whose
+// (rtl/sound/sound_cpu.sv, selected at runtime by board_gunbird, the same
+// signal psikyo_core.sv already uses), whose
 // req/valid ROM port and sound-latch handshake were built to match
 // psikyo_core.sv's own latch_data/latch_write output and
 // psikyo_sdram_top.sv's audiocpu_rom_* port directly. What's still missing
@@ -14,8 +14,7 @@
 // pass yet (docs/ROADMAP.md's Next steps) -- and the HPS/DIP/CRT_Offset
 // glue that belongs in Psikyo.sv itself, one level up.
 //
-// audiocpu_rom_addr's width: sound_cpu_sngkace.sv/sound_cpu_gunbird.sv
-// both expose a 17-bit rom_addr (already the flattened {bank,addr[14:0]}
+// audiocpu_rom_addr's width: sound_cpu.sv exposes a 17-bit rom_addr (already the flattened {bank,addr[14:0]}
 // physical byte address across the whole banked ROM window, confirmed
 // against real bankswitch source in docs/ROADMAP.md's sound-subsystem
 // notes), zero-extended by 1 bit to match psikyo_sdram_top.sv's 18-bit
@@ -73,9 +72,10 @@ module psikyo_top #(
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
     input  logic         board_gunbird,
+    input  logic         needs_adpcma_swap,   // see psikyo_sdram_top.sv's port comment
 
     // Mirrors MAME's psikyo_state::z80_nmi_r() -- see
-    // rtl/sound/sound_cpu_sngkace.sv's own comment for the full derivation.
+    // rtl/sound/sound_cpu.sv's own comment for the full derivation.
     // Not looped back into p1p2_in/coin_in internally: which bit position
     // it occupies is board-specific (sngkace's own separate COIN port vs.
     // gunbird's P1P2 port bit 7), so the caller folds this into whichever
@@ -100,8 +100,11 @@ module psikyo_top #(
     input  logic         dbg_overlay,
     input  logic [2:0]  dbg_render_dis,
     input  logic         pause,
+`ifdef DEBUG_ISSP
+    input  logic         dbg_autopause_wr_en,
+    input  logic         dbg_autopause_frame_en,
+`endif
     input  logic         snd_irq_en,
-    input  logic         sprite_line_mode,
     input  logic         dbg_sprite_vsync_swap,
     input  logic [1:0]  dbg_src,
     input  logic [3:0]  dbg_window,
@@ -127,8 +130,8 @@ module psikyo_top #(
     logic [15:0] sp_lut_data;
 
     // ---- YM2610 chip bus, sound CPU <-> jt10 ----
-    // These were previously missing, so Quartus created 1-BIT implicit nets for
-    // ym_dout/ym_din/ym_addr and the whole sound bus was truncated.
+    // Explicit declarations REQUIRED: without them Quartus silently creates
+    // 1-bit implicit nets for ym_dout/ym_din/ym_addr and truncates the bus.
     logic        ym_cs, ym_rd, ym_wr, ym_irq_n;
     logic [1:0] ym_addr;
     logic [7:0] ym_dout, ym_din;
@@ -195,39 +198,54 @@ module psikyo_top #(
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb),
-        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .sprite_line_mode(sprite_line_mode), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+        .dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause),
+`ifdef DEBUG_ISSP
+        .dbg_autopause_wr_en(dbg_autopause_wr_en), .dbg_autopause_frame_en(dbg_autopause_frame_en),
+`endif
+        .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
         .dbg_pixel(dbg_pixel)
     );
 
-    // Board-appropriate sound CPU -- sngkace/samuraia/btlkroad/gunbird all
-    // share this same T80+req/valid-ROM wrapper shape, differing only in
-    // which of the two wrappers matches their memory map (docs/ROADMAP.md's
-    // sound-subsystem notes). Held quiescent by core_reset for the same
-    // reason maincpu.sv is -- nothing useful to do with a partially-loaded
-    // ROM, and it shares the audiocpu SDRAM region with the download path.
-    generate
-        if (BOARD_GUNBIRD) begin : g_sound_gunbird
-            sound_cpu_gunbird u_sound (
-                .clk(clk), .reset(core_reset),
-                .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
-                .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
-                .latch_data(latch_data), .latch_write(latch_write),
-                .nmi_pending(nmi_pending),
-                .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
-            );
-        end else begin : g_sound_sngkace
-            sound_cpu_sngkace u_sound (
-                .clk(clk), .reset(core_reset),
-                .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
-                .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
-                .latch_data(latch_data), .latch_write(latch_write),
-                .nmi_pending(nmi_pending),
-                .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
-                .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
-            );
-        end
-    endgenerate
+    // Board-appropriate sound CPU. Was selected by the compile-time
+    // BOARD_GUNBIRD parameter via two separate modules (sound_cpu_gunbird.sv /
+    // sound_cpu_sngkace.sv), but nothing ever overrode that parameter -- this
+    // core selects its board at RUNTIME instead (board_gunbird, from the
+    // .mra's mod byte), the same way maincpu.sv and every input/DIP path
+    // already does, so every build silently got sngkace's memory map
+    // regardless of which game was loaded. sound_cpu.sv merges the two (they
+    // differed only in memory map / RAM size / I/O decode / bank-register
+    // bits) behind a runtime board_gunbird input.
+    //
+    // Held quiescent by core_reset for the same reason maincpu.sv is --
+    // nothing useful to do with a partially-loaded ROM, and it shares the
+    // audiocpu SDRAM region with the download path.
+`ifdef DEBUG_ISSP
+    logic dbg_latch_ack_event;
+`endif
+    // 4 MHz Z80 clock enable: Bresenham 44/945 (clk_sys = 945/11 MHz), the
+    // same scheme as ym_cen below and exactly half its rate -- see
+    // sound_cpu.sv's cen_4m port comment for why the rate matters.
+    logic [9:0] z80_cen_acc = 10'd0;
+    logic        z80_cen;
+    always_ff @(posedge clk) begin
+        if (z80_cen_acc >= 10'd945 - 10'd44) z80_cen_acc <= z80_cen_acc + 10'd44 - 10'd945;
+        else                                   z80_cen_acc <= z80_cen_acc + 10'd44;
+    end
+    assign z80_cen = (z80_cen_acc >= 10'd945 - 10'd44);
+
+    sound_cpu u_sound (
+        .clk(clk), .reset(core_reset), .board_gunbird(board_gunbird),
+        .cen_4m(z80_cen),
+        .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
+        .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
+        .latch_data(latch_data), .latch_write(latch_write),
+        .nmi_pending(nmi_pending),
+        .ym_cs(ym_cs), .ym_addr(ym_addr), .ym_rd(ym_rd), .ym_wr(ym_wr),
+        .ym_dout(ym_dout), .ym_din(ym_din), .ym_irq_n(ym_irq_n | ~snd_irq_en)
+`ifdef DEBUG_ISSP
+        , .dbg_latch_ack_event(dbg_latch_ack_event)
+`endif
+    );
 
     // ---- YM2610 (jt10) ----
     // 8 MHz on both boards: sngkace XTAL(32MHz)/4, gunbird 16MHz/2 (psikyo.cpp
@@ -246,11 +264,62 @@ module psikyo_top #(
     // read ports and the arbiter currently has none free. FM and SSG work
     // without them; ADPCM channels stay silent. Tying the data inputs to zero
     // is what an unpopulated sample ROM would read as.
+    // ---- YM2610 ADPCM-A sample fetch ----
+    // jt10 pulls adpcma_roe_n low when it wants the byte at adpcma_addr. The
+    // engine is 6 channels at ~18.5 kHz, about one byte every 1.5 us
+    // aggregate (~130 clk at 85.909 MHz), so an SDRAM round trip fits easily
+    // inside the gap and no prefetch is needed.
+    //
+    // adpcma_bank is ignored: it exists for NeoGeo's multi-megabyte banked
+    // sample ROMs, and psikyo's ADPCM-A region is a single 1MB image, so
+    // addr[19:0] covers all of it.
     logic [19:0] adpcma_addr;
     logic [4:0]  adpcma_bank;
     logic         adpcma_roe_n;
     logic [23:0] adpcmb_addr;
     logic         adpcmb_roe_n;
+
+    logic        adpcma_rom_req, adpcma_rom_valid, adpcma_roe_n_d;
+    logic [7:0]  adpcma_rom_data, adpcma_data_r;
+
+    always_ff @(posedge clk) begin
+        if (core_reset) begin
+            adpcma_rom_req <= 1'b0;
+            adpcma_data_r  <= 8'd0;
+            adpcma_roe_n_d <= 1'b1;
+        end else begin
+            adpcma_roe_n_d <= adpcma_roe_n;
+            if (adpcma_roe_n_d & ~adpcma_roe_n) adpcma_rom_req <= 1'b1;
+            else if (adpcma_rom_valid) begin
+                adpcma_rom_req <= 1'b0;
+                adpcma_data_r  <= adpcma_rom_data;
+            end
+        end
+    end
+
+    // ADPCM-B (delta-T): same roe_n-edge -> req -> latch glue as ADPCM-A
+    // above. Reads the SAME 1MB sample region (no separate delta-T ROM on
+    // these boards; MAME's YM2610 serves deltat from the adpcma region).
+    // This input was tied to 8'd0 until 2026-08-29 -- any track using the
+    // delta-T channel decoded constant zeros and mixed the result into the
+    // output, which is what the persistent crackle was.
+    logic        adpcmb_rom_req, adpcmb_rom_valid, adpcmb_roe_n_d;
+    logic [7:0]  adpcmb_rom_data, adpcmb_data_r;
+
+    always_ff @(posedge clk) begin
+        if (core_reset) begin
+            adpcmb_rom_req <= 1'b0;
+            adpcmb_data_r  <= 8'd0;
+            adpcmb_roe_n_d <= 1'b1;
+        end else begin
+            adpcmb_roe_n_d <= adpcmb_roe_n;
+            if (adpcmb_roe_n_d & ~adpcmb_roe_n) adpcmb_rom_req <= 1'b1;
+            else if (adpcmb_rom_valid) begin
+                adpcmb_rom_req <= 1'b0;
+                adpcmb_data_r  <= adpcmb_rom_data;
+            end
+        end
+    end
 
     jt10 u_ym2610 (
         .rst        (core_reset),
@@ -264,8 +333,8 @@ module psikyo_top #(
         .irq_n      (ym_irq_n),
 
         .adpcma_addr(adpcma_addr), .adpcma_bank(adpcma_bank),
-        .adpcma_roe_n(adpcma_roe_n), .adpcma_data(8'd0),
-        .adpcmb_addr(adpcmb_addr), .adpcmb_roe_n(adpcmb_roe_n), .adpcmb_data(8'd0),
+        .adpcma_roe_n(adpcma_roe_n), .adpcma_data(adpcma_data_r),
+        .adpcmb_addr(adpcmb_addr), .adpcmb_roe_n(adpcmb_roe_n), .adpcmb_data(adpcmb_data_r),
 
         .psg_A(), .psg_B(), .psg_C(), .fm_snd(), .psg_snd(),
         .snd_right  (snd_right),
@@ -373,7 +442,7 @@ module psikyo_top #(
         .SDRAM_CLK(SDRAM_CLK), .SDRAM_CKE(SDRAM_CKE), .SDRAM_DQ(SDRAM_DQ),
         .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
         .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
-        .ioctl_wait(ioctl_wait),
+        .ioctl_wait(ioctl_wait), .needs_adpcma_swap(needs_adpcma_swap),
         .l0_gfxrom_req(l0_gfxrom_req), .l0_gfxrom_addr(l0_gfxrom_addr),
         .l0_gfxrom_valid(l0_gfxrom_valid), .l0_gfxrom_data(l0_gfxrom_data),
         .l1_gfxrom_req(l1_gfxrom_req), .l1_gfxrom_addr(l1_gfxrom_addr),
@@ -385,7 +454,36 @@ module psikyo_top #(
         .cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
         .cpu_rom_valid(cpu_rom_valid), .cpu_rom_data(cpu_rom_data),
         .audiocpu_rom_req(audiocpu_rom_req), .audiocpu_rom_addr(audiocpu_rom_addr),
-        .audiocpu_rom_valid(audiocpu_rom_valid), .audiocpu_rom_data(audiocpu_rom_data)
+        .audiocpu_rom_valid(audiocpu_rom_valid), .audiocpu_rom_data(audiocpu_rom_data),
+        .adpcma_rom_req(adpcma_rom_req), .adpcma_rom_addr(adpcma_addr),
+        .adpcma_rom_valid(adpcma_rom_valid), .adpcma_rom_data(adpcma_rom_data)
     );
+
+
+`ifdef DEBUG_ISSP
+    // Sound chain instrumentation. FM has never been heard, and FM does not
+    // depend on ADPCM, so the break is upstream. These four counts separate
+    // the cases: no Z80 fetches -> sound CPU dead; no YM writes -> Z80 running
+    // but not driving the chip; no latch writes -> the 68020 never sends a
+    // command; samples always zero -> chip driven but silent.
+    issp_probe #(.INSTANCE_ID("A")) u_issp_snd (
+        .clk(clk),
+        .wr_issued(audiocpu_rom_valid),
+        .wr_acked(ym_cs & ym_wr),
+        .cpu_rd_acked(latch_write),
+        .cpu_rd_nonzero(1'b1),
+        .sdram_ready(|snd_left),
+        // dl_req repurposed: sticky "has the Z80 ever completed its NMI
+        // handler" (io_latch_ack, the 0x0C write clearing latch_pending) --
+        // proof the ISR ran to completion, not merely that NMI was
+        // asserted. ADPCM tracking was here; secondary to getting the Z80's
+        // own sound driver running at all.
+        .dl_req(dbg_latch_ack_event),
+        .ioctl_download(adpcma_rom_valid),
+        .reset(core_reset),
+        .cpu_rd_addr({4'd0, adpcma_addr[19:5]}),
+        .cpu_rd_data({8'd0, adpcma_data_r})
+    );
+`endif
 
 endmodule

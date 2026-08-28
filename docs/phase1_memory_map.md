@@ -117,9 +117,15 @@ I/O `0x08`, and must write I/O `0x0C` to acknowledge/clear the pending line.
 
 ### samuraia/sngkace ADPCM-A sample ROM: bit 6/7 swap (`init_sngkace`, psikyo.cpp)
 
-**Not yet implemented anywhere in this project — real gap, flagged here to close before Phase 1
-sound bring-up.** MAME's `psikyo_state::init_sngkace()` applies a one-time fixup to the entire
-`ymsnd:adpcma` ROM region at driver-init time, before the YM2610 core ever reads it:
+**Implemented 2026-08-29** (commit `9bbd8dd`) — `rtl/memory/psikyo_sdram_top.sv`'s
+`needs_adpcma_swap` input (threaded from `mod_board[1]` via `rtl/psikyo_top.sv`/`Psikyo.sv`,
+set per-game from the `.mra`'s `<rom index="1"><part>` mod byte) applies the swap as a
+download-time byte fixup, gated on the incoming write address falling inside the
+`ymsnd:adpcma` window. Fixes Samurai Aces/Sengoku Ace's ADPCM-A sample decode specifically —
+it does **not** by itself explain Gun Bird's still-garbled ADPCM-A playback (Gun Bird needs no
+swap per MAME), which remains a separate, open problem; see `docs/ROADMAP.md`'s "Fix sound"
+item. MAME's `psikyo_state::init_sngkace()` applies this fixup to the entire `ymsnd:adpcma` ROM
+region at driver-init time, before the YM2610 core ever reads it:
 
 ```cpp
 u8 *RAM = memregion("ymsnd:adpcma")->base();
@@ -152,19 +158,20 @@ YM2610, same address map above) with Samurai Aces/Sengoku Ace, they do **not** g
 it's specific to how that one game's sample ROM was mastered, not a hardware-family property. A
 per-game flag/select is required to gate it, not a hardware-group one.
 
-**Where this belongs in the RTL, not decided yet:** the `.mra` format only expresses byte-level
-ROM layout (offset/length/interleave/patch) — it cannot express an intra-byte bit permutation, so
-this cannot be done in the `.mra` loader alone. Two real options:
-1. Apply the swap during HPS ROM download (`ddram_download.sv`/`sdram_download.sv`'s byte-write
-   path), conditionally on a per-game select signal, for bytes landing in the `ymsnd:adpcma`
-   region — a one-time fixup at load time, directly mirroring what MAME's `init_sngkace` itself
-   does, and cheap (no cost on the read/playback path at all).
-2. Apply it on every ADPCM-A byte read on the way into jt10 — always-correct but pays a small
-   combinational cost on every sample fetch for no benefit over option 1.
-Option 1 is the natural fit given the project's existing download-path architecture. Needs a
-per-game select bit/signal threaded from somewhere (status bit, `.mra` region metadata, or ROM
-size/checksum detection) — how games are actually distinguished at the top level isn't decided
-yet either (see ROADMAP.md's top-level integration item).
+**Where this lives in the RTL:** the `.mra` format only expresses byte-level ROM layout
+(offset/length/interleave/patch) — it cannot express an intra-byte bit permutation, so this
+isn't done in the `.mra` loader. Two options were considered; the first is what's built:
+1. **Chosen.** Apply the swap during HPS ROM download (`psikyo_sdram_top.sv`'s `ioctl_dout`
+   path), conditional on `needs_adpcma_swap`, for bytes landing in the `ymsnd:adpcma` region —
+   a one-time fixup at load time, directly mirroring what MAME's `init_sngkace` itself does,
+   and free on the read/playback path.
+2. Apply it on every ADPCM-A byte read on the way into jt10 instead — not used; would pay a
+   small combinational cost on every sample fetch for no benefit over option 1.
+
+The per-game select, `needs_adpcma_swap`, is `mod_board[1]`, decoded in `Psikyo.sv` from the
+same `.mra` mod byte that already selects `board_gunbird` (`mod_board[0]`) — the two bits are
+independent, since Battle K-Road shares `board_gunbird=1` with Gun Bird but needs no ADPCM-A
+swap, while Samurai Aces/Sengoku Ace need the swap despite `board_gunbird=0`.
 
 ## Sprite RAM layout (`0x400000-0x401FFF`, both boards identical)
 

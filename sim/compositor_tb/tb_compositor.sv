@@ -25,15 +25,10 @@ module tb_compositor;
     logic [1:0]  sp_priority;
 
     logic [11:0] pal_addr;
-    logic [15:0] pal_data;
-    logic [14:0] rgb;
+    logic [8:0]  pal_s_addr;
+    logic         sprite_sel;
 
     compositor dut (.*);
-
-    // simple palette memory: pal_data = pal_addr (identity), so checking
-    // rgb reduces to checking pal_addr[14:0] directly -- keeps the
-    // reference simple while still exercising the pal_data wiring
-    assign pal_data = {1'b0, pal_addr[11:0], 3'b000};
 
     int errors;
 
@@ -51,11 +46,31 @@ module tb_compositor;
         sp_present = present[0]; sp_pixel = pixel[3:0]; sp_color = color[4:0]; sp_priority = pri[1:0];
     endtask
 
+    // tilemap/backdrop wins: the LIVE palette lookup must carry exp_addr
+    // and sprite_sel must be low.
     task automatic check(string label, int exp_addr);
         #1;
+        if (sprite_sel !== 1'b0) begin
+            errors++;
+            $display("FAIL(%s) sprite_sel: got=1 expected=0", label);
+        end
         if (pal_addr !== exp_addr[11:0]) begin
             errors++;
             $display("FAIL(%s) pal_addr: got=%h expected=%h", label, pal_addr, exp_addr);
+        end
+    endtask
+
+    // sprite wins: the SNAPSHOT palette lookup must carry exp_addr and
+    // sprite_sel must be high (the caller muxes the RAM outputs on it).
+    task automatic check_sp(string label, int exp_addr);
+        #1;
+        if (sprite_sel !== 1'b1) begin
+            errors++;
+            $display("FAIL(%s) sprite_sel: got=0 expected=1", label);
+        end
+        if (pal_s_addr !== exp_addr[8:0]) begin
+            errors++;
+            $display("FAIL(%s) pal_s_addr: got=%h expected=%h", label, pal_s_addr, exp_addr);
         end
     endtask
 
@@ -84,65 +99,119 @@ module tb_compositor;
         set_l0(1, 5, 3, 0, 0, 0);    // ctrl_enable=0 -> does NOT draw regardless of pixel
         set_l1(0, 0, 0, 0, 0, 0);
         set_sp(0, 0, 0, 0);
-        // falls through to backdrop; backdrop uses l0_ctrl_transpen_sel
-        // regardless of l0's own enable bit (tsel=0 here -> pen15 -> 0x80f)
-        check("l0-disabled-backdrop", 12'h80f);
+        // falls through to backdrop; backdrop is ALWAYS pen 0 (0x800),
+        // unconditionally, regardless of l0_ctrl_transpen_sel or l0's own
+        // enable bit -- corrected earlier today (commit 7b9c33d) per the
+        // MAME renderer author's direction; this test predated that fix.
+        check("l0-disabled-backdrop", 12'h800);
 
         // ---- Case 5: sprite priority 0 -- always front, wins over both opaque layers ----
         set_l0(1, 5, 3, 1, 0, 0);
         set_l1(1, 7, 2, 1, 0, 1);
         set_sp(1, 9, 6, 0);
-        check("sprite-priority0-front", 6*16 + 9);
+        check_sp("sprite-priority0-front", 6*16 + 9);
 
-        // ---- Case 6: sprite priority 1 -- "same as 0", still always front ----
+        // Cases 6-9 encode the BIT-INDEXED primask semantics (MAME's
+        // pdrawgfx convention: sprite blocked iff primask[priority_val]),
+        // fixed 2026-08-29. The original value-AND implementation --
+        // (priority_val & primask) == 0 -- passed an earlier version of
+        // these cases while rendering samuraia's priority-1 cloud sprites
+        // over tilemap 1 on hardware: layer 1's priority_val of 2 ANDs to
+        // zero against 0xFC. The tests below fail against value-AND.
+
+        // ---- Case 6: sprite priority 1 (0xFC) -- above layer 0 ----
+        set_l0(1, 5, 3, 1, 0, 0);
+        set_l1(0, 0, 0, 0, 0, 0);
         set_sp(1, 9, 6, 1);
-        check("sprite-priority1-front", 6*16 + 9);
+        check_sp("sprite-priority1-wins-over-l0-only", 6*16 + 9);
 
-        // ---- Case 7: sprite priority 2 -- behind, blocked by layer0 opaque ----
+        // ---- Case 6b: sprite priority 1 -- BELOW layer 1 (the samuraia
+        // cloud case: primask[2] of 0xFC is set, layer 1 wins) ----
+        set_l0(0, 0, 0, 0, 0, 0);
+        set_l1(1, 7, 2, 1, 0, 1);
+        set_sp(1, 9, 6, 1);
+        check("sprite-priority1-blocked-by-l1", 12'h800 + 2*16 + 7);
+
+        // ---- Case 6c: priority 1, both layers drawing -- layer 1 on top
+        // (priority_val=2), sprite still blocked ----
+        set_l0(1, 5, 3, 1, 0, 0);
+        set_l1(1, 7, 2, 1, 0, 1);
+        set_sp(1, 9, 6, 1);
+        check("sprite-priority1-blocked-by-l1-over-l0", 12'h800 + 2*16 + 7);
+
+        // ---- Case 7: sprite priority 2 (0xFE) -- blocked by layer 0 alone
+        // (primask[1] set), unlike priority 1 ----
         set_l0(1, 5, 3, 1, 0, 0);
         set_l1(0, 0, 0, 0, 0, 0);
         set_sp(1, 9, 6, 2);
         check("sprite-priority2-blocked-by-l0", 12'h800 + 3*16 + 5);
 
-        // ---- Case 8: sprite priority 3 -- behind, blocked by layer1 opaque ----
+        // ---- Case 7b: sprite priority 2 -- blocked by layer 1 alone ----
+        set_l0(0, 0, 0, 0, 0, 0);
+        set_l1(1, 7, 2, 1, 0, 1);
+        set_sp(1, 9, 6, 2);
+        check("sprite-priority2-blocked-by-l1-only", 12'h800 + 2*16 + 7);
+
+        // ---- Case 7c: sprite priority 2 -- visible over BARE BACKDROP
+        // (primask[0] of 0xFE is clear; this is what distinguishes 0xFE
+        // from published MAME's 0xFF for this entry) ----
+        set_l0(0, 0, 0, 0, 0, 0);
+        set_l1(0, 0, 0, 0, 0, 0);
+        set_sp(1, 9, 6, 2);
+        check_sp("sprite-priority2-wins-over-backdrop", 6*16 + 9);
+
+        // ---- Case 8: sprite priority 3 (0xFF) -- blocked by layer 1 ----
         set_l0(0, 0, 0, 0, 0, 0);
         set_l1(1, 7, 2, 1, 0, 1);
         set_sp(1, 9, 6, 3);
         check("sprite-priority3-blocked-by-l1", 12'h800 + 2*16 + 7);
 
-        // ---- Case 9: sprite priority 2 ("behind"), but NEITHER layer drew --
-        // subtle case from the priority-mask table: primask=0xFF but
-        // priority_val=0 (nothing drawn) means (0 & 0xFF)==0, sprite still wins
+        // ---- Case 8b: sprite priority 3 -- blocked by layer 0 alone ----
+        set_l0(1, 5, 3, 1, 0, 0);
+        set_l1(0, 0, 0, 0, 0, 0);
+        set_sp(1, 9, 6, 3);
+        check("sprite-priority3-blocked-by-l0-too", 12'h800 + 3*16 + 5);
+
+        // ---- Case 8c: sprite priority 3 -- NEVER visible: primask[0] of
+        // 0xFF is set, so even bare backdrop blocks it ----
+        set_l0(0, 0, 0, 0, 0, 0);
+        set_l1(0, 0, 0, 0, 0, 0);
+        set_sp(1, 9, 6, 3);
+        check("sprite-priority3-never-visible", 12'h800);
+
+        // ---- Case 9: sprite priority 1, neither layer drew -- primask[0]
+        // of 0xFC is clear, sprite wins over backdrop ----
         set_l0(1, 15, 0, 1, 0, 0);   // transparent
         set_l1(1, 0, 0, 1, 0, 1);    // transparent (transpen=0, pixel=0)
-        set_sp(1, 9, 6, 2);
-        check("sprite-behind-but-nothing-else-drawn", 6*16 + 9);
+        set_sp(1, 9, 6, 1);
+        check_sp("sprite-priority1-wins-over-backdrop", 6*16 + 9);
 
-        // ---- Case 10: full backdrop, tsel=0 (pen15) ----
+        // ---- Case 10: full backdrop, tsel=0 -- ALWAYS pen 0 now (0x800),
+        // tsel no longer has any effect on the backdrop (commit 7b9c33d) ----
         set_l0(0, 0, 0, 0, 0, 0);
         set_l1(0, 0, 0, 0, 0, 0);
         set_sp(0, 0, 0, 0);
         l0_ctrl_transpen_sel = 1'b0;
-        check("backdrop-pen15", 12'h80f);
+        check("backdrop-always-pen0-tsel0", 12'h800);
 
-        // ---- Case 11: full backdrop, tsel=1 (pen0) ----
+        // ---- Case 11: full backdrop, tsel=1 -- still pen 0, tsel truly has
+        // no effect either way (this case and Case 10 now expect the SAME
+        // address, which is the point: it proves tsel is ignored) ----
         l0_ctrl_transpen_sel = 1'b1;
-        check("backdrop-pen0", 12'h800);
+        check("backdrop-always-pen0-tsel1", 12'h800);
 
-        // ---- Case 12: backdrop quirk -- layer1 enabled+opaque-forced with its
-        // OWN transpen bit set differently, layer0 DISABLED -- backdrop still
-        // follows layer0's transpen_sel, not layer1's, and not "black"
-        set_l0(0, 0, 0, /*en=*/0, 0, /*tsel=*/1);   // l0 disabled, tsel=1 (would mean pen0 if it mattered)
+        // ---- Case 12: backdrop with layer1 enabled+opaque-forced with its
+        // OWN transpen bit set differently, layer0 DISABLED -- still just
+        // pen 0 unconditionally, not "black", not following either layer's
+        // transpen_sel ----
+        set_l0(0, 0, 0, /*en=*/0, 0, /*tsel=*/1);   // l0 disabled
         set_l1(0, 0, 0, /*en=*/0, 0, /*tsel=*/0);   // l1 also disabled/not drawing
         set_sp(0, 0, 0, 0);
-        check("backdrop-ignores-l1-and-l0-enable", 12'h800);   // l0 tsel=1 -> pen0 -> 0x800, per the quirk
+        check("backdrop-always-pen0-ignores-enable-and-tsel", 12'h800);
 
-        // rgb pipeline: pal_data = {1'b0, pal_addr, 3'b0}, so rgb (15 bits) should be pal_addr<<3 & 0x7FFF -- spot check
-        #1;
-        if (rgb !== {pal_addr, 3'b000}) begin
-            errors++;
-            $display("FAIL(rgb) got=%h expected=%h", rgb, {pal_addr, 3'b000});
-        end
+        // (The final RGB mux -- registered sprite_sel selecting between the
+        // two palette RAMs' outputs -- lives in psikyo_core.sv, exercised
+        // by the integration testbenches, not here.)
 
         if (errors == 0)
             $display("PASS: compositor matches reference for all cases");

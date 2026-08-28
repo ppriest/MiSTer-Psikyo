@@ -21,17 +21,25 @@ confirmed by documentation).
   are the range of bits that will be set in the status register."
 - **[doc]** Pages: `P{#},{Title}` declares a page; prefix options with `P{#}`. The prefix goes
   before `O#` but after conditionals like `d#`.
-- **[empirical]** An `.mra` with N `<switches>` bytes consumes 8*N bits starting at
-  **status[16]**: byte0 -> `status[23:16]`, byte1 -> `status[31:24]`, and so on. This project's
-  `.mra` files declare three bytes, so the DIP mechanism owns `status[39:16]`.
+- **[empirical, corrected]** DIP switches do **not** ride the status word at all — they arrive as
+  a separate ioctl download, index 254, 8 bytes (LE `uint64`), decoded straight from the `.mra`'s
+  `<switches>` bytes (`mra_loader.cpp`'s `arcade_sw_send()`). Saved state lives in
+  `config/dips/<mra name>`, not the per-core `.CFG`. An earlier pass through this doc assumed
+  DIPs rode the status word (`status[39:16]`) and built two fixes on that wrong assumption (a
+  `.CFG` generator, a `base="16"` attribute added to `<switches>`) — both invented, both wrong;
+  see `docs/LESSONS_LEARNED.md`'s "Check the framework's source before inventing its behaviour".
 - **[doc+empirical]** MAME's psikyo DSW port puts every DIP in the UPPER half of the 32-bit long
-  at `$C00004` and the region jumper in its low byte. `Psikyo.sv` therefore feeds
-  `dsw_in = {status[31:16], 8'hFF, status[39:32]}`. An earlier `status[47:16]` mapping put every
-  DIP 16 bits low, in the half MAME defines as unused, so no OSD DIP did anything and Service
-  Mode was stuck on.
-- **Allocation in use here:** DIPs `status[39:16]`; render-disable and sprite-swap debug bits
-  `status[43:40]`; scandoubler FX `status[46:44]`; rotation/flip `status[49:47]`; tracer controls
-  `status[63:56]`; aspect ratio `status[122:121]`.
+  at `$C00004` and the region jumper in its low byte. `Psikyo.sv` captures the ioctl-254 bytes
+  into a `dip_sw[63:0]` register and feeds
+  `dsw_in = {dip_sw[15:8], dip_sw[7:0], 8'hFF, dip_sw[23:16]}`. An earlier `status[47:16]`-based
+  mapping put every DIP 16 bits low, in the half MAME defines as unused, so no OSD DIP did
+  anything and Service Mode was stuck on — moot now that DIPs don't go through `status[]` at
+  all, kept here as a reminder of the failure mode.
+- **Status-bit allocation in use here** (unrelated to DIPs, which use ioctl 254 instead):
+  render-disable and sprite-swap debug bits `status[43:40]`; scandoubler FX `status[46:44]`;
+  rotation/flip `status[49:47]`; debug auto-pause/Sound-IRQ/misc bits `status[54:50]` (bit 52
+  free since the line-buffer sprite renderer was removed); tracer controls `status[63:56]`;
+  aspect ratio `status[122:121]`.
 - Validate bit assignments with **https://agg23.github.io/mister-config/** (paste the CONF_STR,
   see which bits each option claims) rather than reasoning about ranges by hand.
 
@@ -78,5 +86,6 @@ confirmed by documentation).
 
 Porting Cores; Core Configuration String; Top-level of Cores (emu, hps_io, video_freak,
 video_mixer, arcade_video); Useful Snippets; Savestates; Core Names; MRA Setnames; Arcade ROMs
-and MRA Files; **Debugging (USB Blaster)** -- directly relevant once the JTAG probe arrives;
-Developer Journeys; Template Core; Tips and Guidelines.
+and MRA Files; **Debugging (USB Blaster)** -- directly relevant now that JTAG/ISSP probing is
+in active use (see README's "Debugging on hardware"); Developer Journeys; Template Core; Tips
+and Guidelines.

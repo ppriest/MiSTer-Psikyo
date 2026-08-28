@@ -502,6 +502,19 @@ Note what it does **not** prove: the trace address is truncated, so it verifies 
   another client is silently lost. Applies uniformly across `ddram_arbiter`/`sdram_arbiter5` and
   the HPS download path (`ioctl_wr` is a genuine one-shot from hps_io and needs a wrapper, e.g.
   `sdram_download.sv`, translating it into hold-until-ack via `ioctl_wait` backpressure).
+- **A held req/valid consumer wired directly into a component that expects a one-shot req pulse
+  loses the extra cycle it needs, silently.** `sdram_phy.sv`'s `valid` and its return to
+  `S_IDLE` land on the same cycle — every arbitrated consumer gets a cycle of margin (`c_valid`
+  asserts one cycle before the arbiter's own state returns to idle), but a single-client port
+  wired straight to `sdram_phy` ("no arbiter needed for one client") skips that margin entirely.
+  Sprite gfxrom's dedicated Port 1 did exactly this and silently returned the *previous*
+  transaction's stale data under contention — not a hang, just wrong data, which read on
+  hardware as sprite corruption. Fixed with a small single-client pulse shim reproducing the
+  same margin a real arbiter gives (`SP_IDLE`/`SP_ISSUE`/`SP_WAIT` in
+  `rtl/memory/psikyo_sdram_top.sv`). Third occurrence of this exact defect class in this
+  project (see the `rom_pending` bullet above and the tilemap `gfxrom_req` fix in
+  `docs/TILEMAP_BUG.md`) — treat any *direct*, non-arbitrated connection to a req/valid
+  transport as a suspect by default, not just multi-client ones.
 - **Byte-order/endianness bugs live at the seam between two independently-correct modules, not
   inside either one.** `sdram.sv`'s burst capture packs bytes in plain ascending-address order;
   gfx-ROM consumers assumed MAME's MSB-first packed format; a maincpu program ROM needed
@@ -780,3 +793,102 @@ including the display list's end-of-list marker. A frame that ran long and misse
 the marker inherited a stale one further down the list, so the engine rendered far
 more sprites, and the failure compounded under load. Fixing it to a real copy
 removed the ghosting, the stale sprites, and Gun Bird's per-scene sprite freeze.
+
+## Don't guess a sign twice from the same reasoning
+
+A one-tile X offset on both tilemap layers (visible as a one-tile vertical
+error once rotated) was patched with a -16 (one tile) subtraction on
+base_x_scroll, derived from `tilemap_x(screen_col) = base_x_scroll +
+screen_col*16`: increasing base_x_scroll samples further right in tilemap
+space for a given screen column, panning the image left, so correcting the
+image rightward should mean decreasing the scroll value. That derivation
+was measured wrong on hardware -- it moved the tilemaps the wrong way.
+
+Removed rather than flipped. The reasoning that produced -16 was internally
+consistent and still wrong, so flipping to +16 on the strength of the same
+reasoning would just be a second guess wearing the first guess's confidence.
+
+The root cause is still open. Checked and ruled out: a MAME-side
+scrolldx/scrolldy (none exists -- video_start() applies no per-layer
+offset), and an off-by-one in tilemap_coord.sv/tilemap_addrgen.sv's
+col/row -> vram_index math (symmetric, no added constant, previously
+exhaustively verified by sim). Also established: tile_number and color
+are decoded from ONE vram_cell at ONE address in tile_cell_decode, so this
+engine's addressing cannot by itself explain a tile that renders with the
+right shape and the wrong palette (a separate, still-open symptom) -- that
+would have to be in compositor.sv's palette addressing instead.
+
+**Resolved 2026-08-29** — this was the same displacement as the wrong-palette bug tracked
+in `docs/TILEMAP_BUG.md`: a `gfxrom_req`/`gfxrom_valid` handshake bug in
+`tilemap_line_engine.sv` (the request deassert was one clock late, gated combinationally
+to fix it — commit `f54e69b`), not an addressing sign at all. Neither guess above was on
+the right track; the bug wasn't in `tilemap_coord.sv`/`tilemap_addrgen.sv`'s math, and it
+wasn't a scroll constant either.
+
+## Sound: root cause of silence pinned down -- 2026-08-29 overnight
+
+Working through the sound-ISR-completion probe (issp_probe instance "A",
+dbg_latch_ack_event in sound_cpu.sv):
+
+* The Z80 is alive and the 68020->Z80 command path works: address decode for
+  the sound latch (0xC00013) matches MAME's gunbird_map/sngkace_map exactly,
+  and a real sound-latch write was measured during actual gameplay.
+* The Z80's own boot sequence DOES program the YM2610 -- 46 register writes
+  measured immediately after a fresh launch, before any command from the
+  68020. Then it goes silent: zero further YM writes over a later 15s
+  window with no new command.
+* `snd_irq_en` (OSD "Sound IRQ", default OFF) gates `ym_irq_n`. With it OFF,
+  the Z80 runs continuously (saturated ROM-fetch counter) but the YM2610's
+  own timer interrupt -- the standard mechanism arcade sound drivers use to
+  sequence music after the initial "start track" command -- never reaches
+  it, which plausibly explains "one init burst, then permanent silence."
+* Turning it ON was tested directly (device, no user present, CFG bit
+  only): Z80 ROM fetches went to ZERO immediately -- a complete, permanent
+  lockup, not "runs but silent". Reverted; confirmed the Z80 resumes.
+
+Traced further: MAME's machine config (`ymsnd.irq_handler().set_inputline
+("audiocpu", 0)`) confirms the YM2610 IRQ really does go to the Z80's INT
+line -- our wiring is architecturally right. MAME's own note that "no
+explicit interrupt mode is set... defaults to IM 0" is about the hardware
+reset state; the game's own boot code almost certainly executes `IM 1`
+early (standard practice), so by the time a real interrupt fires the CPU
+is likely in IM1, not IM0. sound_cpu.sv's own WAIT_n generation was
+checked and is NOT obviously the cause: `wait_n` correctly defaults to
+ready (1'b1) for any bus cycle that isn't a recognized ROM/mem/IO access,
+which includes the M1_n+IORQ_n interrupt-acknowledge signature.
+
+So the lockup is NOT explained by anything checked so far by inspection.
+T80 is a widely-vendored, proven core (used in dozens of MiSTer arcade
+cores), so a broken interrupt mode is a low-probability explanation:
+something specific to THIS wiring is more likely. No CPU-internal
+visibility (PC, HALT state) exists yet to go further without another
+build-and-instrument cycle.
+
+**Do not re-enable Sound IRQ by default, and do not attempt a blind fix to
+this path without a way to verify it worked** -- a hang is a worse
+regression than silence. Suggested next probe: expose T80's `halt_n`, and
+ideally its PC, over ISSP, then re-enable Sound IRQ and read them at the
+moment ROM fetches stop, to distinguish "stuck in HALT" from "stuck inside
+T80's own interrupt-acceptance FSM" from "jumped to a bad address and is
+executing garbage".
+
+**Update, later the same session:** the latch-decode, Z80 clock-enable, spurious
+ROM-re-request, and arbiter round-robin bugs (all separate from the Sound-IRQ question
+above) were found and fixed -- see `docs/ROADMAP.md`'s "Fix sound" item. Audio is no
+longer silent. The Sound IRQ caution above is still current: `snd_irq_en` (`status[51]`)
+remains off by default and has not been re-verified safe to enable by any of those
+fixes. ADPCM-A playback is a separate, still-open problem -- see the same ROADMAP item.
+
+## The mod byte must precede the ROM it gates
+
+The `.mra`'s `<rom index="1">` mod byte is sent in file order, and `mod_board`
+powers up 0 on every FPGA reprogram. With the mod byte listed after
+`<rom index="0">`, any download-time consumer of it — `needs_adpcma_swap`
+gating the samuraia/sngkace ADPCM-A bit 6/7 swap — sees 0 for the whole ROM
+download and silently does nothing. `board_gunbird` never exposed this because
+it is only read at runtime, long after the latch. The swap logic, transform,
+and address window were all verified correct while the feature did nothing at
+all: the gate opened after the data had passed. Every `.mra` now lists
+`<rom index="1">` first, and any future download-time use of `mod_board` must
+keep it that way. (2026-08-29, confirmed by ear on hardware: samuraia ADPCM
+wrong with the mod byte last, correct with it first, same bitstream.)

@@ -327,6 +327,16 @@ layer 1" option. Simpler than the raw 2-bit field might suggest; good to know be
 the compositor's priority logic (a single front/back select per sprite, not a 4-way priority
 mux).
 
+**Correction, live on hardware, 2026-08-29:** the RTL's actual `compositor.sv` primask table
+differs from MAME's published `{0, 0xFC, 0xFF, 0xFF}` above at entry 2 — it uses `0xFE`
+(`{0, 0xFC, 0xFE, 0xFF}`), direct from the author of MAME's Psikyo renderer reviewing live
+gameplay against real hardware. `0xFE` (bit 0 clear) lets priority-field-2 sprites draw in
+front of layer 0 while staying behind layer 1 — a genuine third tier that this section's
+MAME-derived table collapses into "always behind both." This did **not** fully resolve the
+sprite-vs-tilemap priority bug seen on hardware (cloud sprites still render over tilemap 1
+when they should render under it) — see `docs/ROADMAP.md`'s "Next steps" item 2. Any future
+work on this table should start from the live `compositor.sv` source, not this section.
+
 ## Compositor: backdrop, transparent-pen, and palette lookup
 
 Traced `screen_update()` directly (not re-derived from the earlier write-up above) for the parts

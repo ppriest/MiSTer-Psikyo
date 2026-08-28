@@ -46,10 +46,17 @@ module compositor (
     input logic [4:0]  sp_color,
     input logic [1:0]  sp_priority,
 
-    output logic [11:0] pal_addr,
-    input  logic [15:0] pal_data,   // xRGB_555
-
-    output logic [14:0] rgb
+    // Two palette lookups run in PARALLEL: tilemap/backdrop entries go to
+    // the live palette RAM (pal_addr), sprite entries to the vblank
+    // snapshot of the sprite half (pal_s_addr, entries 0x000-0x1FF) --
+    // sprites display pixels rendered a frame earlier, so they must use a
+    // palette from the same frame boundary or a scene change recolors the
+    // previous scene's still-displayed sprites. sprite_sel says which
+    // lookup wins THIS pixel; the caller applies it to the RAM outputs one
+    // cycle later (BRAM read latency) and owns the final RGB mux.
+    output logic [11:0] pal_addr,     // live palette: tilemap/backdrop entry
+    output logic [8:0]  pal_s_addr,   // snapshot palette: sprite entry
+    output logic         sprite_sel    // 1 = sprite lookup wins this pixel
 );
 
     // ---- per-layer opacity ----
@@ -66,18 +73,35 @@ module compositor (
     logic [1:0] priority_val;
     assign priority_val = l1_draws ? 2'd2 : (l0_draws ? 2'd1 : 2'd0);
 
+    // {0x00, 0xFC, 0xFE, 0xFF} -- table corrected 2026-08-29 by the author
+    // of MAME's Psikyo renderer (published psikyo_v.cpp reads {0,fc,ff,ff};
+    // fe for field 2 makes it visible over backdrop where ff never draws).
+    //
+    // The mask is BIT-INDEXED by the destination priority value, exactly
+    // MAME's pdrawgfx convention: the sprite pixel is BLOCKED when
+    // primask[priority_val] is set. With this compositor's encoding
+    // (0 = backdrop, 1 = layer 0 on top, 2 = layer 1 on top):
+    //   pri 0 (0x00): above everything
+    //   pri 1 (0xFC): bit1 clear, bit2 set -> above layer 0, below layer 1
+    //   pri 2 (0xFE): bits 1-2 set        -> below both, visible on backdrop
+    //   pri 3 (0xFF): bit0 also set       -> never visible
+    //
+    // BIT-INDEXED, never value-ANDed: (priority_val & primask) looks
+    // plausible but is wrong for every entry except 0 -- layer 1's value 2
+    // ANDs to zero against 0xFC, letting priority-1 sprites beat layer 1
+    // unconditionally. tb_compositor's cases 6-9 fail against value-AND.
     logic [7:0] primask;
     always_comb begin
         unique case (sp_priority)
             2'd0: primask = 8'h00;
             2'd1: primask = 8'hFC;
-            2'd2: primask = 8'hFF;
+            2'd2: primask = 8'hFE;
             2'd3: primask = 8'hFF;
         endcase
     end
 
     logic sprite_wins;
-    assign sprite_wins = sp_present && ((({6'd0, priority_val}) & primask) == 8'h00);
+    assign sprite_wins = sp_present && !primask[{1'b0, priority_val}];
 
     // ---- palette address mux ----
     // tilemap: 0x800 + color*16 + pixel (color already includes layer 1's +64);
@@ -92,17 +116,21 @@ module compositor (
     assign l0_pal_offset = {l0_color, l0_pixel};
     assign sp_pal_offset  = {sp_color, sp_pixel};
 
+    assign pal_s_addr = sp_pal_offset;
+    assign sprite_sel  = sprite_wins;
+
     always_comb begin
-        if (sprite_wins)
-            pal_addr = {3'd0, sp_pal_offset};
-        else if (l1_draws)
+        if (l1_draws)
             pal_addr = 12'h800 + {1'b0, l1_pal_offset};
         else if (l0_draws)
             pal_addr = 12'h800 + {1'b0, l0_pal_offset};
         else
-            pal_addr = l0_ctrl_transpen_sel ? 12'h800 : 12'h80f;
+            // Backdrop/screen-clear: always pen 0 (palette entry 0x800, the
+            // tilemap bank's first colour) -- NOT selected by layer 0's
+            // transparent-pen-select bit (pen 0 vs pen 15), which would put
+            // a magenta clear on screen whenever that bit chose pen 15
+            // (fixed pen 0 per the MAME renderer author's direction).
+            pal_addr = 12'h800;
     end
-
-    assign rgb = pal_data[14:0];
 
 endmodule

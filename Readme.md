@@ -27,34 +27,44 @@ Working, confirmed on hardware:
 
 Not working, or built but unconfirmed:
 
-* **The game slows down under sprite load.** Diagnosed, not yet fixed: `sdram.sv` spends
-  10 cycles per 64-bit granule and only 4 of them move data — the other 6 are ACTIVATE +
-  tRCD + CAS latency, paid on every transaction because the row is closed and reopened
-  each time. The sprite engine's worst pass is ~73,000 transactions, about 61% of total
-  bus capacity on its own; tilemaps add ~8% and the CPU ~20%, so the bus runs near 90%
-  utilisation and the CPU stalls waiting for instruction fetch. Real hardware cannot do
-  this — CPU program ROM and sprite GFX ROM are separate chips there. The fix is 4-bank
-  interleaving with open-row tracking; jotego measures 48 -> 126 MB/s from that on the
-  same chip, so one SDRAM has roughly 3x the bandwidth needed. Validate against
-  `sim/sdram_tb/` (real MT48LC16M16 model) before building.
-* **Audio has never been heard.** Z80 and jt10/YM2610 are wired and clocked, but the
-  ADPCM-A and ADPCM-B ROM interfaces are not connected — `sdram_arbiter5` has no free
-  consumer port and no `ADPCMA_BASE`/`ADPCMB_BASE` regions are defined.
+* **The game slows down under sprite load.** Still open; a first attempted fix measured
+  worse, not better, on real hardware. The memory backend is Sorgelig's `sdram.sv`
+  (vendored, extended to burst-4 reads — see `rtl/memory/sdram/PROVENANCE.md`) behind a
+  3-physical-port arbiter: dedicated ports for each tilemap layer, a 5-way arbitrated
+  port for sprite gfx/lut/CPU fetch/HPS download (`docs/phase1_sdram_map.md`). A granule
+  cache in `sdram_narrow_bridge.sv` cut narrow-consumer (CPU/Z80/spritelut) traffic on
+  the shared port. A follow-up re-partition -- a dedicated port for sprite gfx, both
+  tilemap layers sharing one port -- measured 29% *worse* worst-case sprite render time
+  on hardware, not better; not yet root-caused. See `docs/ROADMAP.md`'s "Fix the
+  slowdown" item.
+* **Audio is not yet correct.** No longer silent: a sound-latch decode bug, a Z80 running
+  21x too fast, a spurious ROM re-request, and an SDRAM arbiter deadlock are all fixed,
+  and hardware now produces nonzero audio output with commands streaming during play.
+  ADPCM-A sample playback is still garbled on every game. A required bit 6/7 swap on the
+  ADPCM-A sample ROM (a real ROM-mastering artefact, `needs_adpcma_swap` in
+  `rtl/memory/psikyo_sdram_top.sv`) is implemented for Samurai Aces/Sengoku Ace, which
+  need it -- but Gun Bird, which MAME says does *not* need the swap, is garbled too, so a
+  second, unidentified cause remains open. YM2610 clock frequency and the SDRAM
+  granule-cache handshake have both been checked and ruled out.
 * **Sprite palette lags by one frame.** `sprite_frame_buffer` renders during frame N and
-  displays during N+1, while palette RAM is read live, so a scene change flashes
-  miscoloured sprites for a frame. Real hardware buffers sprite RAM but draws in real
-  time. The principled fix is the per-scanline renderer, which is one line ahead rather
-  than one frame.
-* **Sprite-vs-tilemap priority is unresolved.** The one-hot test and `pri[] = {0, 0xfc,
-  0xfe, 0xff}` are in, but whether the rule is a one-hot mask or a magnitude compare with
-  ties going to the sprite is still open. See `compositor.sv`.
-* **Some tilemap tiles use the wrong palette.** Tracks VRAM column 0 of each row, appears
-  mid-screen with non-zero scroll, so it is not a scroll artefact. `tile_cell_decode`,
-  `tilemap_addrgen` and `tilemap_coord` all read correctly on inspection; next step is
-  dumping our VRAM at that cell and diffing against MAME rather than more code reading.
-* **The line-buffer sprite path is buggy** — renders, but degrades progressively down the
-  screen. Parked; see `docs/sprite_buffering.md`.
-* `clk_sys` misses timing by about 0.45 ns.
+  displays during N+1, while palette RAM was read live, so a scene change could flash
+  miscoloured sprites for a frame. Fixed: sprites read a 512-entry snapshot of their
+  palette half, copied at `frame_start` (`rtl/psikyo_core.sv`), so sprite pixels and
+  colors change scene together; tilemaps render live and keep the live palette.
+* **Sprite-vs-tilemap priority: fixed, verified on hardware.** The `primask` table
+  (`{0, 0xFC, 0xFE, 0xFF}`, entry 2 corrected from MAME's published `0xFF` by the
+  author of MAME's Psikyo renderer) is applied BIT-INDEXED by the destination priority
+  value -- MAME's pdrawgfx convention. An earlier value-AND implementation let
+  priority-1 sprites beat tilemap 1 unconditionally (samuraia's cloud sprites over the
+  foreground layer); root-caused by dumping the live paused scene through the JTAG
+  spriteram probe (instance `"S"`, `scripts/read_spriteram.tcl`).
+* **Timing is not closed.** Worst-case setup slack on the main PLL output (`clk_sys`) is
+  negative, with many failing paths rather than one -- see `docs/ROADMAP.md`'s "Timing
+  closure not final" item for the current worst-slack figure and offending path (it
+  moves as work lands elsewhere in the design, so it's tracked there rather than
+  duplicated here). The core runs anyway, but the margin is thin enough that unrelated
+  logic changes can tip it. It also blocks raising the SDRAM clock, which would
+  otherwise be worth ~1.12x.
 
 ## ROMs
 
@@ -94,7 +104,43 @@ Credentials come from `mister.env` (gitignored), never from committed source.
 
 ## Debugging on hardware
 
-There is no JTAG on this setup. The core carries an optional debug overlay that drives
-internal state onto the video output, decoded by the scripts above. It is enabled from the
-OSD's Debug page and can dump tilemap VRAM, the video registers, and a CPU ROM-read trace
-without rebuilding. `docs/LESSONS_LEARNED.md` explains how to use it without fooling yourself.
+The core carries an optional debug overlay that drives internal state onto the video
+output, decoded by the scripts above. It is enabled from the OSD's Debug page and can dump
+tilemap VRAM, the video registers, and a CPU ROM-read trace without rebuilding. It was
+built because there was no JTAG on this setup; `docs/LESSONS_LEARNED.md` explains how to
+use it without fooling yourself.
+
+JTAG is now available, which makes SignalTap, In-System Sources and Probes, and the
+In-System Memory Content Editor usable. Instrumented (`Psikyo_stp`) builds carry a
+handful of purpose-built ISSP probes for specific investigations: a tilemap VRAM
+write/poke probe (instance `"W"`, `scripts/write_vram1.tcl`) and a spriteram read probe
+(instance `"S"`, `scripts/read_spriteram.tcl`), currently in use for the open
+sprite-vs-tilemap priority bug above. A USB video capture device is also available; it is
+the right tool for anything temporal (game speed under load, one-frame flashes, flicker),
+where the one-shot API screenshots cannot help. Use capture for temporal questions and API
+screenshots for pixel-exact ones, since HDMI output is scaled.
+
+## Acknowledgements
+
+- **Sorgelig** and the **MiSTer-devel team** for the
+  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework this
+  project is seeded from, the SDRAM controller (`sdram.sv`, vendored via
+  [Arcade-Jackal_MiSTer](https://github.com/MiSTer-devel/Arcade-Jackal_MiSTer) and
+  extended here to burst-4 reads — see `rtl/memory/sdram/PROVENANCE.md`), and the
+  screen-rotation module (`screen_rotate_two.sv`, taken from
+  [Arcade-SKNS_MiSTer](https://github.com/MiSTer-devel/Arcade-SKNS_MiSTer)).
+- **Tobias Gubener** ([TobiFlex](https://github.com/TobiFlex)) for
+  [TG68K.C](https://github.com/TobiFlex/TG68K.C), the 68EC020 main CPU core.
+- **Daniel Wallner** for the **T80** Z80 CPU core, vendored via
+  [MiSTer-devel/T80](https://github.com/MiSTer-devel/T80) (maintained since by MikeJ and
+  the MiSTer-devel community); used as the sound CPU on the SH201B/KA302C boards.
+- **Jose Tejada** ([@jotego](https://github.com/jotego)) for
+  [jt10](https://github.com/jotego/jt12) (YM2610) and
+  [jt49](https://github.com/jotego/jt49) (its embedded AY-3-8910-compatible SSG channel),
+  from the JTFRAME family of sound cores.
+- **rmonic79** for [Arcade-Raiden_MiSTer](https://github.com/rmonic79/Arcade-Raiden_MiSTer),
+  cross-checked for arcade-specific `sys/` wiring conventions (joystick/button index
+  mapping).
+- The **MAMEdev team** for [MAME](https://github.com/mamedev/mame)'s `psikyo.cpp`/
+  `psikyo_v.cpp` driver — the reference this core's memory maps, video timing, and
+  sprite/tilemap semantics are verified against.

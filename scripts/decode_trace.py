@@ -7,10 +7,20 @@ never overwrite each other and a capture can be compared against one taken
 earlier under different settings. Comparing two captures is most of the work in
 this kind of bring-up; keeping only the last one throws that away.
 
-The core's overlay layout (rtl/psikyo_core.sv):
-    scanlines   0-127 : full 19-bit CPU ROM word address, one per read
-    scanlines 128-215 : {addr[7:0], data[15:0]} for the SAME read N
+The core's overlay layout (rtl/psikyo_core.sv's dbg_pixel mux):
+    scanlines   0-15  : layer 0 VRAM
+    scanlines  16-31  : layer 1 VRAM
+    scanlines  32-47  : video registers
+    scanlines  48-63  : palette RAM
+    scanlines  64-191 : full 19-bit CPU ROM word address, one per read (128)
+    scanlines 192-214 : {addr[7:0], data[15:0]} for the SAME read N (23)
+    scanline     215  : worst-case sprite render length, in clk cycles
     scanlines 216-223 : control echo, 0xA5 marker + the settings the core sees
+
+The palette band at 48-63 was added later and displaced the CPU bands; this
+decoder was not updated with it and reported BAND MISALIGNED for every entry,
+which made the CPU trace unreadable exactly when it was needed to debug a core
+that would not boot. If the mux above changes, change these ranges with it.
 
 Because both buffers are strobed by the same event, entry N of the address band
 and entry N of the data band describe one bus cycle, which is what lets the
@@ -93,10 +103,11 @@ def main():
 
     W, H, rows = load_png(args.png)
     # Band layout must track rtl/psikyo_core.sv's dbg_pixel mux:
-    #   0-15 layer0 VRAM | 16-31 layer1 VRAM | 32-47 vregs
-    #   48-175 CPU addr  | 176-215 CPU addr+data | 216-223 control echo
-    addr = [sample(rows, y) for y in range(48, min(176, H))]
-    data = [sample(rows, y) for y in range(176, min(216, H))]
+    #   0-15 layer0 VRAM | 16-31 layer1 VRAM | 32-47 vregs | 48-63 palette
+    #   64-191 CPU addr | 192-214 CPU addr+data | 215 sp_render_max
+    #   216-223 control echo
+    addr = [sample(rows, y) for y in range(64, min(192, H))]
+    data = [sample(rows, y) for y in range(192, min(215, H))]
     echo = sample(rows, 218) if H > 218 else 0
 
     marker = echo >> 16

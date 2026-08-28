@@ -101,6 +101,23 @@ assign VIDEO_ARX = (!ar) ? (rotate_en ? 13'd3 : 13'd4) : 13'({ar} - 2'd1);
 assign VIDEO_ARY = (!ar) ? (rotate_en ? 13'd4 : 13'd3) : 13'd0;
 
 `include "build_id.v"
+// Debug OSD page visibility: every P1 line carries an H1 prefix, so the
+// whole page is hidden when status_menumask bit 1 is set. The bit tracks
+// the DEBUG_ISSP macro (defined only by the Psikyo_stp revision), so the
+// instrumented build shows the Debug page and the release build hides it --
+// same source, no code removed, the status bits still function if set by
+// a .CFG (only the MENU is hidden).
+`ifdef DEBUG_ISSP
+localparam DEBUG_MENU_HIDE = 1'b0;
+localparam DEBUG_TRACER_EN = 1'b1;
+`else
+localparam DEBUG_MENU_HIDE = 1'b1;
+// Release: the debug tracer (trace buffers, overlay dump bands) compiles
+// out entirely alongside the hidden menu -- BRAM back, no debug logic.
+localparam DEBUG_TRACER_EN = 1'b0;
+`endif
+wire debug_menu_hide = DEBUG_MENU_HIDE;
+
 localparam CONF_STR = {
 	"Psikyo;;",
 	"-;",
@@ -111,21 +128,21 @@ localparam CONF_STR = {
 	"-;",
 	"DIP;",
 	"-;",
-	"P1,Debug;",
-	"P1-;",
-	"P1O[56],Trace overlay,Off,On;",
-	"P1O[58:57],Trace source,CPU addr+data,CPU fetch addr,SpriteRAM wr,Palette wr;",
-	"P1O[62:59],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
-	"P1O[63],Re-arm capture,A,B;",
-	"P1-;",
-	"P1O[40],Sprites,On,Off;",
-	"P1O[41],Tilemap 0,On,Off;",
-	"P1O[42],Tilemap 1,On,Off;",
-	"P1O[43],Sprite swap,EndOfRender,FrameStart;",
-	"P1O[50],Pause CPU,Off,On;",
-	"P1O[51],Sound IRQ,Off,On;",
-	"P1O[52],Sprite buffer,Frame,Line;",
-	"P1O[53],C00008 bit0,Zero,VBlank;",
+	"H1P1,Debug;",
+	"H1P1-;",
+	"H1P1O[56],Trace overlay,Off,On;",
+	"H1P1O[58:57],Trace source,CPU addr+data,CPU fetch addr,SpriteRAM wr,Palette wr;",
+	"H1P1O[62:59],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
+	"H1P1O[63],Re-arm capture,A,B;",
+	"H1P1-;",
+	"H1P1O[40],Sprites,On,Off;",
+	"H1P1O[41],Tilemap 0,On,Off;",
+	"H1P1O[42],Tilemap 1,On,Off;",
+	"H1P1O[43],Sprite swap,EndOfRender,FrameStart;",
+	"H1P1O[51],Sound IRQ,On,Off;",
+	"H1P1O[53],C00008 bit0,Zero,VBlank;",
+	"H1P1O[50],VRAM write auto-pause,Off,On;",
+	"H1P1O[54],Frame-count auto-pause,Off,On;",
 	"-;",
 	"R[0],Reset;",
 	"J1,Button 1,Button 2,Button 3,Start,Coin;",
@@ -147,6 +164,34 @@ wire [26:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire         ioctl_wait;
 
+`ifdef DEBUG_ISSP
+// Which joystick bit is the Pause button? joystick_0[14] (following s32) had
+// no effect, and our sys/ is a different revision, so rather than guess again:
+// latch a sticky OR of every joystick bit, clear it over JTAG, press only
+// Pause, and read back which bit set.
+reg [31:0] joy_sticky;
+wire [0:0] joy_clear;
+always @(posedge clk_sys) begin
+	if (joy_clear) joy_sticky <= 32'd0;
+	else            joy_sticky <= joy_sticky | joystick_0 | joystick_1;
+end
+
+altsource_probe #(
+	.sld_auto_instance_index("YES"),
+	.instance_id("J"),
+	.probe_width(32),
+	.source_width(1),
+	.source_initial_value("0"),
+	.enable_metastability("NO"),
+	.lpm_type("altsource_probe")
+) u_joy_probe (
+	.probe(joy_sticky),
+	.source(joy_clear),
+	.source_clk(clk_sys),
+	.source_ena(1'b1)
+);
+`endif
+
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
 	.clk_sys(clk_sys),
@@ -158,7 +203,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({status[5]}),
+	.status_menumask({debug_menu_hide, status[5]}),
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -177,8 +222,17 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 // 85.909091 MHz = 14.31818 MHz (this hardware's real pixel/screen XTAL)
 // x 6 -- see rtl/pll/pll_0002.v's own header for the full division-ratio
-// and SDRAM-timing-margin reasoning. outclk_1 is the same frequency,
-// phase-shifted, driving the real SDRAM_CLK pin directly (NOT through
+// and SDRAM-timing-margin reasoning.
+//
+// outclk_1 is SDRAM_CLK, phase-shifted 180 degrees (5820 ps of the 11641 ps
+// period). It was 8598 ps = 266 degrees, tuned for the previous controller;
+// sdram_s32 captures DQ on a different pipeline and expects the centred
+// 180-degree clock its own PLL provides (outclk2_clk = ~c0). With 266
+// degrees the core came up as a frozen blue/black pattern -- the CPU never
+// booted, because commands and read data were latched on the wrong edge.
+// Simulation cannot catch this: the chip model has no notion of clock phase.
+//
+// It drives the real SDRAM_CLK pin directly (NOT through
 // rtl/psikyo_top.sv's own SDRAM_CLK output, which is left unconnected --
 // that output is simulation-only, tracking rtl/memory/sdram/sdram.sv's
 // own `assign SDRAM_CLK = clk;` placeholder, which that file's own header
@@ -227,6 +281,13 @@ always @(posedge clk_sys) begin
 	if (ioctl_wr && ioctl_index == 16'd1) mod_board <= ioctl_dout;
 end
 wire board_gunbird = mod_board[0];
+// bit 1: samuraia/samuraiak/sngkace/sngkacea's ADPCM-A ROM needs MAME's
+// init_sngkace() bit 6/7 swap applied at download time -- gunbird/btlkroad
+// do not, despite sharing the same sound hardware (mod_board bit 0 alone
+// can't distinguish them: btlkroad is board_gunbird=1 like gunbird, not
+// grouped with samuraia/sngkace despite being neither literally). See
+// rtl/memory/psikyo_sdram_top.sv's needs_adpcma_swap port comment.
+wire needs_adpcma_swap = mod_board[1];
 
 wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 
@@ -281,13 +342,6 @@ wire [31:0] p1p2_in = {
 //     0x01000000 Coin Slot        0x0e000000 Coin A
 //     0x70000000 Coin B           0x80000000 2C Start, 1C Continue
 //
-// This used to be `status[47:16]`, which mapped .mra bit 16 onto dsw_in[0] --
-// EVERY DIP LANDED 16 BITS LOW, in the half MAME defines as unused. The OSD
-// menu items therefore did nothing, and the bit the game actually reads as
-// Service Mode (dsw_in[23]) was driven by status[39], a bit no menu entry
-// touched: with a default-ish .CFG that bit is 0 and PORT_SERVICE is
-// ACTIVE_LOW, so the board came up stuck in Service Mode.
-//
 // DIP switches arrive as an ioctl download with index 254 (8 bytes, LE
 // uint64), NOT through the status word -- see mra_loader.cpp's
 // arcade_sw_send(). Saved state lives in config/dips/<mra name>, not the .CFG.
@@ -334,16 +388,42 @@ wire        dbg_overlay = status[56];
 wire [2:0] dbg_render_dis = status[42:40];
 // Freeze the 68020 so a frame can be captured and compared against a MAME dump
 // of the same moment. Video and the debug overlay keep running.
-wire        pause = status[50];
-// YM2610 IRQ -> Z80 INT. MAME wires ymsnd.irq_handler() to the audiocpu, but
-// enabling it hung the main CPU at 0x758 with the video registers never
-// programmed -- the 68020 polls the sound-latch-acked bit, so a Z80 stuck in
-// an interrupt it cannot clear stalls the whole game. Default off until that
-// is understood; FM timers need it, so music tempo may depend on it.
-wire        snd_irq_en = status[51];
-// Frame buffer (original) vs per-scanline line buffer for sprites.
-// See docs/sprite_buffering.md.
-wire        sprite_line_mode = status[52];
+// Pause is toggled by the Pause button rather than an OSD entry.
+//
+// The bit comes from the .mra's <buttons> element, NOT from CONF_STR's J1 list
+// -- when an .mra declares buttons, that mapping governs:
+//
+//   names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause"
+//
+// Names map to joystick bits from bit 4, so the three "-" placeholders pad
+// positions 3-5 and put Start at 10, Coin at 11 (which is exactly what the
+// input wiring below already uses) and Pause at 12 -- the bit is a function
+// of THIS .mra's button list, never a constant copied from another core's.
+//
+// Edge-triggered toggle, not a level: the button is momentary, so holding it
+// would only pause while held.
+wire        pause_btn = joystick_0[12] | joystick_1[12];
+`ifdef DEBUG_ISSP
+// Master enables for the two auto-pause triggers added for the tilemap
+// investigation (rtl/psikyo_core.sv). Off by default (status bit 0), so
+// neither fires unless deliberately turned on from the OSD -- otherwise
+// every boot would auto-pause, in the way of any other use of this build.
+wire        dbg_autopause_wr_en    = status[50];
+wire        dbg_autopause_frame_en = status[54];
+`endif
+reg         pause_btn_d, pause;
+always @(posedge clk_sys) begin
+	pause_btn_d <= pause_btn;
+	if (reset)                        pause <= 1'b0;
+	else if (pause_btn & ~pause_btn_d) pause <= ~pause;
+end
+// YM2610 IRQ -> Z80 INT. MAME wires ymsnd.irq_handler() to the audiocpu.
+// FM timers drive music tempo -- with the IRQ disabled samuraia plays no
+// music at all (verified by ear on hardware). Default ON: status[51] is
+// INVERTED so an all-zero/fresh CFG gets music, and the OSD option order
+// matches ("On" first = value 0 = default).
+wire        snd_irq_en = ~status[51];
+// status[52] is free.
 // See the coin_in comment: 0 = constant 0 (matches MAME), 1 = ~vblank.
 wire        vblank_wait_en   = status[53];
 // Experimental: swap the sprite output buffer at the frame boundary rather
@@ -409,7 +489,7 @@ wire [31:0] coin_in = {
 wire [14:0] rgb;
 
 
-psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
+psikyo_top #(.BOARD_GUNBIRD(1'b0), .DEBUG_TRACER(DEBUG_TRACER_EN)) psikyo_top
 (
 	.clk(clk_sys),
 	.ce_pix(ce_pix),
@@ -433,6 +513,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.dsw_in(dsw_in),
 	.coin_in(coin_in),
 	.board_gunbird(board_gunbird),
+	.needs_adpcma_swap(needs_adpcma_swap),
 	.snd_left(snd_left), .snd_right(snd_right),
 
 	.nmi_pending(nmi_pending),
@@ -440,7 +521,11 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause), .snd_irq_en(snd_irq_en), .sprite_line_mode(sprite_line_mode), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause),
+`ifdef DEBUG_ISSP
+	.dbg_autopause_wr_en(dbg_autopause_wr_en), .dbg_autopause_frame_en(dbg_autopause_frame_en),
+`endif
+	.snd_irq_en(snd_irq_en), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 
@@ -490,10 +575,8 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 );
 
 // ---- HDMI rotation / flip via the HPS framebuffer (sys DDRAM) ----
-// Psikyo boards are vertical (TATE); this core previously output the raw
-// landscape raster and did nothing about orientation, so the picture was
-// sideways on any normal monitor and there was no flip at all -- flip_screen
-// is not implemented in the video pipeline either.
+// Psikyo boards are vertical (TATE), and flip_screen is not implemented in
+// the video pipeline itself -- both orientation and flip are handled here.
 //
 // screen_rotate_two is Sorgelig's standard MiSTer rotator (GPL v2, same as
 // this project), taken from Arcade-SKNS_MiSTer. It is a TAP, not a filter:
@@ -503,8 +586,8 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 // raster and HDMI gets rotation and flip, which is why this also gives us
 // flip "for free" without touching the tilemap or sprite paths.
 //
-// DDRAM was previously tied off wholesale by this core; the rotator owns it
-// now. two_screen is 0 -- that is an SKNS-specific dual-screen mode.
+// The rotator owns DDRAM. two_screen is 0 -- an SKNS-specific dual-screen
+// mode.
 
 screen_rotate_two screen_rotate_two
 (

@@ -1,27 +1,18 @@
-// STATUS (2026-08-22): the ModelSim crash that used to block this module
-// entirely is FIXED -- root cause was uninitialized signals in the
-// vendored TG68K core (rtl/cpu/tg68k/TG68K_ALU.vhd +
-// TG68KdotC_Kernel.vhd), a publicly known upstream issue
-// (github.com/TobiFlex/TG68K.C/issues/21); full writeup in
-// rtl/cpu/tg68k/PROVENANCE.md's "Phase 1 integration" section. Four real,
-// necessary fixes went into getting here, all documented inline below
-// where each applies: HALT must track RESET, RESET/HALT need `tri1`
-// open-collector modeling not a plain driven wire, VPA must be gated to
+// Wraps the vendored TG68K core (rtl/cpu/tg68k/, see its PROVENANCE.md
+// for the full integration writeup, including the upstream
+// uninitialized-signal issue github.com/TobiFlex/TG68K.C/issues/21).
+// Four integration requirements, each documented inline below where it
+// applies: HALT must track RESET, RESET/HALT need `tri1` open-collector
+// modeling not a plain driven wire, VPA must be gated to
 // interrupt-acknowledge cycles only, and (in the vendored core itself,
-// not this module) every previously-uninitialized ALU/kernel signal needed
-// an explicit zero initializer.
+// not this module) every ALU/kernel signal needs an explicit zero
+// initializer.
 //
-// This module's own address-decode/DTACK logic is now verified correct:
-// sim/maincpu_tb/tb_maincpu.sv's Case 1 (real ROM req/valid fetch, all 6
-// BRAM regions, the 32-bit input-port read, the sound-latch write) passes
-// cleanly. Case 2 (the held-autovectored level-4 vblank IRQ) does not yet
-// pass -- root-caused further than "crashes" (the IACK cycle and the
-// vector-offset computation pushed into the exception frame are both
-// correct; the actual vector-table fetch address comes out wrong, 0x0
-// instead of 0x70) but not resolved -- see PROVENANCE.md for exactly
-// where to look next. This is a narrower, separate issue from the crash
-// and does not block using this module for non-interrupt-driven
-// top-level integration work in the meantime.
+// Verified by sim/maincpu_tb/tb_maincpu.sv: real ROM req/valid fetch, all
+// 6 BRAM regions, the 32-bit input-port read, the sound-latch write, and
+// the held-autovectored level-4 vblank IRQ (PROVENANCE.md records the
+// IRQ case once looking like a CPU fault -- the testbench had zeroed the
+// vector table itself; keep vectors real when extending that TB).
 //
 // Main CPU subsystem for the SH201B/KA302C boards (68EC020 @16MHz,
 // psikyo.cpp:254-266 base map + per-board overlay, re-verified against
@@ -316,7 +307,18 @@ module maincpu (
     // hung in the poll loop at 0x4CA..0x4D8, the exact analogue of samuraia's
     // loop at 0x436.
     assign is_coin       = (addr24 >= 24'hC00008) && (addr24 <= 24'hC0000B);
-    assign is_soundlatch = (addr24 == 24'hC00013);
+    // Sound latch: byte 0xC00013. Match the WORD (0xC00012-13) and let the
+    // lane strobe pick the byte (latch_write below requires !nLDS), the
+    // same pattern every BRAM region above uses -- NOT an exact byte-
+    // address compare. The exact compare only fired for a move.b addressed
+    // at 0xC00013 itself; a move.w to 0xC00012 or move.l to 0xC00010
+    // (whose second word beat is 0xC00012 with the command byte on the low
+    // lane -- byte-lane dispatch MAME's address map performs transparently)
+    // never matched, so the 68020's sound commands never reached the Z80:
+    // measured on hardware 2026-08-29 as "sound latch writes: 0" across
+    // boot, attract, AND real gameplay, while the Z80 dutifully serviced
+    // timer IRQs -- total silence beyond the Z80's own boot jingle.
+    assign is_soundlatch = (addr24[23:1] == 23'h600009);   // word 0xC00012
 
     // word-address translation (drop bit 0 -- every region is word-granular)
     assign rom_addr       = a32[19:1];
@@ -363,11 +365,10 @@ module maincpu (
     // keeps doing so until req drops -- burning SDRAM bandwidth and making
     // cpu_rom_valid pulse repeatedly for a single CPU access.
     //
-    // An earlier version of this rewrite held req, on the strength of a
-    // hold-until-acknowledged comment in sdram_arbiter5.sv, and "fixed" the
-    // testbench to accept that. The bridge's own state machine is the
-    // authority and it wants a pulse; the old pre-rewrite maincpu pulsed it
-    // too. Restored.
+    // The bridge's own state machine is the authority on the req shape,
+    // and it wants a PULSE -- not held-until-acknowledged (sdram_arbiter5.sv
+    // documents a different contract for its own port; it does not apply
+    // here).
     logic rom_req_sent;
     assign rom_req = mem_needed && !is_write && is_rom && !acc_ready && !rom_req_sent;
 
@@ -450,7 +451,11 @@ module maincpu (
     assign workram_weh   = wr_now && is_workram && !nUDS;
     assign workram_wdata = cpu_dout;
 
-    assign latch_write = wr_now && is_soundlatch;
+    // !nLDS: byte 0xC00013 is the word's LOW byte lane -- true for a
+    // move.b to 0xC00013, a move.w to 0xC00012, and a move.l to 0xC00010's
+    // second beat alike; cpu_dout[7:0] carries that lane's data in all
+    // three cases.
+    assign latch_write = wr_now && is_soundlatch && !nLDS;
     assign latch_data  = cpu_dout[7:0];
 
     // ---- vblank IRQ: level 4, held until the CPU acknowledges ----

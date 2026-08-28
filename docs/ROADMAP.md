@@ -20,18 +20,23 @@ gotchas, testbench pitfalls, real-hardware bring-up technique) see
 next. Per-component vendoring/provenance detail lives in each module's own `PROVENANCE.md`
 (`rtl/cpu/tg68k/`, `rtl/memory/sdram/`, `rtl/sound/jt10/`, `rtl/sound/jt49/`).
 
-## Progress (kept current — last updated 2026-08-24)
+## Progress (kept current — last updated 2026-08-29)
 
 **Phase 0 — CPU spike: complete.** TG68K.C vendored, boots and executes 68020-mode code correctly
 in ModelSim, synthesizes/fits cleanly on real Cyclone V (2,788/41,910 ALMs).
 
 **Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road):
-all three games boot and run on real hardware, without sound.** The board variant is selected at
+all three games boot and run on real hardware.** The board variant is selected at
 runtime from the `.mra` mod byte, so one `.rbf` serves all three.
 
-Remaining Phase 1 work: audio (jt10/YM2610 is not wired in at all), the sprite flicker/retention
-defects in `docs/sprite_buffering.md`, tinted colours on Gun Bird and Battle K-Road, and about
-0.5 ns of residual setup slack on `clk_sys`.
+Remaining Phase 1 work (see "Next steps" below for detail on each): occasional audio
+glitches remain (samuraia/sngkace's ADPCM-A bit-swap and the samuraia no-music defect are
+fixed and verified; T80 timing is the live suspect for the rest), the sprite render slowdown
+under load is unresolved (a first fix attempt measured worse, not better), and timing is
+not closed on `clk_sys` (multicycle constraints for the T80 and the pixel→palette paths
+landed 2026-08-29; first constrained build pending — see "Timing closure not final"). Sound is otherwise wired and
+producing output (was previously not wired in at all), and the earlier tinted-colours defect on
+Gun Bird/Battle K-Road is gone.
 
 Built and verified (ModelSim + real Quartus synthesis, each with its own testbench — see git
 history for individual commits):
@@ -43,15 +48,16 @@ history for individual commits):
   pipeline, double-buffered.
 - Compositor (`compositor.sv`) — resolves both tilemap layers + sprite frame buffer into palette
   index and xRGB_555, matching MAME's priority/transparent-pen/backdrop rules.
-- Sound subsystem: T80 (Z80) + jt10 (YM2610) vendored; `sound_cpu_sngkace.sv`/
+- Sound subsystem: T80 (Z80) + jt10 (YM2610) vendored and wired into the sound CPU's YM I/O bus
+  (`rtl/psikyo_top.sv`'s `ym_din`/`ym_dout`, `u_ym2610`); `sound_cpu_sngkace.sv`/
   `sound_cpu_gunbird.sv` wrap T80 against each board's real memory/IO map with verified req/valid
   ROM timing (see LESSONS_LEARNED.md's T80 section). jt10's SSG (jt49) channel verified as a real
-  audio-domain functional test. **Not yet done**: FM channel + ADPCM-A/B verification, and jt10
-  itself is not wired into the sound CPU's YM I/O bus yet (`ym_din` tied to 0).
+  audio-domain functional test, and hardware now produces nonzero audio output — see "Next
+  steps" item 4 for what's still open (ADPCM-A playback specifically).
 - `.mra` files done for all 4 Phase 1 parent games + every MAME clone set (`releases/`,
   `releases/_alternatives/`), built directly from each game's `ROM_START`/`INPUT_PORTS_START`
-  blocks, using the finalized SDRAM address map and generic DIP status-bit convention
-  (`dsw_in = status[47:16]`).
+  blocks, using the finalized SDRAM address map. DIPs arrive as a separate ioctl download
+  (index 254, 8 bytes), not through the status word — see `docs/mister_framework_notes.md`.
 - SDRAM backend (`rtl/memory/psikyo_sdram_top.sv`): burst-4 `sdram.sv` (Sorgelig reference,
   extended — see `rtl/memory/sdram/PROVENANCE.md`), 3 dedicated ports (tilemap layer 0/1) +
   5-way arbitrated port (sprite gfxrom/spritelut/maincpu/audiocpu/HPS download). Verified via a
@@ -138,10 +144,10 @@ above and is entirely custom — this is the real engineering content of the pro
 **Phase 0 — CPU spike: complete** (see Progress above).
 
 **Phase 1 — SH201B/KA302C hardware (Samurai Aces/Sengoku Ace, Gun Bird, Battle K-Road): all
-three games boot and run; audio and the sprite buffering defects remain.** Exit criteria: all
-three games booting, correct sprite
-zoom/priority, correct tilemap size-switching and row-scroll, working `.mra` files for each region
-variant.
+three games boot and run; ADPCM-A audio, sprite-vs-tilemap priority, and the render-time
+slowdown remain open (see "Next steps").** Exit criteria: all three games booting, correct
+sprite zoom/priority, correct tilemap size-switching and row-scroll, working `.mra` files for
+each region variant.
 
 **Phase 2 — SH403/SH404 hardware (Strikers 1945, Tengai): not started.** Adds the simulated-PIC
 protection FSM and the from-scratch YMF278B core (its own de-risking spike, gated separately from
@@ -171,53 +177,164 @@ Convention: `develop` is the working branch, `master` only gets merges when expl
 
 ## Open items / assumptions to revisit
 
-- **Pause function, mapped to a controller button** — suspend the core (freeze `clk_sys`/`ce_pix`
-  gating or hold everything in a frozen state without losing it) so a single frame can be held
-  still on screen. Standard practice for bring-up — makes it far easier to capture a transient
-  visual glitch that would otherwise flash past in one frame. Not yet designed — needs a real
-  mechanism (likely gating `ce_pix`/frame-buffer swap rather than the CPU clock itself, so audio
-  doesn't also need to freeze/resume cleanly) and a status-bit/OSD or joystick-button mapping.
+- ~~**Pause function, mapped to a controller button**~~ **DONE.** Implemented (commit `66d5115`)
+  and moved onto the dedicated Pause button, joystick bit 12 (commit `b9d3d80`) — see `Psikyo.sv`.
+  Listed in README's "Working, confirmed on hardware".
 - **No original Psikyo PCB** (confirmed) — MAME's own emulated output is the accuracy target,
   including its acknowledged uncertainties (layer-enable bits, sprite zoom curve, tilemap
   size-switch behavior all flagged "not quite right" in the driver itself).
-  DE10-nano hardware bring-up IS available and now underway (see Progress above) — a MiSTer is
-  set up with SSH access and (as of 2026-08-21) a USB Blaster II-style JTAG cable, though JTAG
-  itself isn't yet reachable from this dev environment (`jtagconfig` reports no hardware detected
-  here — recheck before assuming JTAG programming/probing is usable from this machine). See
-  LESSONS_LEARNED.md's "Real hardware bring-up" section for the working SSH/SCP/Remote-API deploy
-  flow already in use, and danifunker/lbmactwo_MiSTer's
-  `docs/MISTER_HARDWARE_DEBUGGING.md` for JTAG-specific technique (ISSP probing, JTAG chain
-  addressing) once that path opens up.
+  DE10-nano hardware bring-up IS available and underway (see Progress above) — a MiSTer is set
+  up with SSH access and a USB Blaster II-style JTAG cable. JTAG/ISSP is now fully reachable and
+  in active use (commit `078738a` onward): a tilemap VRAM write probe, a spriteram read probe,
+  and SDRAM/sound debug counters are all live over JTAG today (see README's "Debugging on
+  hardware" and `docs/TILEMAP_BUG.md`'s "Live-hardware evidence" section for real captures taken
+  this way). See LESSONS_LEARNED.md's "Real hardware bring-up" section for the working
+  SSH/SCP/Remote-API deploy flow, and danifunker/lbmactwo_MiSTer's
+  `docs/MISTER_HARDWARE_DEBUGGING.md` for further JTAG-specific technique (ISSP probing, JTAG
+  chain addressing) if a deeper dive is needed.
 - **YMF278B de-risking spike** should probably happen early (maybe alongside/soon after Phase 1
   wraps) rather than right before Phase 2 — worth deciding scheduling once Phase 1 hardware
   bring-up is further along.
+- **CRT offset** — standard MiSTer per-core screen positioning (H/V offset status bits, matches
+  the framework's usual `CRT_OFFSET` convention) not yet wired up. Added to the list 2026-08-29,
+  not yet scoped.
+- **hiscore.v** — MiSTer's standard high-score-save framework (EEPROM/RAM-backed, save/restore
+  via the OSD) not yet integrated. Needs the per-game hiscore.dat memory maps (same shape as any
+  other MiSTer-devel arcade core's hiscore support) — not yet scoped. Added 2026-08-29.
+- **Fast ROM loading via DDR3** — the HPS `ioctl_download` path currently streams straight into
+  the onboard SDR SDRAM chip a byte at a time (`sdram_download.sv`); loading through the HPS-side
+  DDR3 instead (much higher bandwidth) would speed up the download phase. Related to, but
+  distinct from, the dormant `ddram_arbiter`/`ddram_phy` DDR3 path being stood up for sprite gfxrom
+  (see "Fix the slowdown" above) — worth doing together if that work goes ahead, since both need
+  the same DDR3 plumbing live. Added 2026-08-29, not yet scoped.
 - **Sprite frame-renderer throughput is unbudgeted at the whole-frame/whole-game level.** One real
   single-sprite data point exists (`sim/port2_sdram_tb/`: 514 cycles alone, 736 under sustained
   contention) but extrapolating across a worst-case display list (1023 entries × up to 64
   sub-tiles/entry) hasn't been checked against real per-game sprite/sub-tile counts. Revisit once
   real per-game numbers are known.
-- **samuraia/sngkace ADPCM-A sample ROM needs a bit 6/7 swap not yet implemented anywhere.**
-  MAME's `init_sngkace()` applies `out[7]=in[6], out[6]=in[7]` to the `ymsnd:adpcma` region for
-  samuraia/samuraiak/sngkace/sngkacea ONLY (not gunbird/btlkroad despite identical sound hardware).
-  Real ROM-mastering artifact, can't be expressed in `.mra` (byte-level only), needs a per-game
-  select signal. Full writeup in `docs/phase1_memory_map.md`; belongs alongside
-  `sdram_download.sv` as a download-time fixup.
+- ~~**samuraia/sngkace ADPCM-A sample ROM needs a bit 6/7 swap.**~~ **DONE 2026-08-29**
+  (commit `9bbd8dd`): implemented as a download-time fixup in
+  `rtl/memory/psikyo_sdram_top.sv` (`needs_adpcma_swap`, gated by `mod_board[1]` from the
+  `.mra`'s mod byte). Fixes samuraia/sngkace's ADPCM-A sample decode specifically, but does
+  not explain Gun Bird's still-garbled ADPCM-A (which needs no swap per MAME) — see "Next
+  steps" item 4 for that still-open second cause. Full writeup in
+  `docs/phase1_memory_map.md`.
 - **Timing closure not final.** The dominant offender was the sprite engine path
   `sprite_record_fetch.word_y -> sprite_render_engine.fb_pixel` at -1.889 ns (TNS -156). A
   two-stage pipelining pass (stage A registers the per-sprite constants, stage B the sub-tile
   origin) took that to about -0.5 ns with TNS -1.5, and `sim/sprite_render_engine_tb` still
-  passes. The remainder has not been chased.
+  passes. The remainder has not been chased. **Update 2026-08-29** (SDRAM-repartition build,
+  `scripts/report_worst_paths.tcl` against the compiled `Psikyo_stp` database, Slow 1100mV 100C
+  corner): worst setup slack is now -2.463 ns, TNS -226.5, on a DIFFERENT path than the one
+  above — `sprite_line_engine.u_subtile_step`'s `a_nx[0]`/`ix[1]` through a DSP multiply and two
+  long carry chains into `fb_color[1/3/4]` (6 logic levels, ~13 ns of the ~21.7 ns data delay is
+  the DSP multiply + carry-chain routing alone). Different module (`sprite_line_engine`, not
+  `sprite_render_engine`) and different signal names than the already-pipelined path, so this
+  reads as the previously-unaddressed "remainder," not a regression of the fixed path — but not
+  confirmed by diffing the two paths' logic cones, so treat that as a reasonable read rather than
+  a proven one. Worth the same two-stage pipelining treatment once someone is looking at this
+  area again. Baseline for comparison: the pre-repartition build (`Psikyo.sof`, same corner) was
+  -2.848 ns / TNS -253.8 on presumably the same path, so the repartition itself didn't move this
+  number much either way — it's an independent, longer-standing issue.
 
 ## Next steps
 
-1. **Sound.** jt10/YM2610 is not wired in at all; `AUDIO_L/R` are tied low and
-   `rtl/psikyo_top.sv`'s `ym_*` bus is exposed but unconnected. Needs the Z80 side verified in the
-   audio domain (see `rtl/sound/jt10/PROVENANCE.md`, including an unresolved `jt10_acc.v`
-   port-width warning) and the samuraia/sngkace ADPCM-A bit 6/7 swap applied during ROM download.
-2. **Sprite flicker and retention** — see `docs/sprite_buffering.md`. Decide between the runtime
-   `FrameStart` swap policy and the per-scanline line-buffer rewrite.
-3. **Tinted colours on Gun Bird and Battle K-Road** — palette path not yet examined.
-4. **Finish timing closure** (about 0.5 ns of setup slack remains on `clk_sys`).
-5. **Confirm HDMI rotation and flip on a display** — screenshots capture the core's native video,
-   so the rotated framebuffer is invisible to the existing tooling.
-6. Polish: CRT_Offset, hiscore.v, Pause.
+(Resolved from the previous list: sprites are fixed; no unexpected tint remains; HDMI
+rotation confirmed good on a display. Sound is now hooked up and producing real output
+during play, not just at boot — still not fully correct, see item 4.)
+
+1. ~~**Fix the tilemap bug**~~ — **DONE 2026-08-29**: `docs/TILEMAP_BUG.md`. A gfxrom
+   req/valid handshake protocol bug (stale request re-sampled by `sdram_phy`, every
+   response consumed one request behind) — fixed in `tilemap_line_engine.sv`
+   (commit `f54e69b`), confirmed on hardware.
+2. ~~**Fix tilemap↔sprite priority**~~ — **DONE 2026-08-29, verified on hardware.**
+   Two stacked defects: the `primask` table needed entry 2 corrected from MAME's
+   published `0xFF` to `0xFE` (direct from the author of MAME's Psikyo renderer,
+   commit `0c63a5b`), and — the actual root cause — the mask was applied as a
+   value-AND instead of BIT-INDEXED by the destination priority value (MAME's
+   pdrawgfx convention), which let priority-1 sprites beat tilemap 1 unconditionally
+   (commit `284cad6`). Root-caused by dumping the live paused cloud scene through the
+   JTAG spriteram probe (instance `"S"`, `scripts/read_spriteram.tcl dump`, decoded
+   with `scripts/decode_spriteram.py`): all six cloud sprites carried priority 1,
+   which must lose to layer 1.
+3. ~~**Investigate sprites briefly showing wrong colours between scenes**~~ —
+   **DONE 2026-08-29** (commit `b7b5d8e`): sprites read a 512-entry snapshot of their
+   palette half, copied at `frame_start`, so sprite pixels and colors change scene
+   together; tilemaps render live and keep the live palette. Confirmed on hardware:
+   both transition symptoms are gone — the miscolour flash AND the briefly-visible
+   stale sprites (the latter first looked like a separate swap/clear sequencing
+   defect, but disappeared with the palette snapshot: stale pixels recolored by the
+   new scene's palette had read as wrongly-present sprites — see
+   `docs/sprite_buffering.md` defect 4).
+4. **Fix sound** — IN PROGRESS. Confirmed by ear: no longer silent, but ADPCM-A sample
+   playback is garbled on every game (see the 2026-08-29 update below) — not the "likely
+   working" status this item originally shipped with. Four root causes found and fixed —
+   the 68020's sound-latch
+   writes never decoded unless byte-addressed exactly (word/long writes missed; measured
+   as latch-writes=0 through real gameplay); the Z80 ran at 21× real speed (CLKEN=1 —
+   the garbled jingle); a spurious ROM re-request poisoned the handshake under the
+   CLKEN-stretched T-states; and sdram_arbiter6's round-robin picker had a 3-bit
+   overflow that never scanned the audiocpu client from rr_ptr==4 (solo-requester
+   deadlock). All reproduced+verified against the real transport in sim
+   (sim/sound_irq_tb/tb_sound_irq_sdram.sv, real 3.u71 ROM). On hardware
+   (Arcade-Psikyo_20260866): audio output nonzero for the first time, latch commands
+   streaming during demo play on both boards, no freezes. Open: ADPCM-A fetches only
+   ~4 bytes (drums likely silent — needs investigation), sound-quality/tempo needs a
+   human listen, and snd_irq_en (status[51]) must be ON — consider flipping the default.
+   Older root-cause notes: (superseded) — sound work so
+   far is recorded in `docs/LESSONS_LEARNED.md` (Z80 alive, latch decode correct, 46 YM
+   writes at boot then nothing; enabling the timer IRQ locks the Z80 solid — do not
+   re-enable blind).
+
+   **Update 2026-08-29 (later same session):** the samuraia/sngkace ADPCM-A bit 6/7
+   sample-ROM swap (see "Open items" below) is now implemented (`needs_adpcma_swap`,
+   `rtl/memory/psikyo_sdram_top.sv`, gated by `mod_board[1]` from the `.mra` mod byte —
+   commit `9bbd8dd`) and verified in sim. It does not explain the whole picture: ADPCM-A
+   playback is garbled on Gun Bird too, and Gun Bird needs no swap per MAME, so a second,
+   unidentified cause of ADPCM-A corruption remains open. Checked and ruled out as
+   causes: YM2610 clock frequency (verified exact 8 MHz) and the SDRAM granule-cache
+   handshake protocol (`sdram_narrow_bridge.sv`).
+5. **Fix the slowdown** — IN PROGRESS, first re-partition attempt measured WORSE, not
+   better (2026-08-29). Step 1 (granule cache in `sdram_narrow_bridge.sv`, commit
+   `153f772`) removed most CPU/lut Port 2 traffic — not independently re-measured but
+   plausible on its own. Step 2 (commit `430c1ed`): gave sprite gfxrom a dedicated
+   Port 1 (was sharing the 5-way Port 2 with the CPUs) by merging both tilemap layers
+   onto a shared Port 0 (was two dedicated ports, `sdram_arbiter2.sv`). Pre-repartition
+   hardware baseline: `sp_render_max` = 610,255 clk (7.1 ms of 16.7 ms). Post-repartition
+   hardware measurement (`Arcade-Psikyo_20260867`, Gunbird attract, dbg_overlay row 215,
+   two readings ~65 s apart both stable at the same value): `sp_render_max` = **789,066
+   clk (8.6 ms) — up 29.3%**, not down. Not yet root-caused, but `rtl/memory/sdram/
+   sdram.sv:177-216` shows the underlying single physical SDRAM chip's 3-port arbitration
+   is FIXED-PRIORITY (port0 always preempts port1, which always preempts port2) — NOT
+   round-robin/fair-share. Both before and after the repartition, tilemap traffic sits at
+   higher physical priority than sprite traffic, so priority ordering alone doesn't obviously
+   explain a regression (sprite was already lowest-priority before) — but merging both
+   tilemap layers onto ONE arbitrated, highest-priority port (via `sdram_arbiter2`, which
+   serializes what used to be two independently-scheduled streams into one) is a plausible
+   contributor worth checking with a controlled sim measurement (real combined L0+L1+sprite
+   traffic through `sim/`) rather than more noisy hardware attract-mode sampling. Also worth
+   noting: this board's SDRAM is a SINGLE physical chip (`sdram` `mem_ctrl`, one instance,
+   one set of `SDRAM_*` pins) with 3 logical/time-multiplexed ports arbitrated onto it — "port"
+   here is not a second physical chip, so the original framing of this task ("use more chips
+   in parallel") may not be achievable on this hardware; what's actually available to tune is
+   which logical port each client sits behind and in what physical-priority slot, not genuine
+   parallel bandwidth. Screenshots: `debug/sdramperf_gunbird_1.png`, `debug/sdramperf_gunbird_2.png`.
+   NOT resolved — do not treat the re-partition as a completed fix. Options for whoever
+   picks this up next: (a) swap which port tilemap vs. sprite sit behind and re-measure,
+   (b) revert to the pre-repartition port assignment now that the granule cache alone may
+   already have helped, (c) simulate the three traffic patterns together for a controlled,
+   reproducible before/after instead of relying on a monotonic peak-since-boot hardware
+   counter sampled at different, uncontrolled points in an attract loop.
+
+   **Update 2026-08-29 (later same session):** found and fixed an unrelated but
+   compounding bug surfaced by the same re-partition: Port 1's dedicated sprite-gfxrom
+   connection wired the HELD-until-valid `gfxrom_req` straight into `sdram_phy`, whose
+   `req` input is a one-shot PULSE contract every other consumer reaches only through an
+   arbiter — causing sprite reads to silently return the previous transaction's stale
+   data under contention (matches the "corrupted/wobbly sprites" symptom reported after
+   the repartition). Fixed with a single-client pulse shim (`SP_IDLE`/`SP_ISSUE`/
+   `SP_WAIT` in `rtl/memory/psikyo_sdram_top.sv`, commit `4d7e520`), covered by a new
+   regression in `tb_psikyo_sdram_top.sv`. This fixes sprite/tilemap data corruption, not
+   the render-time regression measured above, which remains open.
+6. **Only then: add the remaining games** — Strikers 1945 and Tengai (Phase 2 boards:
+   PIC protection FSM + the from-scratch YMF278B core, see the phase plan above).

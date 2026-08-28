@@ -8,6 +8,20 @@
 // then pick out the wanted slice" logic, so it's built once here rather
 // than copy-pasted per consumer.
 //
+// GRANULE CACHE (added 2026-08-29, SDRAM-concurrency work): the bridge
+// keeps the last fetched granule and serves any request that falls inside
+// it WITHOUT a new SDRAM transaction -- a 1-cycle B_HIT response instead
+// of a full arbiter+controller round trip. The narrow consumers' access
+// patterns are dominated by sequential streams (68020 opcode fetch: 4
+// words/granule; Z80 opcode fetch: 8 bytes/granule; spritelut: runs of
+// consecutive tile codes), so this removes the majority of their Port 2
+// traffic -- which otherwise contends with sprite gfx fetches and was a
+// prime suspect in the rendering slowdown (docs/ROADMAP.md, "Fix the
+// slowdown"). All cached regions are ROM (written only by the HPS
+// download), so the only invalidation needed is the `inval` input, tied
+// to ioctl_download by psikyo_sdram_top -- the cache is flushed
+// continuously for the whole download and starts cold afterwards.
+//
 // Byte/word layout within a fetched granule, derived directly from
 // sdram.sv's own read-capture logic and sdram_chip_model.sv's write-mask
 // decode (not assumed) -- word i (0-3, ascending byte address) occupies
@@ -20,11 +34,11 @@
 // `addr`, word_index = addr[2:1] and (for WORD_BYTES=1) byte_in_word =
 // addr[0] selecting low/high half of that word.
 //
-// req/valid contract matches every other consumer in this project: HOLD
-// req until the matching valid pulse (client side); this bridge itself
-// holds g_req the same way toward the arbiter, one request at a time (no
-// pipelining -- matches sdram_arbiter5's own single-outstanding-transaction
-// design).
+// req/valid contract: clients PULSE req (see maincpu.sv's rom_req comment
+// -- a held req would re-trigger this bridge) and hold `addr` stable until
+// the valid pulse. Toward the arbiter this bridge holds g_req until
+// g_valid, one request at a time (no pipelining -- matches
+// sdram_arbiter5's own single-outstanding-transaction design).
 
 module sdram_narrow_bridge #(
     parameter int WORD_BYTES = 2   // 1 = byte-wide client (e.g. Z80/audiocpu),
@@ -32,6 +46,10 @@ module sdram_narrow_bridge #(
 ) (
     input  logic clk,
     input  logic reset,
+
+    // flush the granule cache (hold high while the backing store is being
+    // written, i.e. ioctl_download)
+    input  logic inval,
 
     // narrow client side
     input  logic                     req,
@@ -46,17 +64,29 @@ module sdram_narrow_bridge #(
     input  logic [63:0] g_data
 );
 
-    typedef enum logic {B_IDLE, B_WAIT} bstate_t;
+    typedef enum logic [1:0] {B_IDLE, B_WAIT, B_HIT, B_DRAIN} bstate_t;
     bstate_t bstate;
 
     logic [1:0] word_sel;
     logic         byte_sel;
 
+    // ---- granule cache ----
+    logic [63:0] cache_data;
+    logic [21:0] cache_tag;      // granule address, addr[24:3]
+    logic         cache_valid;
+    logic [21:0] tag_inflight;   // granule being fetched (latched at accept --
+                                  // addr is only guaranteed stable until valid)
+
+    wire hit = cache_valid && (addr[24:3] == cache_tag);
+
     assign g_addr = {addr[24:3], 3'b000};   // 8-byte-align down to the granule base
     assign g_req  = (bstate == B_WAIT);
 
+    // B_HIT serves from the cache; B_WAIT serves from the live granule the
+    // cycle it arrives (and fills the cache the same cycle).
     logic [15:0] sel_word;
-    assign sel_word = g_data[16*word_sel +: 16];
+    assign sel_word = (bstate == B_HIT) ? cache_data[16*word_sel +: 16]
+                                          : g_data[16*word_sel +: 16];
 
     generate
         if (WORD_BYTES == 1) begin : g_byte
@@ -66,23 +96,54 @@ module sdram_narrow_bridge #(
         end
     endgenerate
 
-    assign valid = (bstate == B_WAIT) && g_valid;
+    assign valid = ((bstate == B_WAIT) && g_valid) || (bstate == B_HIT);
 
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
-            bstate <= B_IDLE;
+            bstate       <= B_IDLE;
+            cache_valid <= 1'b0;
         end else begin
+            if (inval) cache_valid <= 1'b0;
+
             case (bstate)
                 B_IDLE: begin
                     if (req) begin
                         word_sel <= addr[2:1];
                         byte_sel <= addr[0];
-                        bstate   <= B_WAIT;
+                        if (hit && !inval) begin
+                            bstate <= B_HIT;
+                        end else begin
+                            tag_inflight <= addr[24:3];
+                            bstate        <= B_WAIT;
+                        end
                     end
                 end
                 B_WAIT: begin
-                    if (g_valid) bstate <= B_IDLE;
+                    if (g_valid) begin
+                        if (!inval) begin
+                            cache_data  <= g_data;
+                            cache_tag   <= tag_inflight;
+                            cache_valid <= 1'b1;
+                        end
+                        bstate <= B_IDLE;
+                    end
                 end
+                B_HIT: begin
+                    // valid pulses this cycle (see assign above). Go through
+                    // B_DRAIN rather than straight to B_IDLE: a HELD-req
+                    // client (the ADPCM-A path holds req until valid, unlike
+                    // the pulse-req CPUs) clears its req only on the cycle
+                    // AFTER seeing valid -- returning to B_IDLE immediately
+                    // would re-latch the still-high req and serve a spurious
+                    // second hit. The old all-miss bridge had the same
+                    // re-latch exposure but its ~20-cycle round trip made the
+                    // extra serve harmless; a 1-cycle hit would loop.
+                    bstate <= B_DRAIN;
+                end
+                B_DRAIN: begin
+                    if (!req) bstate <= B_IDLE;
+                end
+                default: bstate <= B_IDLE;
             endcase
         end
     end

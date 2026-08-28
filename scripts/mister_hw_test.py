@@ -37,6 +37,20 @@ Usage:
         --rbf-remote-name Arcade-Psikyo_20260822.rbf
     python scripts/mister_hw_test.py launch --mra "/media/fat/_Arcade/_Psikyo/Samurai Aces (World).mra"
     python scripts/mister_hw_test.py screenshot --core samuraia --out shot.png
+
+`launch` and `cycle` both bounce through menu.rbf before the real launch by
+default (see MisterHost.launch_mra's docstring) -- deploying a newer .rbf
+under a new filename does NOT by itself make MiSTer reprogram the FPGA if a
+core is already running; without the bounce you can deploy+launch+screenshot
+a "successful" cycle that is silently still exercising whatever was loaded
+BEFORE this run. Pass --no-force-reload only if you deliberately want to
+re-poke an already-loaded game (e.g. after only a CFG/status-bit change).
+
+Run from Git-Bash on Windows, prefix with MSYS_NO_PATHCONV=1 -- otherwise
+Git-Bash rewrites an absolute-POSIX-looking argument like
+"/media/fat/menu.rbf" into a garbage Windows path (e.g.
+"C:/Program Files/Git/media/fat/menu.rbf") before python ever sees it, and
+the launch fails with no obvious error pointing at the real cause.
 """
 
 import argparse
@@ -165,7 +179,32 @@ class MisterHost:
         out = self.ssh(f"ls -la '{remote_path}'")
         print(out.strip())
 
-    def launch_mra(self, mra_path):
+    def launch_mra(self, mra_path, force_reload=True):
+        """Launch a .mra (or an .rbf, e.g. menu.rbf) via the Remote API.
+
+        force_reload bounces through menu.rbf first. Without this, launching
+        an .mra while ANY core is already running -- including a stale one
+        left over from hours earlier, or the very core this .mra targets --
+        does NOT reprogram the FPGA or reload the ROM; it silently reuses
+        whatever is already loaded (docs/LESSONS_LEARNED.md, "MiSTer caches
+        the loaded ROM -- an .mra edit alone does nothing"). That produced a
+        real false-positive during the 2026-08-29 SDRAM-repartition
+        measurement session: `deploy` + `launch` + `screenshot` all reported
+        success, but the screenshot was of a build from hours earlier
+        (verified after the fact via `ps aux` on the MiSTer showing the old
+        .rbf's path in the running core's command line) -- a stale-artifact
+        false positive of exactly the kind deploy_rbf.py's own header
+        comment warns about ("a green result against a stale artifact is
+        worse than a red one: it looks like evidence"). Bouncing through
+        menu.rbf on every call is a few seconds slower but makes that class
+        of mistake structurally impossible instead of relying on remembering
+        to do it by hand. Pass force_reload=False only if you specifically
+        want the caching behaviour (e.g. re-sending the same .mra to poke a
+        live CFG/status change without disturbing ROM/RAM state)."""
+        if force_reload:
+            print("Bouncing through menu.rbf to force a genuine reload...")
+            self.api_post("/launch", {"path": "/media/fat/menu.rbf"})
+            time.sleep(2)
         print(f"Launching {mra_path}")
         self.api_post("/launch", {"path": mra_path})
 
@@ -253,6 +292,9 @@ def main():
     p_launch = sub.add_parser("launch", help="Launch a .mra via MiSTer Remote's API")
     add_common_args(p_launch)
     p_launch.add_argument("--mra", required=True, help="Remote absolute path to the .mra file")
+    p_launch.add_argument("--no-force-reload", action="store_true",
+                          help="Skip the automatic menu.rbf bounce (default: always bounce first "
+                               "so a stale already-running core can't be mistaken for a fresh one)")
 
     p_shot = sub.add_parser("screenshot", help="Trigger and pull back a screenshot")
     add_common_args(p_shot)
@@ -268,6 +310,8 @@ def main():
     p_cycle.add_argument("--core", required=True)
     p_cycle.add_argument("--out", required=True)
     p_cycle.add_argument("--settle-seconds", type=float, default=3)
+    p_cycle.add_argument("--no-force-reload", action="store_true",
+                         help="Skip the automatic menu.rbf bounce before launching")
 
     args = parser.parse_args()
     host = build_host_from_args(args)
@@ -275,7 +319,7 @@ def main():
     if args.command == "deploy":
         host.deploy_rbf(args.rbf, args.rbf_remote_name)
     elif args.command == "launch":
-        host.launch_mra(args.mra)
+        host.launch_mra(args.mra, force_reload=not args.no_force_reload)
     elif args.command == "screenshot":
         host.take_screenshot(args.core, args.out, settle_seconds=args.settle_seconds)
     elif args.command == "cycle":
@@ -284,7 +328,7 @@ def main():
         # automated deploy-then-launch has zero natural gap between the two,
         # unlike doing this by hand.
         time.sleep(2)
-        host.launch_mra(args.mra)
+        host.launch_mra(args.mra, force_reload=not args.no_force_reload)
         host.take_screenshot(args.core, args.out, settle_seconds=args.settle_seconds)
         print(f"Done: {args.out}")
 
