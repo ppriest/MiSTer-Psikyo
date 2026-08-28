@@ -55,3 +55,19 @@ Upstream is edge-triggered: one transaction per `req` RISING EDGE, and a held
 drop it, which produces a fresh rising edge per transaction and is compatible
 -- but any requester that holds `req` through an ack expecting re-service will
 hang. Check each one when wiring.
+
+4. `ack_stretch` 2 cycles -> 1. Upstream holds ack for two cycles because its
+   requesters live in a `clk_sys` domain running at `clk_ram/2`, so a 1-cycle
+   ack could be missed. Stage 1 runs single-domain, where a 2-cycle ack instead
+   makes `valid` twice as wide as every one of our consumers expects (they all
+   assume the 1-cycle synchronous read our previous controller gave). Revert
+   this if the separate RAM clock domain is ever adopted.
+
+## Granule word order -- VERIFY IN SIMULATION
+
+`p1_dout = {final_word, cap_buf[2], cap_buf[1], cap_buf[0]}` puts the FIRST
+word fetched in the LOW bits. Our previous controller appears to do the same,
+which would keep `gfxrom_byte_reorder` valid unchanged -- but that is inferred
+from reading, not measured, and getting it wrong scrambles every tile and
+sprite. Confirm against `s32_sdr_chip_model.sv` in `sim/port2_sdram_tb/`
+before building.

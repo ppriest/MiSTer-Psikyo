@@ -138,7 +138,7 @@ reg [1:0]  pre_cnt;
 reg        row_open;
 reg  [1:0] open_bank;
 reg [12:0] open_row;
-reg [1:0]  ack_stretch;     // acks held 2 clk_ram cycles (clk_sys is /2 sync)
+reg [1:0]  ack_stretch;     // 1 cycle here (single clock domain) -- see PROVENANCE.md
 
 // Request mailboxes.  Capture every transaction's metadata with its request;
 // arbitration may delay a lower-priority port long after the producer pulses
@@ -318,8 +318,9 @@ always @(posedge clk) begin
     cmd    <= CMD_NOP;
     dq_oe  <= 1'b0;
 
-    // acks: assert for 2 cycles so clk_sys (=clk/2, synchronous) always
-    // samples exactly one rising edge with ack high
+    // acks: 1 cycle. Upstream holds 2 because its requesters run in a clk_sys
+    // domain at clk_ram/2; we run single-domain, where a 2-cycle ack would make
+    // valid twice as wide as every consumer expects.
     if (ack_stretch != 0) ack_stretch <= ack_stretch - 1'd1;
     else begin
         p0_ack <= 1'b0; p1_ack <= 1'b0; p2_ack <= 1'b0;
@@ -373,7 +374,7 @@ always @(posedge clk) begin
             rd_captured <= rd_captured + 1'd1;
             if (rd_captured + 1'd1 == rd_total) begin
                 deliver(dq_in);
-                ack_stretch <= 2'd1;   // hold ack this cycle + next
+                ack_stretch <= 2'd0;   // single-domain: ack is 1 cycle
             end
         end
 
@@ -483,7 +484,7 @@ always @(posedge clk) begin
             state    <= ST_WRRC;
         end
         ST_WRRC: begin
-            if (wrrc_cnt == 3'd2) begin wr_ack <= 1'b1; ack_stretch <= 2'd1; end
+            if (wrrc_cnt == 3'd2) begin wr_ack <= 1'b1; ack_stretch <= 2'd0; end
             if (wrrc_cnt == 0) state <= ST_IDLE;
             else wrrc_cnt <= wrrc_cnt - 1'd1;
         end
