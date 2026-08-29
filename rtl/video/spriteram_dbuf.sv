@@ -124,7 +124,17 @@ module spriteram_dbuf (
         end
     end
 
-    assign sprites_disable = ctrl_active[0];
+    // The global sprite ENABLE is deliberately LIVE (ctrl_shadow, the last
+    // CPU-written value), not the frame-latched copy -- per the author of
+    // MAME's Psikyo renderer (2026-08-29): the bit takes effect immediately,
+    // so the caller gates the DISPLAY with it and sprites blank the moment
+    // the game writes it, exactly like the OSD debug toggle. Latching it to
+    // frame_start held the last rendered bank on screen instead.
+    //
+    // The transparent-pen selects stay frame-latched: they parameterize the
+    // RENDER pass, which consumes the frame_start snapshot -- a live pen
+    // change would tear the pass that is already in flight.
+    assign sprites_disable = ctrl_shadow[0];
     assign trans_pen0       = ctrl_active[2];
     assign trans_pen15      = ctrl_active[3];
 

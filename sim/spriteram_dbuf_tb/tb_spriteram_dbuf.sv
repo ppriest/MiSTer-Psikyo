@@ -23,6 +23,7 @@ module tb_spriteram_dbuf;
     logic [15:0] at_data;
 
     logic sprites_disable, trans_pen0, trans_pen15;
+    logic copy_busy;
 
     spriteram_dbuf dut (.*);
 
@@ -67,6 +68,9 @@ module tb_spriteram_dbuf;
         check16(cpu_rdata, 16'hAAAA, "phase1 CPU readback 0x010");
 
         pulse_frame_start(); // bank0 -> render, bank1 -> write; ctrl_active <= bank0's shadow
+        @(posedge clk);                       // let copying latch (NBA) before sampling
+        while (copy_busy) @(posedge clk);     // snapshot COPY takes DEPTH cycles
+        @(posedge clk);
 
         // -- Phase 2: bank1 write-role, bank0 render-role. --
         #1;
@@ -87,6 +91,16 @@ module tb_spriteram_dbuf;
         @(posedge clk); #1;
         check16(cpu_rdata, 16'hCCCC, "phase2 CPU readback 0x010 (bank1)");
 
+        // The global enable is LIVE (per the MAME renderer author): the
+        // mid-frame control write above must drop sprites_disable NOW,
+        // before any frame_start -- while the transparent-pen selects stay
+        // frame-LATCHED (still phase-1's 0x0005 values). This pair is the
+        // discriminating check: a regression to a latched enable, or to
+        // live pens, each fails exactly one of these.
+        if (sprites_disable !== 1'b0) begin errors++; $display("FAIL phase2 sprites_disable must be LIVE (mid-frame write ignored)"); end
+        if (trans_pen0 !== 1'b1)       begin errors++; $display("FAIL phase2 trans_pen0 must stay LATCHED mid-frame"); end
+        if (trans_pen15 !== 1'b0)      begin errors++; $display("FAIL phase2 trans_pen15 must stay LATCHED mid-frame"); end
+
         // Render ports must still see bank0's OLD value -- the phase-2
         // write into bank1 must not leak across the buffer boundary
         // before the next frame_start.
@@ -94,6 +108,9 @@ module tb_spriteram_dbuf;
         check16(at_data, 16'hAAAA, "phase2 at_data unaffected by bank1 write");
 
         pulse_frame_start(); // bank1 -> render, bank0 -> write; ctrl_active <= bank1's shadow
+        @(posedge clk);
+        while (copy_busy) @(posedge clk);
+        @(posedge clk);
 
         // -- Phase 3: bank0 write-role, bank1 render-role again. --
         #1;

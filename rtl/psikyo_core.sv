@@ -122,10 +122,17 @@ module psikyo_core #(
         .clk(clk), .ce_pix(ce_pix), .reset(reset),
         .hcnt(hcnt), .vcnt(vcnt), .vcnt_active(vcnt_active),
         .h_active(h_active), .v_active(v_active),
-        .hblank(hblank), .vblank(vblank),
+        .hblank(hblank_timing), .vblank(vblank),
         .hsync(hsync), .vsync(vsync),
         .line_start(line_start), .frame_start(frame_start)
     );
+
+    // Gunbird-family: shrink the visible area by ONE pixel on the right
+    // (hcnt 319 blanked) to hide a small right-edge artifact -- display
+    // window only; the render/fetch pipelines still see the full 320 via
+    // the internal h_active, so nothing upstream changes.
+    logic hblank_timing;
+    assign hblank = hblank_timing | (board_gunbird && hcnt == 9'd319);
 
     // ---- CPU-facing BRAM region ports (maincpu.sv's own port shapes) ----
     logic [11:0] spr_cpu_addr;
@@ -894,7 +901,10 @@ module psikyo_core #(
         // nothing while "disable tilemap" worked. Gate the compositor input
         // the same way tilemaps do, so the OSD toggle blanks sprites
         // immediately regardless of what's sitting in the display bank.
-        .sp_present(sp_present & ~dbg_render_dis[0]), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
+        // sprites_disable is LIVE (see spriteram_dbuf.sv): the game's global
+        // sprite enable blanks the display immediately, same as the OSD
+        // debug toggle next to it -- not at the next frame boundary.
+        .sp_present(sp_present & ~dbg_render_dis[0] & ~sprites_disable), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
         .pal_addr(pal_addr), .pal_s_addr(pal_s_addr), .sprite_sel(comp_sprite_sel)
     );
 

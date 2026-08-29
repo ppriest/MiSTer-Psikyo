@@ -209,6 +209,29 @@ module tb_compositor;
         set_sp(0, 0, 0, 0);
         check("backdrop-always-pen0-ignores-enable-and-tsel", 12'h800);
 
+        // ---- Cases 13-15: backdrop follows the topmost ENABLED layer (per
+        // the MAME renderer author, 2026-08-29): that layer's palette bank
+        // (l1 -> 0xC00, l0 -> 0x800) at its transpen-selected pen (tsel=1
+        // -> pen 0, tsel=0 -> pen 15). Cases 10-12 above still hold: with
+        // BOTH layers disabled the clear stays 0x800.
+        set_l0(0, 0, 0, 0, 0, 0);
+        set_l1(1, 0, 2, 1, 0, 1);   // enabled, pixel==transpen(0): not drawing
+        set_sp(0, 0, 0, 0);
+        check("backdrop-l1-enabled-tsel1", 12'hC00);
+
+        set_l1(1, 15, 2, 1, 0, 0);  // transpen=15, pixel 15: not drawing
+        check("backdrop-l1-enabled-tsel0", 12'hC0F);
+
+        set_l0(1, 0, 3, 1, 0, 1);   // only layer 0 enabled, transparent
+        set_l1(0, 0, 0, 0, 0, 0);
+        check("backdrop-l0-enabled-tsel1", 12'h800);
+        set_l0(1, 15, 3, 1, 0, 0);
+        check("backdrop-l0-enabled-tsel0", 12'h80F);
+
+        set_l0(1, 15, 3, 1, 0, 0);   // both enabled, both transparent:
+        set_l1(1, 0, 2, 1, 0, 1);    // layer 1 wins the backdrop choice
+        check("backdrop-l1-priority-over-l0", 12'hC00);
+
         // (The final RGB mux -- registered sprite_sel selecting between the
         // two palette RAMs' outputs -- lives in psikyo_core.sv, exercised
         // by the integration testbenches, not here.)

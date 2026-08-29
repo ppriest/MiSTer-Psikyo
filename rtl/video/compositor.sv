@@ -124,12 +124,18 @@ module compositor (
             pal_addr = 12'h800 + {1'b0, l1_pal_offset};
         else if (l0_draws)
             pal_addr = 12'h800 + {1'b0, l0_pal_offset};
+        else if (l1_ctrl_enable)
+            // Backdrop/screen-clear (per the MAME renderer author,
+            // 2026-08-29, superseding the earlier fixed-pen-0 direction):
+            // the clear colour comes from the topmost ENABLED layer's own
+            // palette bank, at that layer's transpen-selected pen --
+            // layer 1's bank starts at 0xC00 (its colours carry the +64
+            // bank offset), layer 0's at 0x800. transpen_sel set (ctrl
+            // bit 3) selects pen 0, clear selects pen 15.
+            pal_addr = l1_ctrl_transpen_sel ? 12'hC00 : 12'hC0F;
+        else if (l0_ctrl_enable)
+            pal_addr = l0_ctrl_transpen_sel ? 12'h800 : 12'h80F;
         else
-            // Backdrop/screen-clear: always pen 0 (palette entry 0x800, the
-            // tilemap bank's first colour) -- NOT selected by layer 0's
-            // transparent-pen-select bit (pen 0 vs pen 15), which would put
-            // a magenta clear on screen whenever that bit chose pen 15
-            // (fixed pen 0 per the MAME renderer author's direction).
             pal_addr = 12'h800;
     end
 
