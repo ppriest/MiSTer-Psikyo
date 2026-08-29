@@ -271,9 +271,9 @@ Concretely:
   rendered into for the *next* frame while the *other* is read out during the *current* frame's
   scanout.
 - Per pixel stored: sprite's palette-lookup fields (color/pixel-index, not yet resolved through
-  the palette RAM — palette lookup stays in the compositor, matching every other layer) + a
-  1-bit "sprite pixel present" flag + the 2-bit `primask` value (`{0x00, 0xFC, 0xFF, 0xFF}` from
-  the sprite's priority field — see "Priority / compositing" below). Whatever the sprite that
+  the palette RAM — palette lookup stays at composite time, matching every other layer) + a
+  1-bit "sprite pixel present" flag + the sprite's raw 2-bit priority field (the `primask`
+  gate is derived from it at composite time — see "Priority / compositing" below). Whatever the sprite that
   currently owns that pixel is, later sprites overwrite it during the render pass exactly like
   MAME's sequential blit — **this fully resolves inter-sprite overlap by the time rendering
   finishes**, before scanout ever reads the buffer.
@@ -283,8 +283,8 @@ Concretely:
   purely for sprites (SDRAM is still needed for the tile/sprite/sound ROMs themselves).
 - **The final tilemap-vs-sprite priority decision is still resolved live, at scanout, not during
   sprite rendering** — this is the key point that makes decoupled rendering correct despite
-  sprites being rendered "blind" to what the tilemaps will eventually draw: `(tilemap_priority &
-  primask) == 0` (see below) only depends on the *current pixel's* live tilemap-layer priority
+  sprites being rendered "blind" to what the tilemaps will eventually draw: the
+  `primask[tilemap_priority]` gate (bit-indexed, see below) only depends on the *current pixel's* live tilemap-layer priority
   value and the *already-resolved* sprite `primask` at that pixel, both available simultaneously
   when the compositor combines `tilemap_line_engine`'s live output with the pre-rendered sprite
   frame buffer's stored output for the scanline currently being scanned out. Sprite rendering
@@ -307,35 +307,29 @@ opaque pixels write a fixed category value into a shared priority bitmap (layer 
 from the sprite's 2-bit priority field via a fixed table `{0, 0xFC, 0xFF, 0xFF}`
 (psikyo_v.cpp:189).
 
-Working through what that table actually does against a priority bitmap that only ever holds
-`0` (nothing drawn), `1` (layer 0), or `2` (layer 1) — this is standard MAME `prio_transmask`
-convention (pixel drawn iff `(dest_priority & primask) == 0`), worth confirming against
-`drawgfxm.h`'s exact semantics when implementing rather than trusting this write-up blind, but
-straightforward to work out from the table values themselves:
+**The mask is BIT-INDEXED by the destination priority value — MAME's pdrawgfx convention: the
+sprite pixel is BLOCKED when `primask[dest_priority]` is set** (`dest_priority` here only ever
+holds 0 = nothing drawn, 1 = layer 0 on top, 2 = layer 1 on top). An earlier pass through this
+section worked the table through as a value-AND (pixel drawn iff
+`(dest_priority & primask) == 0`) and concluded the hardware had only two sprite tiers; that
+reading was WRONG, and the value-AND implementation built from it let priority-1 sprites beat
+tilemap 1 unconditionally (samuraia's cloud sprites over the foreground layer — root-caused on
+real hardware via the JTAG spriteram probe, fixed BIT-INDEXED in commit `284cad6`, verified on
+hardware 2026-08-29). Under the correct bit-indexed reading, with the RTL's table
+`{0, 0xFC, 0xFE, 0xFF}` (entry 2 corrected from MAME's published `0xFF` to `0xFE`, direct from
+the author of MAME's Psikyo renderer reviewing live gameplay — commit `0c63a5b`):
 
-| Sprite priority field | primask | `primask` bits vs. tilemap priority values (1, 2) | Net effect |
+| Sprite priority field | primask | bits 0 / 1 / 2 (backdrop / layer 0 / layer 1) | Net effect |
 |---|---|---|---|
-| 0 | `0x00` | never blocks (mask is all-zero) | always drawn in front of both tilemap layers |
-| 1 | `0xFC` (`11111100`) | bits 0-1 clear → never matches tilemap's 1 or 2 | **same as priority 0** — always in front |
-| 2 | `0xFF` | matches any nonzero priority | blocked wherever *either* tilemap layer drew opaquely — i.e. always **behind** both layers |
-| 3 | `0xFF` | same as 2 | same as priority 2 — always behind both layers |
+| 0 | `0x00` | none set | above everything |
+| 1 | `0xFC` | bits 0-1 clear, bit 2 set | above layer 0, below layer 1 |
+| 2 | `0xFE` | bit 0 clear, bits 1-2 set | below both layers, visible over backdrop |
+| 3 | `0xFF` | all set | never visible |
 
-So in practice this hardware only has **two** sprite priority tiers relative to the tilemaps —
-"always in front of both layers" (field 0 or 1) or "always behind both layers, only visible over
-background" (field 2 or 3) — not four independent priority levels, and no "between layer 0 and
-layer 1" option. Simpler than the raw 2-bit field might suggest; good to know before designing
-the compositor's priority logic (a single front/back select per sprite, not a 4-way priority
-mux).
-
-**Correction, live on hardware, 2026-08-29:** the RTL's actual `compositor.sv` primask table
-differs from MAME's published `{0, 0xFC, 0xFF, 0xFF}` above at entry 2 — it uses `0xFE`
-(`{0, 0xFC, 0xFE, 0xFF}`), direct from the author of MAME's Psikyo renderer reviewing live
-gameplay against real hardware. `0xFE` (bit 0 clear) lets priority-field-2 sprites draw in
-front of layer 0 while staying behind layer 1 — a genuine third tier that this section's
-MAME-derived table collapses into "always behind both." This did **not** fully resolve the
-sprite-vs-tilemap priority bug seen on hardware (cloud sprites still render over tilemap 1
-when they should render under it) — see `docs/ROADMAP.md`'s "Next steps" item 2. Any future
-work on this table should start from the live `compositor.sv` source, not this section.
+So the hardware has real intermediate tiers, not the two-tier collapse the value-AND reading
+suggested. The live source of truth is `compositor.sv` (its testbench's cases 6-9 fail against
+a value-AND implementation); start any future work on this table from that source, not from
+this section's history.
 
 ## Compositor: backdrop, transparent-pen, and palette lookup
 
@@ -382,8 +376,14 @@ backdrop is therefore **always** derived from **layer 0's** transparent-pen-sele
 actually enabled or what layer 1's own control bits say. This looks like an unfinished
 reverse-engineering effort on MAME's part (the intent was probably "pick whichever layer is
 enabled, or black if neither"), but per this project's standing rule — MAME's actual behavior is
-the accuracy target, not a guess at more-correct hardware — the RTL should reproduce this exact
-quirk: `bgpen = palette[(layer0_ctrl & 8) ? 0x800 : 0x80f]`, unconditionally.
+the accuracy target, not a guess at more-correct hardware — the original RTL reproduced this
+exact quirk: `bgpen = palette[(layer0_ctrl & 8) ? 0x800 : 0x80f]`, unconditionally.
+
+**Update, live on hardware 2026-08-29:** the built `compositor.sv` now deliberately diverges
+from that MAME quirk — the backdrop is a FIXED pen 0 (`palette[0x800]`), never selected by
+layer 0's transparent-pen bit, per the MAME renderer author's direction: the pen-15 branch put
+a magenta clear on screen whenever that bit chose pen 15. The live source is `compositor.sv`'s
+own backdrop comment.
 
 **Palette addressing**: `xRGB_555`, 4096 entries, 8KB (`docs/phase1_memory_map.md`). Combining
 with `tile_cell_decode`'s `color` output (already includes layer 1's `+64` offset) and the
@@ -404,19 +404,31 @@ do:
 
 ```
 priority_val = l1_draws ? 2 : (l0_draws ? 1 : 0)
-sprite_wins  = sp_present && ((priority_val & primask[sp_priority]) == 0)
+sprite_wins  = sp_present && !primask[sp_priority][priority_val]   // BIT-indexed, never value-ANDed
 winner       = sprite_wins ? sprite : (l1_draws ? layer1 : (l0_draws ? layer0 : backdrop))
 ```
 
-## RTL module breakdown (proposed, not yet implemented beyond the address-generation math above)
+**Output shape of the built compositor (redesigned 2026-08-29):** `compositor.sv` is a pure
+combinational priority resolver that emits TWO parallel palette lookups per pixel plus a
+select — `pal_addr` (the tilemap/backdrop entry, into the live palette RAM), `pal_s_addr`
+(the sprite entry, into the 512-entry sprite-palette SNAPSHOT copied from the live palette at
+`frame_start`, so sprite pixels — themselves rendered a frame earlier — and sprite colors
+change scene together), and `sprite_sel`. The final registered RGB mux applying `sprite_sel`
+to the two BRAMs' outputs one cycle later lives in `rtl/psikyo_core.sv`, not in the
+compositor (whose module comment explains why registering `rgb` internally would silently
+double the pipeline latency). Tilemaps render live and keep the live palette.
+
+## RTL module breakdown (the original proposal — all three pieces are long since built; see the as-built notes above and below)
 
 1. **Tilemap engine** (×2 instances, one per layer) — address generator (trivial per above) +
    VRAM read + gfx ROM tile fetch + row-scroll prefetch + horizontal line-buffer shift register.
    The simplest of the three major pieces; good first implementation target.
 2. **Sprite engine** — double-buffered spriteram, display-list walk, per-sub-tile zoom-blit
    pipeline, spritelut ROM indirection. The hard, novel piece.
-3. **Compositor** — 2-tier priority mux (front/back sprite select) + palette lookup +
-   transparent-pen handling, feeding the video output timing generator.
+3. **Compositor** — per-pixel priority resolution (bit-indexed `primask` gate) +
+   transparent-pen handling, resolving to two parallel palette lookups (live palette for
+   tilemap/backdrop, snapshot palette for sprites) + a sprite select; the registered RGB mux
+   lives one level up in `psikyo_core.sv`.
 
 Implementation order: tilemap engine first (self-contained, independently testable against
 known VRAM content and expected tile-fetch address sequences), then sprite engine, then
@@ -565,3 +577,13 @@ is only pulsed once a sprite's *entire* sub-tile grid (all `nx*ny` sub-tiles, ea
 `dst_size_x*dst_size_y` pixels) has been fully written to the frame buffer — this is the
 "consumer is done with the held entry" signal the walker's flow control (see
 `sprite_display_list_walker.sv`'s history) was built for.
+
+**As built, the engine adds two timing-driven register stages to this sketch** (see
+`sprite_render_engine.sv`): stage A captures every per-sprite constant (decode/pos-transform/
+zoom-LUT outputs) once per sprite in `S_RECORD_WAIT`, and stage B registers the sub-tile
+origin — both cut what was the design's worst `clk_sys` path without changing the FSM's
+structure or throughput. A third cut (a stage registering the per-column zoom source index,
+with the pixel mux/write moved a cycle later) was tried on 2026-08-29; it closed timing fully
+but visibly regressed scene transitions on real hardware and was reverted — the S_COL
+write-in-the-same-cycle shape above is the current, shipping behaviour. See
+`docs/ROADMAP.md`'s "Timing closure" item.

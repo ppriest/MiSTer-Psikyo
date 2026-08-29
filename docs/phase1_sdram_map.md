@@ -156,6 +156,17 @@ consumers `tb_video_pipeline_ddram.sv` proved contend simultaneously (same `line
 | Port 1 | Tilemap layer 1 gfxrom | dedicated, no arbiter |
 | Port 2 | Sprite gfxrom, sprite spritelut, `maincpu` program fetch, `audiocpu` program fetch, HPS `ioctl_download` | 5-way, `sdram_arbiter5.sv` — built and verified, see "Port 2: built and measured" below |
 
+**SUPERSEDED — the table above is the partition as first built, kept for the verification
+narrative below. The current partition** (a 2026-08-29 repartition aimed at the sprite-render
+slowdown; measured WORSE on that metric and still under evaluation — see `docs/ROADMAP.md`'s
+"Fix the slowdown" item — but it is what `rtl/memory/psikyo_sdram_top.sv` wires today) **is:**
+
+| Physical port | Logical consumers | Arbitration |
+|---|---|---|
+| Port 0 | BOTH tilemap layers' gfxrom | `sdram_arbiter2.sv` |
+| Port 1 | Sprite gfxrom | dedicated — via a single-client pulse shim (`SP_IDLE`/`SP_ISSUE`/`SP_WAIT`), because `sdram_phy` expects a one-shot req and a held req silently returns stale data (see LESSONS_LEARNED's req/valid-transport bullet) |
+| Port 2 | ADPCM-B (delta-T), spritelut, `maincpu`, `audiocpu`, ADPCM-A, HPS `ioctl_download` | 6-way, `sdram_arbiter6.sv` (clients c0-c4 + the absolute-priority download path) |
+
 This spends the "no shared port" property on the two consumers *proven* to contend (the tilemap
 layers), and accepts contention on Port 2 for consumers that don't have that same
 synchronized-simultaneous-request pattern. Real sprite/CPU contention numbers are now measured

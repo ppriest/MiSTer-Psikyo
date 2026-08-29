@@ -182,8 +182,9 @@ From `psikyo_v.cpp` (`get_sprites()`, `draw_sprites()`):
   `psikyo_v.cpp:145-183`):
   - Word 0 (`+0x0`): Y position + Y size/zoom nibble
   - Word 1 (`+0x2`): X position + X size/zoom nibble
-  - Word 2 (`+0x4`): flags (flip X/Y bit 15/14) + color (bits 11-8) + priority (bits 7-6) +
-    code high bit (bit 0)
+  - Word 2 (`+0x4`): flags (flip X/Y bit 15/14) + color (bits 12-8 — 5 bits, not the 4 an
+    earlier pass recorded; see `docs/phase1_video_engine.md`'s trace through
+    `colorbase()`/`granularity()`) + priority (bits 7-6) + code high bit (bit 0)
   - Word 3 (`+0x6`): code low bits — full code then indexes into a **ROM lookup table**
     (`spritelut` region) to get the real tile code, not used directly
 - **Display list**: word offsets `0xC00-0xFFE` within the 4096-word (8KB/2) spriteram region

@@ -9,8 +9,8 @@ PIC protection FSM and a YMF278B, neither of which exists yet.
 
 ## Status
 
-All three Phase 1 games boot and run on real hardware. There are known video, audio and
-speed defects; see below. Builds are published in `releases/`.
+All three Phase 1 games boot and run on real hardware. Known defects remain in audio and
+in game speed under sprite load; see below. Builds are published in `releases/`.
 
 Working, confirmed on hardware:
 
@@ -24,47 +24,61 @@ Working, confirmed on hardware:
 * DIP switches, delivered via ioctl index 254 as MiSTer actually sends them
 * Sprite RAM buffered as a true copy at vblank, matching buffered_spriteram32_device --
   this fixed sprite ghosting, stale sprites, and Gun Bird's per-scene sprite freeze
+* Sprite-vs-tilemap priority. The `primask` table (`{0, 0xFC, 0xFE, 0xFF}`, entry 2
+  corrected from MAME's published `0xFF` by the author of MAME's Psikyo renderer) is
+  applied BIT-INDEXED by the destination priority value -- MAME's pdrawgfx convention.
+  An earlier value-AND implementation let priority-1 sprites beat tilemap 1
+  unconditionally (samuraia's cloud sprites over the foreground layer); root-caused by
+  dumping the live paused scene through the JTAG spriteram probe (instance `"S"`,
+  `scripts/read_spriteram.tcl`).
+* Scene transitions. Sprites display pixels rendered one frame earlier, so they read a
+  512-entry snapshot of their palette half, copied at `frame_start`
+  (`rtl/psikyo_core.sv`), so sprite pixels and colors change scene together; tilemaps
+  render live and keep the live palette. This fixed BOTH transition symptoms: the
+  miscolour flash AND the briefly-visible stale sprites (stale pixels recolored by the
+  new scene's palette had read as wrongly-present sprites).
 
 Not working, or built but unconfirmed:
 
 * **The game slows down under sprite load.** Still open; a first attempted fix measured
   worse, not better, on real hardware. The memory backend is Sorgelig's `sdram.sv`
   (vendored, extended to burst-4 reads — see `rtl/memory/sdram/PROVENANCE.md`) behind a
-  3-physical-port arbiter: dedicated ports for each tilemap layer, a 5-way arbitrated
-  port for sprite gfx/lut/CPU fetch/HPS download (`docs/phase1_sdram_map.md`). A granule
-  cache in `sdram_narrow_bridge.sv` cut narrow-consumer (CPU/Z80/spritelut) traffic on
-  the shared port. A follow-up re-partition -- a dedicated port for sprite gfx, both
-  tilemap layers sharing one port -- measured 29% *worse* worst-case sprite render time
-  on hardware, not better; not yet root-caused. See `docs/ROADMAP.md`'s "Fix the
-  slowdown" item.
-* **Audio is not yet correct.** No longer silent: a sound-latch decode bug, a Z80 running
-  21x too fast, a spurious ROM re-request, and an SDRAM arbiter deadlock are all fixed,
-  and hardware now produces nonzero audio output with commands streaming during play.
-  ADPCM-A sample playback is still garbled on every game. A required bit 6/7 swap on the
-  ADPCM-A sample ROM (a real ROM-mastering artefact, `needs_adpcma_swap` in
-  `rtl/memory/psikyo_sdram_top.sv`) is implemented for Samurai Aces/Sengoku Ace, which
-  need it -- but Gun Bird, which MAME says does *not* need the swap, is garbled too, so a
-  second, unidentified cause remains open. YM2610 clock frequency and the SDRAM
-  granule-cache handshake have both been checked and ruled out.
-* **Sprite palette lags by one frame.** `sprite_frame_buffer` renders during frame N and
-  displays during N+1, while palette RAM was read live, so a scene change could flash
-  miscoloured sprites for a frame. Fixed: sprites read a 512-entry snapshot of their
-  palette half, copied at `frame_start` (`rtl/psikyo_core.sv`), so sprite pixels and
-  colors change scene together; tilemaps render live and keep the live palette.
-* **Sprite-vs-tilemap priority: fixed, verified on hardware.** The `primask` table
-  (`{0, 0xFC, 0xFE, 0xFF}`, entry 2 corrected from MAME's published `0xFF` by the
-  author of MAME's Psikyo renderer) is applied BIT-INDEXED by the destination priority
-  value -- MAME's pdrawgfx convention. An earlier value-AND implementation let
-  priority-1 sprites beat tilemap 1 unconditionally (samuraia's cloud sprites over the
-  foreground layer); root-caused by dumping the live paused scene through the JTAG
-  spriteram probe (instance `"S"`, `scripts/read_spriteram.tcl`).
-* **Timing is not closed.** Worst-case setup slack on the main PLL output (`clk_sys`) is
-  negative, with many failing paths rather than one -- see `docs/ROADMAP.md`'s "Timing
-  closure not final" item for the current worst-slack figure and offending path (it
-  moves as work lands elsewhere in the design, so it's tracked there rather than
-  duplicated here). The core runs anyway, but the margin is thin enough that unrelated
-  logic changes can tip it. It also blocks raising the SDRAM clock, which would
-  otherwise be worth ~1.12x.
+  3-physical-port arbiter — current partition: both tilemap layers share one port,
+  sprite gfx has a dedicated port, and a 6-way arbitrated port serves
+  spritelut/CPU fetches/ADPCM samples/HPS download (`docs/phase1_sdram_map.md`). A
+  granule cache in `sdram_narrow_bridge.sv` cut narrow-consumer (CPU/Z80/spritelut)
+  traffic on the shared port. The re-partition itself (sprite gfx dedicated, tilemap
+  layers merged) measured 29% *worse* worst-case sprite render time on hardware, not
+  better; not yet root-caused. See `docs/ROADMAP.md`'s "Fix the slowdown" item.
+* **Audio has residual distortion/crackle; cause identified and fix implemented,
+  listening verification pending.** Music and sound effects play: a sound-latch decode
+  bug, a Z80 running 21x too fast, a spurious ROM re-request, and an SDRAM arbiter
+  deadlock are all fixed. Samurai Aces / Sengoku Ace's ADPCM-A bit 6/7 swap
+  (`needs_adpcma_swap` in `rtl/memory/psikyo_sdram_top.sv`) is fixed AND verified by
+  ear -- the missing piece was `.mra` ordering: the mod byte gating the swap must
+  precede the ROM it gates, so all nine `.mra` files were reordered. Samurai Aces'
+  missing music is fixed too: the YM2610 timer IRQ must reach the Z80, so Sound IRQ now
+  defaults ON (`status[51]` is inverted; OSD order "On,Off"). A listening test on the
+  fully-constrained build (20260876) confirms the remaining distortion/crackle is NOT a
+  timing artifact. Identified cause: jt10's ADPCM-B (delta-T) data input was hardwired
+  to zero (`.adpcmb_data(8'd0)`, `rtl/psikyo_top.sv`), so any track using the delta-T
+  channel decoded constant zeros and mixed garbage into the output -- on these boards
+  ADPCM-B shares the ADPCM-A sample region (MAME's YM2610 default when no separate
+  delta-T ROM exists). The channel is now wired to that SDRAM region (testbench
+  regression passing); verification by ear on hardware is pending.
+* **Timing on `clk_sys` is close to, but not at, full closure.** Four audited
+  multicycle constraint families -- TG68K kernel, T80 sound CPU, video pixel-path into
+  the palette lookups, and jt12 slot-scan into the phase generator plus its audited
+  siblings -- are recorded, each with its audit reasoning, in `Psikyo.sdc` itself, and
+  eliminated their whole violation families (clk_sys TNS fell from roughly -300 to
+  single digits). The remaining real violations are the sprite render engine's
+  full-rate per-column pixel path (approximately -1.2 ns worst, as it has been for
+  months of working builds -- a pipeline stage cutting it was tried 2026-08-29 and
+  reached full closure, but visibly regressed scene transitions on real hardware and
+  was reverted: correct rendering wins over the last picoseconds), plus milli-ns fit
+  noise in the vendored `sys/` scandoubler (which the framework's own `sys_top.sdc`
+  does not constrain, and which is inactive on this project's HDMI-framebuffer output
+  path) and trivial `jt12_mmr` stragglers.
 
 ## ROMs
 
@@ -91,6 +105,7 @@ Hardware iteration is automated; see `docs/LESSONS_LEARNED.md` for why each of t
 
 | script | purpose |
 | --- | --- |
+| `build_staged.py` | build a git-worktree snapshot of HEAD in `build/` (gitignored), so the main tree stays editable mid-build; the log, `output_files/` and a `BUILT_COMMIT` stamp land under `build/`. Default revision is the instrumented `Psikyo_stp` (fitter SEED pinned at 7 -- the default-seed fit did not boot); `--rev Psikyo` for release |
 | `mister_hw_test.py` | deploy a `.rbf`, launch a `.mra`, pull a screenshot |
 | `deploy_rbf.py` | deploy only if the build actually succeeded |
 | `deploy_mra.py` | validate an `.mra`, then copy it |
@@ -105,7 +120,13 @@ Credentials come from `mister.env` (gitignored), never from committed source.
 ## Debugging on hardware
 
 The core carries an optional debug overlay that drives internal state onto the video
-output, decoded by the scripts above. It is enabled from the OSD's Debug page and can dump
+output, decoded by the scripts above. It is enabled from the OSD's Debug page -- visible
+only on instrumented (`Psikyo_stp`) builds: every Debug-page line in the CONF_STR carries
+an `H1` prefix, and `status_menumask` bit 1 tracks the `DEBUG_ISSP` macro, so release
+builds hide the page. The tracer itself (trace buffers, overlay dump bands) also compiles
+out of release builds entirely (`DEBUG_TRACER_EN` tracks the same macro, reclaiming the
+BRAM); the non-tracer debug bits (render disable, sprite swap, Sound IRQ, C00008) stay
+functional in a release build if set via the `.CFG`. The overlay can dump
 tilemap VRAM, the video registers, and a CPU ROM-read trace without rebuilding. It was
 built because there was no JTAG on this setup; `docs/LESSONS_LEARNED.md` explains how to
 use it without fooling yourself.
@@ -114,8 +135,8 @@ JTAG is now available, which makes SignalTap, In-System Sources and Probes, and 
 In-System Memory Content Editor usable. Instrumented (`Psikyo_stp`) builds carry a
 handful of purpose-built ISSP probes for specific investigations: a tilemap VRAM
 write/poke probe (instance `"W"`, `scripts/write_vram1.tcl`) and a spriteram read probe
-(instance `"S"`, `scripts/read_spriteram.tcl`), currently in use for the open
-sprite-vs-tilemap priority bug above. A USB video capture device is also available; it is
+(instance `"S"`, `scripts/read_spriteram.tcl`), which root-caused the (now fixed)
+sprite-vs-tilemap priority bug. A USB video capture device is also available; it is
 the right tool for anything temporal (game speed under load, one-frame flashes, flicker),
 where the one-shot API screenshots cannot help. Use capture for temporal questions and API
 screenshots for pixel-exact ones, since HDMI output is scaled.

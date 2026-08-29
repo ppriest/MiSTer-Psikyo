@@ -21,6 +21,13 @@ confirmed by documentation).
   are the range of bits that will be set in the status register."
 - **[doc]** Pages: `P{#},{Title}` declares a page; prefix options with `P{#}`. The prefix goes
   before `O#` but after conditionals like `d#`.
+- **[core+empirical]** `H{#}` hides a CONF_STR line when `status_menumask` bit `#` is set; it
+  goes in front of the `P#` prefix (`"H1P1O[56],..."`). Used here to hide the whole Debug page
+  in release builds: every Debug-page line in `Psikyo.sv` carries `H1`, and menumask bit 1
+  tracks the `DEBUG_ISSP` macro (defined only by the `Psikyo_stp` revision) — the instrumented
+  build shows the page, the release build hides it. The debug tracer itself also compiles out
+  of the release build (`DEBUG_TRACER_EN` tracks the same macro); the remaining debug bits
+  stay functional if set via the `.CFG`.
 - **[empirical, corrected]** DIP switches do **not** ride the status word at all — they arrive as
   a separate ioctl download, index 254, 8 bytes (LE `uint64`), decoded straight from the `.mra`'s
   `<switches>` bytes (`mra_loader.cpp`'s `arcade_sw_send()`). Saved state lives in

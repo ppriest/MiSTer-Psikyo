@@ -37,11 +37,14 @@ After the swap, the new render bank is cleared. `sprite_frame_buffer` **ignores 
 `swap_busy`**, so if the clear overlaps the next render pass, that frame's sprites are partly
 dropped and stale pixels survive where the clear had not yet reached.
 
-## Defect 3: source records swapped mid-render
+## Defect 3: source records replaced mid-render
 
-`spriteram_dbuf` swaps the CPU-write and engine-read banks at `frame_start`. The engine reads
-sprite records across the whole frame, so a pass that overruns has its source data swapped
-underneath it and draws two frames' sprites mixed. Independent of the output buffer.
+`spriteram_dbuf` snapshots the live sprite RAM at `frame_start` (a true COPY into the frozen
+bank the engine reads — it was a bank ping-pong once, changed after the "a swap is not a
+copy" lesson in `docs/LESSONS_LEARNED.md`; the render start is held until the ~4098-cycle
+copy completes). The engine reads sprite records across the whole frame, so a pass that
+overruns past the next `frame_start` has the next frame's copy land underneath it and draws
+two frames' sprites mixed. Independent of the output buffer.
 
 ## Mitigation in the tree
 
@@ -105,3 +108,25 @@ all: stale sprite-frame-buffer pixels being recolored by the new scene's
 live palette made them READ as wrongly-present sprites, and snapshotting the
 sprite palette at frame_start (psikyo_core.sv) removed the visible symptom.
 Defects 1-3 above stand on their own evidence and remain tracked.
+
+Unrelated footnote: later the same day a render-engine per-column pipeline
+stage (a pure timing change) made transitions look WORSE again on hardware.
+That was a separate, new artifact introduced by the pipeline itself, and the
+pipeline was reverted the same day; the palette-snapshot fix above stands as
+verified (build 20260874).
+
+## Defect 5: game-driven sprites-disable freezes, not blanks -- OPEN
+
+The spriteram control word (word 0xFFF) bit 0 is the game's own
+sprites-disable. It is correctly latched at frame_start into ctrl_active
+(spriteram_dbuf.sv) and gates want_frame in psikyo_core.sv, so no new render
+pass starts -- but it does NOT gate the compositor's sp_present, so with the
+output double-buffered the display bank holds the last rendered sprites
+indefinitely instead of blanking (MAME blanks sprites the frame the bit is
+honored). Identified 2026-08-29 by inspection; not yet observed as a symptom
+on hardware, but a candidate contributor to any future
+stale-sprite-at-transition report. Planned fix: latch the disable at the
+swap boundary too and gate sp_present with that display-aligned copy --
+mirroring the fix already applied for the OSD's dbg_render_dis[0], which
+gates the compositor input directly for exactly this freeze-vs-blank reason
+(see psikyo_core.sv's compositor instantiation comment).

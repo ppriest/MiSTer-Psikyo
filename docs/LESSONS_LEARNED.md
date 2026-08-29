@@ -206,13 +206,17 @@ The mapping, established by measurement and confirmed against `psikyo.cpp`:
 
 * `<switches>` bytes start at `status[16]`: byte0 -> `status[23:16]`, byte1 -> `status[31:24]`,
   byte2 -> `status[39:32]`.
-* `Psikyo.sv` feeds those into the 32-bit DSW long at `$C00004` as
-  `{status[31:16], 8'hFF, status[39:32]}`, because MAME puts every DIP in that long's upper half
-  and the region jumper in its low byte.
-* Correct defaults are `FD,FF,FF` for samuraia and gunbird, `FD,FF,00` for btlkroad — the last
-  byte is the region jumper, and btlkroad encodes World as `0x00` where the others use `0x0f`.
+* (`Psikyo.sv` has since stopped reading DIPs from the status word at all — they arrive as an
+  ioctl-254 download into a `dip_sw` register, see `docs/mister_framework_notes.md` — but the
+  `.CFG`'s DIP bytes still matter empirically: zeroing them turned Service Mode on again on
+  2026-08-29, so the caution stands.)
+* Per-game default bytes 2-4 now live in `scripts/write_cfg.py`'s `DIP_DEFAULTS`, taken from
+  each `.mra`'s own `<switches default="...">` — the authority, NOT this doc's prose: samuraia
+  `FD,FF,FF`, gunbird `FD,FF,0F`, btlkroad `FD,FF,00` (the last byte is the region jumper; an
+  earlier version of this list wrongly gave gunbird `FF` there).
 
-Either write those bytes alongside your own, or delete the `.CFG` and let MiSTer write defaults.
+Use `scripts/write_cfg.py` (read-modify-write, `--repair-dips`, `--reset` with per-game
+defaults) rather than hand-writing the file — the hand-written mistake was made twice.
 Note that a value which merely looks harmless can hang a game: gunbird's boot polls `$C00004`
 bit 7 and spins until it clears, so a `0xFF` region byte never boots.
 
@@ -288,7 +292,7 @@ Note what it does **not** prove: the trace address is truncated, so it verifies 
   interface.
 - **Getting the actual failing paths requires a `quartus_sta` Tcl run** — the default `.sta.rpt`
   contains only summaries, and the "Timing Closure Recommendations" panel is HTML-only and
-  therefore empty in the plain-text export. See `sta_failing_paths.tcl` in the repo root:
+  therefore empty in the plain-text export. See `scripts/sta_failing_paths.tcl`:
 
   ```tcl
   project_open Psikyo -revision Psikyo
@@ -875,9 +879,14 @@ executing garbage".
 **Update, later the same session:** the latch-decode, Z80 clock-enable, spurious
 ROM-re-request, and arbiter round-robin bugs (all separate from the Sound-IRQ question
 above) were found and fixed -- see `docs/ROADMAP.md`'s "Fix sound" item. Audio is no
-longer silent. The Sound IRQ caution above is still current: `snd_irq_en` (`status[51]`)
-remains off by default and has not been re-verified safe to enable by any of those
-fixes. ADPCM-A playback is a separate, still-open problem -- see the same ROADMAP item.
+longer silent. **The Sound IRQ caution above is now RESOLVED:** with those transport
+fixes in place, enabling the IRQ no longer locks the Z80 -- and it is REQUIRED (the
+YM2610 timer IRQ sequences music; with it off, samuraia plays no music at all, verified
+by ear on hardware). It now defaults ON: `status[51]` is inverted so a fresh/all-zero
+`.CFG` gets music, OSD order "On,Off" (commit `8dbcb51`), and `scripts/write_cfg.py`
+seeds it ON. The original lesson stands as history: do not blind-enable an IRQ path with
+no way to verify the result. ADPCM-A playback was a separate problem, since fixed -- see
+the same ROADMAP item.
 
 ## The mod byte must precede the ROM it gates
 
