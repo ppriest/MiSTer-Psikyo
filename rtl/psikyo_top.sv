@@ -239,6 +239,13 @@ module psikyo_top #(
 
 
 
+	// Declared here, ABOVE u_core, because the core now takes these for its
+	// ADPCM starvation counters. Declaring them after the instance would
+	// silently bind implicit undriven nets and every counter would read
+	// zero -- exactly how the FM-usage probe failed on 2026-08-30.
+	logic        adpcma_rom_req, adpcma_rom_valid, adpcma_roe_n_d;
+	logic        adpcmb_rom_req, adpcmb_rom_valid, adpcmb_roe_n_d;
+
 	psikyo_core #(.BOARD_GUNBIRD(BOARD_GUNBIRD), .DEBUG_TRACER(DEBUG_TRACER)) u_core (
 		.clk(clk), .ce_pix(ce_pix), .reset(core_reset), .video_reset(reset),
 		.cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
@@ -259,6 +266,8 @@ module psikyo_top #(
 		.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 		.hsync(hsync), .vsync(vsync), .rgb(rgb),
 		.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause),
+		.adpcma_req_i(adpcma_rom_req), .adpcma_valid_i(adpcma_rom_valid),
+		.adpcmb_req_i(adpcmb_rom_req), .adpcmb_valid_i(adpcmb_rom_valid),
 		.hs_address(hs_address), .hs_data_in(hs_data_in),
 		.hs_data_out(hs_data_out), .hs_read(hs_read), .hs_write(hs_write),
 `ifdef DEBUG_ISSP
@@ -338,7 +347,6 @@ module psikyo_top #(
 	logic [23:0] adpcmb_addr;
 	logic         adpcmb_roe_n;
 
-	logic        adpcma_rom_req, adpcma_rom_valid, adpcma_roe_n_d;
 	logic [7:0]  adpcma_rom_data, adpcma_data_r;
 
 	always_ff @(posedge clk) begin
@@ -367,7 +375,6 @@ module psikyo_top #(
 	assign opl4_mem_valid = adpcma_rom_valid & board_sh404;
 	assign opl4_mem_data  = adpcma_rom_data;
 
-	logic        adpcmb_rom_req, adpcmb_rom_valid, adpcmb_roe_n_d;
 	logic [7:0]  adpcmb_rom_data, adpcmb_data_r;
 	logic [20:0] adpcmb_sdram_addr;
 	assign adpcmb_sdram_addr = {board_gunbird, adpcmb_addr[19:0]};

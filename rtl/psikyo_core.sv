@@ -137,6 +137,10 @@ module psikyo_core #(
 `endif
 	input  logic         dbg_sprite_vsync_swap,
 	input  logic [1:0]  dbg_src,      // which signal group to record
+	// YM2610 ADPCM fetch handshakes, for the starvation counters below.
+	// They live in psikyo_top; only the counters and the overlay are here.
+	input  logic         adpcma_req_i, adpcma_valid_i,
+	input  logic         adpcmb_req_i, adpcmb_valid_i,
 	input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
 	input  logic         dbg_rearm,    // any change restarts capture
 	output logic [23:0] dbg_pixel     // one captured entry per scanline
@@ -240,7 +244,14 @@ module psikyo_core #(
 		.a_wdata(workram_a_wdata), .a_rdata(workram_cpu_rdata),
 		.b_addr(16'd0), .b_rdata(workram_unused_b)
 	);
-	assign hs_data_out = hs_byte_odd ? workram_cpu_rdata[7:0] : workram_cpu_rdata[15:8];
+	// The hiscore read byte is registered here, next to the RAM. The raw M10K
+	// output otherwise has to reach the hiscore FSM's next-state logic on the
+	// far side of the chip within one cycle -- that was the single worst
+	// timing path in the design (~300 failing endpoints). hiscore.v is
+	// patched for the extra cycle of read latency (SM_COMPAREHOLD and the
+	// widened CHECK guards there); the CPU's own read path is untouched.
+	always_ff @(posedge clk)
+		hs_data_out <= hs_byte_odd ? workram_cpu_rdata[7:0] : workram_cpu_rdata[15:8];
 
 	// ---- palette RAM: CPU write, compositor read ----
 	logic [11:0] pal_addr;
@@ -636,6 +647,7 @@ module psikyo_core #(
 	logic [3:0]  l0_pixel_index, l1_pixel_index;
 	logic [6:0]  l0_pixel_color, l1_pixel_color;
 	logic         l0_fetch_overrun, l1_fetch_overrun; // echoed in the debug overlay control band
+	logic         l0_overrun_ev, l1_overrun_ev;     // per-event pulses, counted below
 
 	tilemap_line_engine #(.LAYER(0)) u_layer0 (
 		.clk(clk), .reset(reset),
@@ -647,7 +659,7 @@ module psikyo_core #(
 		.gfxrom_req(l0_gfxrom_req), .gfxrom_addr(l0_gfxrom_addr),
 		.gfxrom_valid(l0_gfxrom_valid), .gfxrom_data(l0_gfxrom_data),
 		.pixel_valid(l0_pixel_valid), .pixel_index(l0_pixel_index), .pixel_color(l0_pixel_color),
-		.fetch_overrun(l0_fetch_overrun)
+		.fetch_overrun(l0_fetch_overrun), .overrun_ev(l0_overrun_ev)
 	);
 
 	tilemap_line_engine #(.LAYER(1)) u_layer1 (
@@ -660,7 +672,7 @@ module psikyo_core #(
 		.gfxrom_req(l1_gfxrom_req), .gfxrom_addr(l1_gfxrom_addr),
 		.gfxrom_valid(l1_gfxrom_valid), .gfxrom_data(l1_gfxrom_data),
 		.pixel_valid(l1_pixel_valid), .pixel_index(l1_pixel_index), .pixel_color(l1_pixel_color),
-		.fetch_overrun(l1_fetch_overrun)
+		.fetch_overrun(l1_fetch_overrun), .overrun_ev(l1_overrun_ev)
 `ifdef DEBUG_ISSP
 		,
 		.dbg_fetch_vram_addr(l1_dbg_fetch_vram_addr), .dbg_vram_data(l1_dbg_vram_data),
@@ -853,16 +865,14 @@ module psikyo_core #(
 	// 1433729. A switch rather than an outright change because this was tried
 	// once and stopped the core booting for reasons never established; it
 	// makes the comparison an A/B on one bitstream. See docs/sprite_buffering.md.
-	// Render from the snapshot AS IT STANDS at the frame boundary; the copy
-	// that refreshes it runs after this pass finishes (see spriteram_dbuf's
-	// ordering note), which is what gives sprites the frame of latency MAME
-	// has. Guarded on copy_busy so a pass can never read a half-copied
-	// snapshot even if a previous copy somehow ran late.
-	// The snapshot must be PRIMED before the first render: with the copy moved
-	// after the render, nothing has filled it yet at power-on, and rendering
-	// from uninitialised contents draws a screenful of garbage sprites for the
-	// first frames. So the first frame_start after reset performs a copy
-	// instead of a render, and rendering only begins once a copy has completed.
+	// The snapshot refresh (spr_copy_start below) is policy-dependent -- see
+	// the comment at its assignment. Every path is guarded on copy_busy so a
+	// render pass can never read a half-copied snapshot.
+	// The snapshot must be PRIMED before the first render: nothing has filled
+	// it at power-on, and rendering from uninitialised contents draws a
+	// screenful of garbage sprites for the first frames. So the first
+	// frame_start after reset performs a copy instead of a render, and
+	// rendering only begins once a copy has completed.
 	logic snap_valid;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) spr_copy_busy_d <= 1'b0;
@@ -875,9 +885,29 @@ module psikyo_core #(
 
 	wire want_frame = frame_start & snap_valid & ~sprites_disable
 	                 & ~dbg_render_dis[0] & ~spr_copy_busy;
-	// Refresh the snapshot once the render pass is done reading it -- or, before
-	// the first pass exists, straight from the frame boundary to prime it.
-	assign spr_copy_start = snap_valid ? sp_frame_done : frame_start;
+	// WHEN the snapshot refreshes is the sprite pipeline's capture instant, and
+	// it must match MAME's: psikyo_v.cpp copies the buffer at screen_vblank(),
+	// so the game has until the END of the visible frame to finish writing
+	// spriteram. Triggering the copy at sp_frame_done instead -- which the
+	// FrameStart swap policy used to do -- captures at ~46% of the VISIBLE
+	// frame, half a frame early. A game still building its sprite list at that
+	// point (exactly what happens on busy frames) gets a half-updated table
+	// frozen into the snapshot: sprites wobble and glitch only under load.
+	// So under the FrameStart policy the copy runs at the frame boundary,
+	// guarded on ~sp_frame_busy so an overrunning pass is never re-sourced
+	// mid-read (the capture skips that frame and self-corrects at the next
+	// boundary, the same way the swap itself does). Generation count is
+	// unchanged -- frame N still shows the capture MAME would show -- because
+	// the render pass that consumes a boundary capture displays one frame
+	// later, exactly like get_sprites() consuming the previous vblank's copy.
+	// The EndOfRender policy keeps the sp_frame_done trigger: its render pass
+	// starts at frame_start immediately, and a copy there would tear the
+	// snapshot under the reading engine.
+	// Before the first pass exists, copy straight from the frame boundary to
+	// prime the snapshot.
+	assign spr_copy_start = ~snap_valid            ? frame_start :
+	                         dbg_sprite_vsync_swap ? (frame_start & ~sp_frame_busy) :
+	                                                  sp_frame_done;
 
 	logic bank_ready, start_pending;
 	always_ff @(posedge clk or posedge reset) begin
@@ -894,8 +924,11 @@ module psikyo_core #(
 		end
 	end
 
+	// ~spr_copy_busy: the boundary copy (4,098 cycles) always finishes inside
+	// the buffer clear (71,680), but gate on it structurally rather than by
+	// arithmetic accident.
 	assign sprite_frame_start = dbg_sprite_vsync_swap
-		? (start_pending & bank_ready & ~sp_frame_busy & ~sp_swap_busy)
+		? (start_pending & bank_ready & ~sp_frame_busy & ~sp_swap_busy & ~spr_copy_busy)
 		: want_frame;
 
 	wire sprite_swap_now = dbg_sprite_vsync_swap ? (frame_start & ~sp_frame_busy)
@@ -907,6 +940,48 @@ module psikyo_core #(
 	// frame_start, and the frame buffer's clear then overlaps the next pass
 	// (it ignores writes while swap_busy). sp_overran is sticky since
 	// configuration, so it also catches boot transients.
+	// Rates, not flags. The three sticky bits above saturate within seconds of
+	// boot, so they answer "has this ever happened" when the question is "does
+	// this happen under load" -- measured 2026-08-30, where early (14s) and
+	// late (70s) captures were byte-identical and told us nothing. These count
+	// events instead, alongside a frame count so two captures a known time
+	// apart give a per-frame rate.
+	logic [19:0] l0_ovr_cnt = '0, l1_ovr_cnt = '0, sp_ovr_cnt = '0, ovr_frames = '0;
+
+	// ADPCM fetch starvation. Sound goes scratchy in Gunbird when the screen is
+	// busy; both streams sit on the lowest-priority physical SDRAM port with no
+	// FIFO anywhere, so a late byte reaches the DAC as-is. These measure the
+	// starvation itself rather than its consequence: total cycles spent waiting
+	// with a request outstanding, and the worst single wait. Read against
+	// ovr_frames (row 220) for a per-frame figure, and compare quiet vs busy.
+	logic [19:0] adpcma_stall = '0, adpcmb_stall = '0;
+	logic [11:0] adpcma_lat   = '0, adpcmb_lat   = '0;
+	logic [11:0] adpcma_max   = '0, adpcmb_max   = '0;
+	always_ff @(posedge clk) begin
+		if (adpcma_req_i && !adpcma_valid_i) begin
+			adpcma_stall <= adpcma_stall + 1'b1;
+			if (adpcma_lat != 12'hFFF) adpcma_lat <= adpcma_lat + 1'b1;  // saturate
+		end
+		if (adpcma_valid_i) begin
+			if (adpcma_lat > adpcma_max) adpcma_max <= adpcma_lat;
+			adpcma_lat <= 12'd0;
+		end
+		if (adpcmb_req_i && !adpcmb_valid_i) begin
+			adpcmb_stall <= adpcmb_stall + 1'b1;
+			if (adpcmb_lat != 12'hFFF) adpcmb_lat <= adpcmb_lat + 1'b1;
+		end
+		if (adpcmb_valid_i) begin
+			if (adpcmb_lat > adpcmb_max) adpcmb_max <= adpcmb_lat;
+			adpcmb_lat <= 12'd0;
+		end
+	end
+	always_ff @(posedge clk) begin
+		if (l0_overrun_ev)                l0_ovr_cnt <= l0_ovr_cnt + 1'b1;
+		if (l1_overrun_ev)                l1_ovr_cnt <= l1_ovr_cnt + 1'b1;
+		if (frame_start && sp_frame_busy) sp_ovr_cnt <= sp_ovr_cnt + 1'b1;
+		if (frame_start)                  ovr_frames <= ovr_frames + 1'b1;
+	end
+
 	logic sp_overran = 1'b0;
 	logic [19:0] sp_render_cycles = '0;
 	logic [19:0] sp_render_max    = '0;
@@ -1095,10 +1170,22 @@ module psikyo_core #(
 		//   rows  32- 47 : video registers, words 0x000-0xFFF
 		//   rows  48-175 : CPU ROM read, full 19-bit address (128 entries)
 		//   rows 176-215 : CPU ROM read, {addr[7:0],data}    (40 entries)
-		//   rows 216-223 : control echo + video-engine health flags
+		//   rows 216, 221-223 : control echo + video-engine health flags
+		//   row  217 : layer-0 fetch-overrun COUNT   row 218 : layer-1 ditto
+		//   row  219 : sprite render-overrun COUNT   row 220 : frames elapsed
+		//              (two captures a known time apart give a per-frame rate)
+		//   row  221 : ADPCM-A stall cycles   row 222 : ADPCM-B stall cycles
+		//   row  223 : {ADPCM-A worst wait[11:0], ADPCM-B worst wait[11:0]}
 		// row 215 carries the worst-case sprite render length, in clk cycles
 		//   rows  48- 63 : palette RAM, all 4096 xRGB_555 entries
 		assign dbg_pixel = (vcnt == 9'd215) ? {4'd0, sp_render_max}
+						 : (vcnt == 9'd217) ? {4'd0, l0_ovr_cnt}
+						 : (vcnt == 9'd218) ? {4'd0, l1_ovr_cnt}
+						 : (vcnt == 9'd219) ? {4'd0, sp_ovr_cnt}
+						 : (vcnt == 9'd220) ? {4'd0, ovr_frames}
+						 : (vcnt == 9'd221) ? {4'd0, adpcma_stall}
+						 : (vcnt == 9'd222) ? {4'd0, adpcmb_stall}
+						 : (vcnt == 9'd223) ? {adpcma_max, adpcmb_max}
 						 : (vcnt >= 9'd216) ? ctl_echo
 						 : (vcnt <  9'd16)  ? {8'h00, vram0_b_rdata}
 						 : (vcnt <  9'd32)  ? {8'h00, vram1_b_rdata}

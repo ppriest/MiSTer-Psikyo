@@ -83,7 +83,12 @@ module tilemap_line_engine #(
 	output logic         pixel_valid,
 	output logic [3:0]  pixel_index,
 	output logic [6:0]  pixel_color,
-	output logic         fetch_overrun  // sticky: fetch pipeline didn't keep up with display
+	output logic         fetch_overrun, // sticky: fetch pipeline didn't keep up with display
+	// One-cycle pulse on the same event. The sticky flag saturates within
+	// seconds of boot, so it cannot distinguish 'a few at startup' from
+	// 'thousands per second under load' -- which is exactly the question
+	// when chasing a load-dependent artefact. Counted in psikyo_core.
+	output logic         overrun_ev
 `ifdef DEBUG_ISSP
 	,
 	// Every stage of the fetch pipeline for the wrong-palette/one-tile-shift
@@ -501,5 +506,15 @@ module tilemap_line_engine #(
 	assign dbg_mode_latched      = mode_latched;
 	assign dbg_bank_latched      = bank_latched;
 `endif
+
+
+	// One-cycle pulse marking the same event fetch_overrun latches. Kept in its
+	// own block because the FSM above is a reset/line_start/h_active if-chain
+	// with no common fall-through, so there is nowhere to put a per-cycle
+	// default without restructuring it.
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) overrun_ev <= 1'b0;
+		else       overrun_ev <= h_active && ce_pix && !buf_ready[display_sel];
+	end
 
 endmodule

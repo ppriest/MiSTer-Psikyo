@@ -37,6 +37,7 @@ overlapping stage builds.
 import argparse
 import datetime
 import os
+import re
 import subprocess
 import sys
 
@@ -79,6 +80,10 @@ def read_slacks(summary):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--seed", type=int,
+                    help="override the fitter SEED in the staged .qsf "
+                         "(placement only; try before restructuring RTL "
+                         "for a sub-ns violation)")
     ap.add_argument("--allow-negative-slack", action="store_true",
                     help="publish a release build that fails timing; prints a "
                          "warning, and the shortfall must be stated in the "
@@ -115,6 +120,22 @@ def main():
         run(["git", "-C", stage, "checkout", "--detach", head])
         run(["git", "-C", stage, "reset", "--hard", head])
 
+    # Fitter seed override. Placement is the only thing it changes, so a
+    # sub-nanosecond violation can sometimes be closed by reseeding rather than
+    # by restructuring RTL -- worth trying first when the shortfall is within
+    # seed-to-seed noise. Patched into the STAGE only; the committed .qsf keeps
+    # whatever seed the tree records, so a build stays reproducible from its
+    # commit plus this flag.
+    if args.seed is not None:
+        qsf = os.path.join(stage, "Psikyo.qsf")
+        text = open(qsf, encoding="utf-8", errors="replace").read()
+        new, n = re.subn(r"(?m)^set_global_assignment -name SEED .*$",
+                         "set_global_assignment -name SEED %d" % args.seed, text)
+        if n != 1:
+            sys.exit("expected exactly one SEED assignment in %s, found %d" % (qsf, n))
+        open(qsf, "w", encoding="utf-8", newline="\n").write(new)
+        print("seed:   %d (stage only)" % args.seed)
+
     stamp = "%s  %s\n" % (head, datetime.datetime.now().isoformat())
     open(os.path.join(stage, "BUILT_COMMIT"), "w").write(stamp)
     print("stage:  %s" % stage)
@@ -148,7 +169,7 @@ def main():
     # timing we do not intend to pay in a release. A release build may not --
     # once it leaves here we cannot know what it runs on, and a marginal path is
     # exactly the fault that surfaces as someone else's intermittent glitch.
-    # See "Release process" in README.md.
+    # See docs/RELEASE_PROCESS.md.
     is_release = not args.rev.endswith("_stp")
     if violations and is_release and not args.allow_negative_slack:
         print("")

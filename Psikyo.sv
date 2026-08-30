@@ -332,6 +332,19 @@ wire mcu_table_absent = mod_board[4];
 // it. The core sees the copy as an extended download instead.
 wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 
+// Do NOT add ldr_active to any reset that reaches psikyo_top. The loader
+// writes SDRAM THROUGH psikyo_top (ldr_req/ldr_addr/ldr_data), so holding it
+// reset during the copy holds psikyo_sdram_top reset too: the copy then
+// writes nothing, the 68020 comes up against empty memory, and the screen
+// stays black -- the same failure the byte path had, and the one
+// psikyo_top.sv:211-229 warns about ("the consequence was total and silent").
+// Tried on 2026-08-30 and reverted. rom_loader.sv's header and the DDRAM mux
+// comment below both claim the core is held in reset during a copy; they are
+// describing an intent the design does not implement, and cannot.
+//
+// The rotator is protected instead by gating its DDRAM_BUSY (see below),
+// which is what actually stops it advancing on writes that never landed.
+
 ///////////////////////   INPUTS   ////////////////////////////////
 
 // Confirmed against psikyo.cpp's sngkace_input_r()/INPUT_PORTS_START
@@ -758,6 +771,7 @@ reg  dl_seen_wr  = 1'b0;   // any byte streamed through the FPGA for index 0
 reg  dl_active_d = 1'b0;
 reg  ldr_pending = 1'b0;
 reg  ldr_start   = 1'b0;
+reg  ldr_done    = 1'b0;
 wire dl_index0 = ioctl_download && (ioctl_index == 16'd0);
 always @(posedge clk_sys) begin
 	ldr_start   <= 1'b0;
@@ -765,12 +779,22 @@ always @(posedge clk_sys) begin
 	if (dl_index0 && !dl_active_d)  dl_seen_wr <= 1'b0;   // a new index-0 load begins
 	else if (dl_index0 && ioctl_wr) dl_seen_wr <= 1'b1;   // ...and it is streaming bytes
 
+	// A new index-0 download is the only thing that makes a copy due again.
+	if (dl_index0 && !dl_active_d) ldr_done <= 1'b0;
+
 	if (reset) begin
 		ldr_pending <= 1'b1;
 	end else if (ldr_pending && !ioctl_download && !ldr_active) begin
 		ldr_pending <= 1'b0;
-		// only when the ROM did NOT come through the byte path
-		if (!dl_seen_wr) ldr_start <= 1'b1;
+		// Only when the ROM did NOT come through the byte path, and only once
+		// per download: dl_seen_wr stays 0 forever after a DDR3 load, so
+		// without ldr_done every later reset -- OSD reset, the reset button,
+		// a PLL relock -- would recopy all 18.5MB with the bus taken from the
+		// rotator mid-picture.
+		if (!dl_seen_wr && !ldr_done) begin
+			ldr_start <= 1'b1;
+			ldr_done  <= 1'b1;
+		end
 	end
 end
 
@@ -874,7 +898,14 @@ screen_rotate_two screen_rotate_two
 	.FB_LL         (FB_LL),
 
 	.DDRAM_CLK     (rot_DDRAM_CLK),
-	.DDRAM_BUSY    (DDRAM_BUSY),
+	// Held busy while the loader owns the bus. The mux below routes the
+	// rotator's writes away from DDR3 during a copy, but it still samples
+	// DDRAM_BUSY to decide whether each write was accepted -- and between
+	// loader transactions BUSY is low, so it would take phantom writes as
+	// accepted and advance its pointer, leaving a stale band in the frame
+	// buffer at a fixed position. It has no reset port, so nothing
+	// recovers that. Holding BUSY makes it stall and retry instead.
+	.DDRAM_BUSY    (DDRAM_BUSY | ldr_active),
 	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
 	.DDRAM_ADDR    (rot_DDRAM_ADDR),
 	.DDRAM_DIN     (rot_DDRAM_DIN),

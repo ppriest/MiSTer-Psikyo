@@ -109,14 +109,39 @@ module sdram_arbiter6 (
 	logic [2:0] sel;
 	logic         sel_is_dl;
 
-	// combinational round-robin picker: starting at rr_ptr, find the first
-	// requesting channel (wrapping mod 4)
+	// The two ADPCM streams (c0 = ADPCM-B, c4 = ADPCM-A) are promoted above the
+	// round-robin. They are the only latency-critical clients on this port: the
+	// YM2610 consumes a sample byte on a fixed cadence and a late byte is
+	// audible at once, whereas spritelut and the CPU fetches have slack. Their
+	// bandwidth is negligible -- a byte per stream every few hundred cycles
+	// against sprite and tilemap traffic measured in granules per scanline --
+	// so promoting them costs the others nothing they can notice.
+	//
+	// This matters because the physical arbitration in sdram/sdram.sv is FIXED
+	// priority, not fair: port 0 (both tilemaps) preempts port 1 (sprite
+	// gfxrom), which preempts port 2 -- this arbiter. So on a busy screen the
+	// sound samples were already last in line physically, and then queued
+	// behind three more clients here. Reported as sound going scratchy in
+	// Gunbird when the screen is busy.
+	//
+	// adpcm_tog alternates between the two so neither can starve the other
+	// when both are streaming.
 	logic [2:0] next_sel;
 	logic         found;
+	logic         adpcm_tog;
 	always_comb begin
 		found    = 1'b0;
 		next_sel = rr_ptr;
-		for (int i = 0; i < 5; i++) begin
+		if (c_req[0] && c_req[4]) begin
+			next_sel = adpcm_tog ? 3'd4 : 3'd0;
+			found    = 1'b1;
+		end else if (c_req[0]) begin
+			next_sel = 3'd0;
+			found    = 1'b1;
+		end else if (c_req[4]) begin
+			next_sel = 3'd4;
+			found    = 1'b1;
+		end else for (int i = 0; i < 5; i++) begin
 			logic [3:0] sum;   // 4 bits: rr_ptr(<=4) + i(<=4) = up to 8 --
 								// the previous 3-bit sum wrapped 4+4 to 0
 								// BEFORE the >=5 check, so with rr_ptr==4
@@ -163,6 +188,7 @@ module sdram_arbiter6 (
 			astate <= A_IDLE;
 			rr_ptr <= 3'd0;
 			sel_is_dl <= 1'b0;
+			adpcm_tog <= 1'b0;
 		end else begin
 			case (astate)
 				A_IDLE: begin
@@ -187,6 +213,8 @@ module sdram_arbiter6 (
 
 				A_WAIT_READ: begin
 					if (phy_valid) begin
+						// alternate the ADPCM pair on each grant to one of them
+						if (sel == 3'd0 || sel == 3'd4) adpcm_tog <= ~adpcm_tog;
 						rr_ptr <= (sel == 3'd4) ? 3'd0 : sel + 3'd1;
 						astate <= A_IDLE;
 					end

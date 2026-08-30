@@ -155,7 +155,7 @@ module opl4_pcm (
 	// ---- engine FSM ----
 	typedef enum logic [4:0] {
 		S_IDLE, S_RD0, S_RD1, S_RD2, S_RD3, S_RD4, S_RD5, S_RD6, S_RD7, S_RD8,
-		S_CALC, S_ENV, S_ENV2, S_FETCH0, S_FETCH1, S_OUT, S_OUT2, S_NEXT, S_DONE,
+		S_CALC, S_ENV, S_ENV2, S_ENV3, S_FETCH0, S_FETCH1, S_OUT, S_OUT2, S_NEXT, S_DONE,
 		S_HDR_REQ, S_HDR_WAIT
 	} state_t;
 	state_t state;
@@ -198,10 +198,14 @@ module opl4_pcm (
 	logic [3:0]  p_eg_inc;      // eg_inc, registered
 	logic        p_frac_zero;
 	logic [12:0] p_lvol, p_rvol; // att2vol results, registered
+	logic [9:0]  p_am;           // AM attenuation, registered in S_ENV
+	logic [9:0]  p_env_next;     // next envelope level, registered in S_ENV2
+	logic [2:0]  p_st_next;      // next EG state, likewise
 	logic [9:0]  es_env_next, es_dec;
 	logic [2:0]  es_st_next;
 	logic [31:0] es_np;
-	logic [10:0] os_env_eff, os_lenv, os_renv;
+	logic [10:0] os_lenv, os_renv;
+	logic [10:0] p_env_eff;      // envelope+AM+TL sum, registered in S_FETCH
 	logic [12:0] os_lvol, os_rvol;
 	logic signed [28:0] os_lmul, os_rmul;
 
@@ -247,12 +251,51 @@ module opl4_pcm (
 	wire [22:0] envc = env_counter[23:1];
 	wire [5:0]  cur_rate = slot_rate(w_state_eg);
 	wire [3:0]  rate_shift = cur_rate[5:2];
-	wire        frac_zero = (rate_shift >= 4'd11) ? 1'b1
-	                       : ((envc & ((23'd1 << (11 - rate_shift)) - 23'd1)) == 23'd0);
-	wire [2:0]  relevant = (rate_shift <= 4'd11)
-	                      ? 3'((envc >> (11 - rate_shift)))
-	                      : envc[2:0];
-	wire [3:0]  eg_inc = 4'(inc_table[cur_rate] >> {relevant, 2'b00});
+
+	// (B) rate_shift selects one of only twelve shift distances, so what used
+	// to be two 23-bit barrel shifts of envc is a constant slice and a constant
+	// mask. Same values, a fraction of the logic, no extra cycle.
+	logic       frac_zero;
+	logic [2:0] relevant;
+	always_comb begin
+		case (rate_shift)
+			4'd0:  begin relevant = envc[13:11]; frac_zero = (envc[10:0] == 11'd0); end
+			4'd1:  begin relevant = envc[12:10]; frac_zero = (envc[9:0]  == 10'd0); end
+			4'd2:  begin relevant = envc[11:9];  frac_zero = (envc[8:0]  ==  9'd0); end
+			4'd3:  begin relevant = envc[10:8];  frac_zero = (envc[7:0]  ==  8'd0); end
+			4'd4:  begin relevant = envc[9:7];   frac_zero = (envc[6:0]  ==  7'd0); end
+			4'd5:  begin relevant = envc[8:6];   frac_zero = (envc[5:0]  ==  6'd0); end
+			4'd6:  begin relevant = envc[7:5];   frac_zero = (envc[4:0]  ==  5'd0); end
+			4'd7:  begin relevant = envc[6:4];   frac_zero = (envc[3:0]  ==  4'd0); end
+			4'd8:  begin relevant = envc[5:3];   frac_zero = (envc[2:0]  ==  3'd0); end
+			4'd9:  begin relevant = envc[4:2];   frac_zero = (envc[1:0]  ==  2'd0); end
+			4'd10: begin relevant = envc[3:1];   frac_zero = (envc[0]    ==  1'b0); end
+			// rate_shift >= 11: no fractional bits left to test, and the shift
+			// distance is zero.
+			default: begin relevant = envc[2:0]; frac_zero = 1'b1; end
+		endcase
+	end
+
+	// (A) inc_table[cur_rate] >> {relevant,2'b00} was selecting nibble
+	// `relevant` of a 32-bit word -- a 64:1 mux feeding a 32-bit barrel shift.
+	// Split into the word mux and an explicit 8:1 nibble mux, which is the same
+	// 512:1 selection expressed as logic Quartus can build cheaply. Written as
+	// a case rather than a 512-entry array on purpose: an array that size
+	// invites M10K inference, and the design has none spare (553/553).
+	wire [31:0] inc_word = inc_table[cur_rate];
+	logic [3:0] eg_inc;
+	always_comb begin
+		case (relevant)
+			3'd0: eg_inc = inc_word[3:0];
+			3'd1: eg_inc = inc_word[7:4];
+			3'd2: eg_inc = inc_word[11:8];
+			3'd3: eg_inc = inc_word[15:12];
+			3'd4: eg_inc = inc_word[19:16];
+			3'd5: eg_inc = inc_word[23:20];
+			3'd6: eg_inc = inc_word[27:24];
+			3'd7: eg_inc = inc_word[31:28];
+		endcase
+	end
 
 	// LFO is clocked and THEN consumed within the same sample (the
 	// reference increments m_lfo_counter at the top of clock() and uses
@@ -264,7 +307,11 @@ module opl4_pcm (
 	wire [6:0] lfo_tri = w_lfo[17] ? ~w_lfo[16:10] : w_lfo[16:10];
 	wire [9:0] am_add = 10'((lfo_tri * am_depth_f(c_amd)) >> 7);
 	// PM: quarter-cycle-shifted updated LFO, signed -0x40..0x3F
-	wire [17:0] lfo_sh = lfo_upd + 18'h10000;
+	// Fed from w_lfo (registered in S_CALC), not lfo_upd, so the 24-entry
+	// ch_lfo[ch] mux is not in series with the PM multiply. Same value --
+	// w_lfo IS lfo_upd, one state later -- but the path starts at a
+	// register instead of at ch. See S_ENV.
+	wire [17:0] lfo_sh = w_lfo + 18'h10000;
 	wire [6:0] pm_tri = lfo_sh[17] ? ~lfo_sh[16:10] : lfo_sh[16:10];
 	wire signed [7:0] pm_val = {1'b0, pm_tri} - 8'sd64;
 	wire signed [13:0] pm_add = (pm_val * $signed({1'b0, pm_depth_f(c_vib)})) >>> 7;
@@ -476,7 +523,6 @@ module opl4_pcm (
 						w_state_eg <= EG_SUSTAIN;
 					// position advance with vibrato and loop wrap
 					w_curpos <= ch_nextpos[ch];
-					w_step    <= step_exact + 32'($signed(pm_add));
 					state     <= S_ENV;
 				end
 				// Register the rate chain (corr -> eff_rate -> cur_rate -> eg_inc)
@@ -485,6 +531,22 @@ module opl4_pcm (
 					p_rate      <= cur_rate;
 					p_eg_inc    <= eg_inc;
 					p_frac_zero <= frac_zero;
+					// Pitch step lands here rather than in S_CALC. In S_CALC it
+					// ran ch -> ch_lfo[ch] mux -> add -> shift -> invert -> sub
+					// -> multiply -> 32-bit add in one clock, which was the
+					// design's worst path by a wide margin (-4.958ns, and every
+					// one of the top 15 failing paths). Here the mux is already
+					// resolved into w_lfo, and this runs parallel to the rate
+					// chain above rather than behind it, so it costs no cycle.
+					// c_fnum/c_oct/c_vib are registered well before S_CALC and
+					// w_lfo is stable until S_ENV2, so the value is unchanged.
+					w_step      <= step_exact + 32'($signed(pm_add));
+					// Likewise the AM term, for S_OUT. It depends only on
+					// w_lfo and c_amd, both registered in S_CALC and unchanged
+					// through S_OUT, so the value is the same one S_OUT would
+					// have computed -- but the invert-and-multiply no longer
+					// sits in front of S_OUT's muxes and att2vol lookup.
+					p_am        <= am_add;
 					state       <= S_ENV2;
 				end
 
@@ -508,8 +570,8 @@ module opl4_pcm (
 								es_st_next = EG_REVERB;
 						end
 					end
-					ch_env[ch]      <= es_env_next;
-					ch_eg_state[ch] <= es_st_next;
+					p_env_next      <= es_env_next;
+					p_st_next       <= es_st_next;
 					ch_lfo[ch]      <= w_lfo;
 					// position advance + loop
 					es_np = w_curpos + w_step;
@@ -524,22 +586,56 @@ module opl4_pcm (
 					else if (ch_tl[ch] > {c_tl_reg, 10'd0})
 						ch_tl[ch] <= ((ch_tl[ch] - 17'd38) < {c_tl_reg, 10'd0})
 						            ? {c_tl_reg, 10'd0} : ch_tl[ch] - 17'd38;
+					// The fetch address is computed unconditionally. It depends
+					// only on w_curpos and ch_baseaddr[ch], both stable here,
+					// whereas the quiet test (now in S_ENV3) sits at the far end of the
+					// envelope arithmetic above. Gating the address on that test
+					// put the entire envelope chain in series with the baseaddr
+					// mux and the x3 multiply, which was the worst path at
+					// -2.385ns. opl4.sv's arbiter latches pcm_mem_addr only
+					// inside if (pcm_mem_req), so an address computed for a
+					// silent channel is never sampled.
+					case (ch_format[ch])
+						2'd0: mem_rd_addr <= ch_baseaddr[ch] + 22'(w_curpos[31:16]);
+						2'd2: mem_rd_addr <= ch_baseaddr[ch] + {5'd0, w_curpos[31:16], 1'b0};
+						default: mem_rd_addr <= ch_baseaddr[ch]
+						        + 22'(w_curpos[31:17]) * 22'd3
+						        + (w_curpos[16] ? 22'd2 : 22'd0);
+					endcase
+					state <= S_ENV3;
+				end
+
+				// The envelope writeback and the quiet decision, split off from
+				// the arithmetic that produces them. In S_ENV2 the attack
+				// multiply, the clamps and the reverb test ran straight into the
+				// 24-entry ch_env write decode in one clock -- the worst path at
+				// -1.117ns. Splitting there costs a state per channel per sample,
+				// about 24 clk_sys cycles out of the ~1948 available between
+				// 44.1kHz sample ticks, so the engine still finishes each sample
+				// with room to spare. It is the first of these splits that is not
+				// free, which is why it was left until last.
+				S_ENV3: begin
+					ch_env[ch]      <= p_env_next;
+					ch_eg_state[ch] <= p_st_next;
 					// silent? skip the ROM fetch entirely
-					if (es_env_next > EG_QUIET) state <= S_NEXT;
+					if (p_env_next > EG_QUIET) state <= S_NEXT;
 					else begin
 						state <= S_FETCH0;
 						mem_rd_req <= 1'b1;
-						case (ch_format[ch])
-							2'd0: mem_rd_addr <= ch_baseaddr[ch] + 22'(w_curpos[31:16]);
-							2'd2: mem_rd_addr <= ch_baseaddr[ch] + {5'd0, w_curpos[31:16], 1'b0};
-							default: mem_rd_addr <= ch_baseaddr[ch]
-							        + 22'(w_curpos[31:17]) * 22'd3
-							        + (w_curpos[16] ? 22'd2 : 22'd0);
-						endcase
 					end
 				end
 
-				S_FETCH0: if (mem_rd_valid) begin
+				// The attenuation sum is registered here, in the states that are
+				// already stalled on the sample ROM. ch_env[ch] and ch_tl[ch] are
+				// written by S_ENV2/S_ENV3, so by now they hold the values S_OUT
+				// would read -- but computing it here keeps the two 24-entry
+				// channel muxes out of series with att2vol's lookup and barrel
+				// shift, which was the worst path at -1.712ns. Re-assigning on
+				// each stalled cycle is harmless; the inputs do not change.
+				S_FETCH0: begin
+				  p_env_eff <= {1'b0, ch_env[ch]} + {1'b0, p_am}
+				             + {2'b00, ch_tl[ch][16:8]};
+				  if (mem_rd_valid) begin
 					w_byte0 <= mem_rd_data;
 					if (ch_format[ch] == 2'd0) begin
 						w_sample <= {mem_rd_data, 8'd0};
@@ -552,8 +648,12 @@ module opl4_pcm (
 						  : ch_baseaddr[ch] + 22'(w_curpos[31:17]) * 22'd3 + 22'd1;
 						state <= S_FETCH1;
 					end
+				  end
 				end
-				S_FETCH1: if (mem_rd_valid) begin
+				S_FETCH1: begin
+				  p_env_eff <= {1'b0, ch_env[ch]} + {1'b0, p_am}
+				             + {2'b00, ch_tl[ch][16:8]};
+				  if (mem_rd_valid) begin
 					if (ch_format[ch] == 2'd2)
 						w_sample <= {w_byte0, mem_rd_data};
 					// 12-bit packing (reference fetch_sample): the middle
@@ -564,6 +664,7 @@ module opl4_pcm (
 					else
 						w_sample <= {w_byte0, mem_rd_data[7:4], 4'd0};
 					state <= S_OUT;
+				  end
 				end
 
 				// ---- output accumulate ----
@@ -573,9 +674,8 @@ module opl4_pcm (
 				S_OUT: begin
 					// attenuation = envelope + AM + total-level (7.10 -> .2
 					// units via >>8, per the reference's `total_level >> 8`)
-					os_env_eff = {1'b0, ch_env[ch]} + {1'b0, am_add} + {2'b00, ch_tl[ch][16:8]};
-					os_lenv = os_env_eff + {1'b0, pan_l};
-					os_renv = os_env_eff + {1'b0, pan_r};
+					os_lenv = p_env_eff + {1'b0, pan_l};
+					os_renv = p_env_eff + {1'b0, pan_r};
 					p_lvol <= att2vol((os_lenv > 11'h3FF) ? 13'hFFC : {os_lenv[9:0], 2'b00});
 					p_rvol <= att2vol((os_renv > 11'h3FF) ? 13'hFFC : {os_renv[9:0], 2'b00});
 					state  <= S_OUT2;

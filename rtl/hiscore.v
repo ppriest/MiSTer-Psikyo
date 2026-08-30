@@ -110,6 +110,7 @@ localparam SM_COMPAREREADY	 = 18;
 localparam SM_COMPAREREAD	 = 19;
 localparam SM_COMPAREDONE	 = 20;
 localparam SM_COMPARECOMPLETE	 = 21;
+localparam SM_COMPAREHOLD	 = 26;	// Psikyo: dead cycle for the registered RAM read byte
 
 localparam SM_EXTRACTINIT	 = 22;
 localparam SM_EXTRACT		 = 23;
@@ -436,8 +437,18 @@ begin
 							ram_addr <= addr_base;
 							if(ram_addr == addr_base)
 							begin
-								state <= SM_COMPAREREAD;
+								state <= SM_COMPAREHOLD;
 							end
+						end
+					SM_COMPAREHOLD:
+						begin
+							// Psikyo: data_from_ram is registered next to the game
+							// RAM (see u_workram in psikyo_core.sv), so reads carry
+							// one extra cycle of latency. This dead cycle keeps the
+							// read data aligned with SM_COMPAREDONE's compare and
+							// buffer capture. CHECK_HOLD must be >= 2 for the same
+							// reason (all Psikyo MRA headers set 2).
+							state <= SM_COMPAREREAD;
 						end
 					SM_COMPAREREAD:
 						begin
@@ -479,8 +490,9 @@ begin
 							end
 							else
 							begin
-								// Keep extracting this section
-								state <= SM_COMPAREREAD;
+								// Keep extracting this section (via the hold state --
+								// the registered read data needs the extra cycle)
+								state <= SM_COMPAREHOLD;
 								ram_addr <= ram_addr + 1'b1;
 							end
 							// Always stop writing to hiscore dump ram and increment local address
@@ -595,7 +607,11 @@ begin
 					SM_CHECKSTARTVAL: // Start check
 						begin
 							// Check for matching start value
-							if(wait_timer != CHECK_HOLD && data_from_ram == start_val)
+							// Psikyo: skip TWO cycles, not one -- data_from_ram is
+							// registered next to the game RAM, so the first sample
+							// that reflects ram_addr arrives a cycle later than
+							// upstream hiscore.v assumes. Needs CHECK_HOLD >= 2.
+							if(wait_timer != CHECK_HOLD && wait_timer != CHECK_HOLD - 16'd1 && data_from_ram == start_val)
 							begin
 								// Prepare end check
 								ram_addr <= end_addr;
@@ -623,7 +639,8 @@ begin
 					SM_CHECKENDVAL: // End check
 						begin
 							// Check for matching end value
-							if (wait_timer != CHECK_HOLD & data_from_ram == end_val)
+							// Psikyo: two skip cycles, same reason as the start check
+							if (wait_timer != CHECK_HOLD & wait_timer != CHECK_HOLD - 16'd1 & data_from_ram == end_val)
 							begin
 								if (counter == total_entries)
 								begin
@@ -638,8 +655,15 @@ begin
 								else
 								begin
 									// Increment counter and restart state machine to check next entry
+									// Psikyo: bounce through SM_TIMER so the registered
+									// config-table outputs (addr_base) reflect the new
+									// counter before SM_CHECKBEGIN samples them. Going
+									// there directly left the two-cycle read-latency skip
+									// with no valid compare cycle inside CHECK_HOLD=2.
 									counter <= counter + 1'b1;
-									state <= SM_CHECKBEGIN;
+									next_state <= SM_CHECKBEGIN;
+									state <= SM_TIMER;
+									wait_timer <= 16'd1;
 								end
 							end
 							else

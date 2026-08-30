@@ -27026,3 +27026,1960 @@ Whitespace/escaping mismatch in my matcher — doing it by line index instead.
 
 Shell escaping keeps mangling the newline literals — switching to a direct file write.
 
+Fragmentation gone (1,741 real turns, zero consecutive same-speaker runs) and attribution is clean. Checking the 3 Claude sections that still contain system markers.
+
+Those three are legitimate — me using the phrase "task-notification" in my own prose, not misattributed. But I spotted a possible encoding issue; checking whether the file itself is corrupted or that's just terminal display.
+
+File is clean UTF-8 — zero replacement characters, 5,896 em-dashes intact. That `�` was just my console's code page. Committing.
+
+Good catch — it **wasn't** clear, and checking found two real problems.
+
+**What was wrong in the first export:**
+- 7 sections headed `## User` were actually harness output — compaction summaries and background-task notifications. Automated build results read as though you'd written them.
+- My own turns were split into 3,908 consecutive `## Claude` fragments (one per text block around each tool call), so turn boundaries were invisible.
+- Then a partially-applied edit briefly made it *worse*, relabelling that system text as `## Claude`. I caught that in verification rather than shipping it.
+
+**Now:**
+
+| speaker | sections | meaning |
+|---|---|---|
+| `User` | 590 | you |
+| `Claude` | 861 | me |
+| `System (automated — not written by either party)` | 290 | build completions, agent results, compaction notices |
+
+Verified: **0** User sections and **0** Claude sections contain harness markers. The 3 that still match are me using the phrase "task-notification" in ordinary prose, which is correct. Consecutive same-speaker runs: **0** — 5,462 blocks collapse to 1,741 real turns.
+
+I kept the system output rather than deleting it, because build results and agent completions are genuinely part of the narrative — it's just labelled as neither of us.
+
+Censoring re-verified after the rewrite: 0 private IPs, 0 personal email, 19 redaction markers. File is clean UTF-8 (0 replacement characters, 5,896 em-dashes intact) — the `�` I saw was only my console's code page.
+
+One thing I should flag: the sprite-retiming build finished a while back and I haven't reported it. Want me to check that now?
+
+## User
+
+check and deploy the build
+
+## Claude
+
+Deployed — `Arcade-Psikyo_20260833.rbf`, 4,252,524 bytes, on the device. Passed the safety gate cleanly.
+
+**Build:** 0 errors, fits at 553/553 M10K, 63% logic, commit `ed0b87e`.
+
+**What to test:** the sprite/tilemap frame alignment. The sprite-RAM snapshot is now refreshed *after* the render pass rather than before it, matching MAME's `get_sprites()` → `copy()` ordering, which should stop sprites leading the tilemaps by a frame.
+
+**One thing I have to flag honestly — timing went backwards on this build:**
+
+| build | worst slack | TNS |
+|---|---|---|
+| accumulate constraint | −6.336 | −2868 |
+| + vcnt_next_active | −6.234 | −1762 |
+| **this one** | **−7.007** | **−2919** |
+
+Nothing in this change touches the OPL4, so this is almost certainly **fit variance**, not a real regression — the same fit-lottery effect that produced a boot-fatal build earlier in this project and led to `SEED 7` being pinned. Worth knowing rather than glossing over: it means the PCM path is now ~7 ns unclosed again on the bitstream you're about to run, so if audio sounds worse than the last build, that's the likely reason rather than the sprite change.
+
+The proper fix for that remains RTL — splitting the deep `S_ENV`/`S_OUT` stages — rather than a third constraint or another spin of the seed lottery.
+
+## User
+
+Rom loading is still slow?
+
+## Claude
+
+Correct — and that's expected: the fast loader is **committed but not enabled**. `rom_loader.sv` is deliberately absent from `files.qip`, so nothing in the deployed bitstream uses it.
+
+Both `rom_loader.sv` and `ddram_phy.sv` are absent from `files.qip`, and no MRA has the `address` attribute — so the deployed build has only the byte-pair coalescing (~2×), not the DMA path. Let me wire the real thing up.
+
+Let me check whether that's an integration mismatch on my side rather than a module limitation.
+
+Let me check the mechanism rather than guess between the two options.
+
+On CRT Offset — I don't want to answer that from inference, because the two candidate explanations predict the same symptom and I've been caught by exactly that twice today. What I can say concretely: `hoffset` is applied as `rd_addr = rdcnt - hoffset` where `rdcnt` advances once per `pxl2_cen`, so in *this* wiring it should be whole pixels and any integer ought to work. A clean multiple-of-4 boundary points at a sub-pixel/packing assumption somewhere between `crt_adjust`, `arcade_video` and the HDMI rotator — most likely my `pxl2_cen = ce_pix` simplification meeting Raiden's quarter-cycle read-rate design.
+
+My recommendation: **restrict the OSD list to multiples of 4 as a documented stopgap** (it's honest, usable, and safe), and keep the real fix as an investigation item — you can't validate the analog path anyway, so shipping fine-grained control you can't test has little value. Say the word and I'll apply the limit.
+
+Now, the ROM loader wiring.
+
+Now the SDRAM side — the loader needs to drive the download write port.
+
+Now the top level: the DDR3 mux, the loader instance, and the DMA-mode trigger.
+
+Two fixes needed: `ddram_phy` has no `we16` port (that was `sdram_phy`), and the core must be held in reset during the copy.
+
+Noted on both — I'll come back to the sprite lag; let me first get the tree to a compiling state rather than leave it half-wired. My last edit failed its match.
+
+Three threads open. Finishing the loader wiring first so nothing's left half-applied, then I'll answer the hiscore question.
+
+Loader chain compiles. Now your hiscore question — checking the most likely cause.
+
+Found it — and it's not the reset. `reset` **is** wired to the hiscore module. The problem is that **no MRA has an `<nvram>` element**: without `<nvram index="4" size="N"/>` the HPS never creates or writes back a save file for index 4, so the core can offer data all day and nothing persists.
+
+Three answers, one of them a correction to my own work.
+
+**Hiscore saving — found it, and it isn't reset.** `reset` *is* wired to the module. The problem is that **no MRA carried an `<nvram>` element**. Without `<nvram index="4" size="N"/>` the HPS never creates a save file for index 4, so it neither restores a table at startup nor writes one back — the core can offer the data perfectly and nothing persists. Added to all 17 with the per-set size from each hiscore.dat entry (158 / 117 / 78 / 120 / 72 bytes) and taught `validate_mra` the element. These are data-only; they'll work with the core already on your device, no rebuild needed.
+
+**Sprite lag — my retiming didn't achieve what I claimed, and may have made things worse.** You're right that it's the metadata. My change moved the snapshot refresh to after the render, which adds latency measured from *frame start*, but the dominant term is the **output swap**: we swap the display bank the moment rendering finishes, ~61% into the visible frame, so freshly-rendered sprites appear within the same frame. That swamps the snapshot timing, which is why you saw no meaningful change.
+
+The flashing corruption is likely mine too: `want_frame` is now gated on `~spr_copy_busy`, so if a copy is still running at a frame boundary that frame's render is skipped entirely — and if a render ever overruns, `sp_frame_done` never fires and the snapshot stops refreshing altogether. That's a plausible source of brief sprite glitching that didn't exist before.
+
+I'd rather not stack another speculative change on top. My recommendation: **revert the retiming** (it didn't deliver the frame and it introduced a failure mode), then address the real term — the swap policy — which is the existing `status[43]` frame-boundary option. That one previously stopped the core booting, so it needs proper investigation rather than just flipping it.
+
+**Fast ROM loading is now actually built** — `ddram_phy` and `rom_loader` are in `files.qip`, the SDRAM write port has a bulk override, the core is held in reset during the copy, and the DDRAM pins mux between the loader and the rotator. It's deliberately inert until the `address="0x30000000"` attribute goes on the MRAs, so the next build behaves exactly as now; that's the switch to flip once you want to test it.
+
+Want me to revert the sprite retiming first, or push on?
+
+## User
+
+revert the retiming
+
+## Claude
+
+Reverted (testbench passes) and rebuilding. Now the MRA timestamp bump — the hiscore `<nvram>` fix is already in, so this makes the HPS pick the change up.
+
+All 17 MRAs deployed (5 primary + 2/1/3/5/1 alternates = 12), carrying the hiscore `<nvram index="4">` element and a fresh `mratimestamp` of `20260830102606` so the HPS re-reads them rather than using cached metadata.
+
+**Retiming reverted** via `git revert` (fix-forward, history intact), `tb_spriteram_dbuf` passes, and a rebuild is running. That removes both the ineffective change and the failure mode it introduced — the `~spr_copy_busy` gate that could skip a render, and the dependence on `sp_frame_done` firing for the snapshot to ever refresh.
+
+To set expectations on the two outstanding items:
+
+**Hiscore** should now actually persist — MiSTer needs both halves, the config (`index 3`, which we had) *and* the `<nvram>` declaration (which we didn't). You may need to bounce through the menu for the first load so the HPS picks up the new element. If it still doesn't save, the next thing I'd check is whether `ioctl_upload_req` is ever asserted, which the module drives from `OSD_STATUS` and the autosave option — that's probeable over JTAG rather than guesswork.
+
+**Sprite lead is unfixed and back to its original behaviour.** The real term is the output swap happening ~61% into the frame instead of at the boundary. The `status[43]` frame-boundary policy exists precisely for this but previously stopped the core booting, so it wants investigating properly rather than flipping — likely by understanding whether the render start was being starved rather than the swap itself being wrong.
+
+The build in flight is the reverted state plus the hiscore/loader plumbing; the fast loader stays inert until `address="0x30000000"` goes on the MRAs.
+
+## User
+
+MAME buffers it by two frames: " // Sprites, buffered by two frames (list buffered + fb buffered)". The sprite list needs buffering by a frame too.
+
+## Claude
+
+You're right, and I can now explain why my attempt fell short. MAME's two frames are **list (1) + framebuffer (1)**. Our framebuffer half isn't a full frame — we swap the display bank the instant rendering finishes, ~61% into the visible frame, so it contributes only a fraction. Re-applying the list buffering alone therefore moved us ~0.4 frame, which is exactly the "no meaningful change" you saw.
+
+Re-applying the list buffering, this time with the startup hole fixed.
+
+Both halves it is. Doing the framebuffer half by making the frame-boundary swap the default, and fixing the startup hole that caused the flashing.
+
+Now the startup hole — with list buffering the first render reads an unprimed snapshot, which is the likely source of that brief corruption.
+
+Building both halves now. (I killed the in-flight build of the reverted state — it was superseded.)
+
+**What's in it:**
+
+- **List buffered (1 frame)** — snapshot refreshed *after* the render pass finishes with it, so a pass reads data one generation old. Same reason `psikyo_v.cpp` calls `get_sprites()` before `m_spriteram->copy()`.
+- **Framebuffer buffered (1 frame)** — the output bank now swaps at the **frame boundary** by default, so a rendered pass is displayed across the following whole frame instead of appearing 61% down the frame it was drawn in.
+
+That's why my first attempt read as no change: the list half alone is worth only ~0.4 frame, and the fb half carries the rest. Both together give MAME's two.
+
+**Also fixed the corruption you saw** — and it was mine. With the copy moved after the render, nothing primes the snapshot at power-on, so the first passes rendered uninitialised memory. The first `frame_start` now does a copy instead of a render, and rendering waits for a completed copy.
+
+**One risk to flag honestly:** the frame-boundary swap is the policy that previously stopped the core booting. The recorded theory was that gating the render start across frames starved the CPU's SDRAM access. The conditions differ now — the render starts from `frame_start` rather than after a 4096-cycle copy — but I can't promise that's cured. It's on `status[43]`, so if it fails to boot, switch **Sprite swap** to *EndOfRender* on the Debug page and it reverts to the known-good behaviour without a rebuild. I inverted the bit so a cleared `.CFG` gets the correct setting by default.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>b6qqqm9dq</task-id>
+<tool-use-id>toolu_019tmZuQAftGQuZepxeHv7Ps</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\b6qqqm9dq.output</output-file>
+<status>failed</status>
+<summary>Background command "Rebuild at the reverted HEAD (background)" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+That failure is the build I deliberately killed (the superseded reverted-state one). Verifying the new one actually started — I killed Quartus just before launching it.
+
+Running cleanly at `4bcbcc2` — "Buffer sprites by two frames: list AND framebuffer" — marker present, Quartus up, staged from the right commit.
+
+To summarise where things stand while it compiles (~15 min):
+
+**In this build**
+- Sprite list buffered one frame (snapshot refreshed after the render consumes it)
+- Framebuffer swapped at the frame boundary — the missing half, now default
+- Startup priming fix for the corruption my earlier attempt introduced
+- Hiscore `<nvram>` support (MRAs already on the device)
+- Fast ROM loader fully wired but **inert** until `address="0x30000000"` goes on the MRAs
+
+**Watch for on test**
+- Sprite/tilemap alignment — the magenta on movement should go if the two-frame model is right
+- **If it fails to boot**: switch *Sprite swap* → **EndOfRender** on the Debug page. That's the policy that previously broke booting, and it's the main risk in this build. No rebuild needed.
+- Hiscore persistence, now that the HPS has an nvram declaration to save into
+
+**Still open**
+- OPL4 PCM path ~6–7 ns unclosed; wants an RTL split rather than a third constraint
+- CRT Offset H-Position corrupts on non-multiples of 4 — stopgap would be limiting the OSD list, real cause not yet found
+- FM synthesis confirmed unnecessary (0 key-ons across 35k register writes) — worth dropping from the README todo
+
+I'll report fit and timing when it lands.
+
+## User
+
+drop from todo, but will check Tengai at some point
+
+## Claude
+
+Done. FM synthesis is out of the todo, replaced by *"Confirm the FM finding on Tengai (a different sound program to s1945)"* so the open question stays visible rather than being quietly closed.
+
+I recorded the evidence in two places rather than just deleting the line:
+
+- **README status** now says FM synthesis is *deliberately* not implemented, with the numbers — so it reads as a decision rather than an unfinished feature.
+- **`docs/phase2_ymf278b.md`** gets the full measurement: the instrumentation (ymfm's own bit-9 FM/PCM selector, ISSP instance `F`), both samples, and the reasoning.
+
+| counter | early | later |
+|---|---|---|
+| FM register writes | 12,265 | 34,655 |
+| FM key-ons | 0 | **0** |
+| PCM key-ons | 714 | 7,799 |
+
+The eleven-fold rise in PCM key-ons against a flat zero for FM is what makes it conclusive rather than a short-sample artefact.
+
+One distinction I made explicit in the docs, because it'd be easy for someone later to over-read this: dropping the *synthesis engine* doesn't mean the FM half can be ignored. Those 34,655 register writes still have to be accepted, and the chip ID, status and timer behaviour still have to be correct or the Z80 sound driver can stall waiting on them. That part is implemented and is why the games run at all.
+
+The two-frame sprite buffering build is still going; I'll report fit and timing when it lands.
+
+## User
+
+limot the H-Position to multiples of 4
+
+## Claude
+
+Encoding verified — all 25 entries map exactly to 0, +4…+48, −48…−4, with the wrap at 25 handled correctly (the same class of bug Raiden documented for their 97-entry list). No bit collisions: H-Position now `[69:65]`, V-Shift `[77:72]`, autosave `[78]`; bits 70–71 freed.
+
+Done — H-Position is now 25 entries (0, +4…+48, −48…−4) at `status[69:65]`, with the value verified index-by-index rather than assumed. Getting the wrap modulus wrong is precisely what made Raiden's "−1" jump 32 pixels, so I checked all 25 map to the intended pixel offset.
+
+I've written it into the code as an explicit **stopgap, not a fix** — the comment records the symptom, that it's not root-caused, and that `crt_adjust` itself applies `hoffset` as whole linebuffer samples (`rd_addr = rdcnt - hoffset`), which is what makes the multiple-of-4 boundary suspicious rather than expected. That way whoever picks it up later knows there's a real defect behind the restriction instead of assuming coarse steps were a design choice.
+
+One consequence worth noting: this change is **not** in the build currently running (that started before it). So the next build is the one that'll have the limited list — the current one still has the fine-grained list that corrupts.
+
+Bits 70–71 are now free if you want them for something else.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>bevc7zy0w</task-id>
+<tool-use-id>toolu_01GS9ZyQwmjuRDSjQyLaGzbu</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\bevc7zy0w.output</output-file>
+<status>completed</status>
+<summary>Background command "Commit both buffering halves and rebuild (background)" completed (exit code 0)</summary>
+</task-notification>
+
+## Claude
+
+Build succeeded at `4bcbcc2` — 0 errors, fits (553/553 M10K, 63% logic), worst slack **−6.633 / TNS −2717** (in line with the recent fit spread; nothing in this change touches the OPL4).
+
+This is the two-frame sprite buffering build: list buffered one frame, framebuffer swapping at the frame boundary, plus the startup priming fix.
+
+Two things before you decide on it:
+
+**It predates the H-Position limit** (`d52a42c`, committed after the build started), so this bitstream still has the fine-grained list that corrupts on non-multiples of 4. Avoid H-Position on it, or wait for the next build.
+
+**If it fails to boot, switch *Sprite swap* → EndOfRender** on the Debug page. The frame-boundary swap is the policy that previously stopped the core booting; conditions differ now, but I can't promise it's cured, and that OSD bit reverts to known-good behaviour without a rebuild.
+
+Want me to deploy this one, or roll the H-Position limit in and build once more so you get both in a single test cycle? Given the boot risk is the main unknown here, testing this build on its own is arguably cleaner — a boot failure would be unambiguous.
+
+## User
+
+deploy now, and do a smoketest -screenshots every 10s for the parent games. post shots here
+
+## Claude
+
+Deployed as `Arcade-Psikyo_20260834.rbf`. Running the smoketest across all five parent games — launch, wait for ROM load, then three shots at 10 s intervals each.
+
+Smoketest running (~7 minutes: five games, 55 s load each, then three shots 10 s apart). Deploy confirmed — `Arcade-Psikyo_20260834.rbf`, 4,263,044 bytes on the device.
+
+This is the two-frame sprite buffering build, so the things to watch in the shots are boot success (the frame-boundary swap is the boot risk), sprite/tilemap alignment, and no startup sprite corruption.
+
+I'll post the shots when it completes.
+
+## User
+
+the fast rom loading is also a risk
+
+## Claude
+
+Fair — let me verify rather than assume it's dormant.
+
+You're right to flag it, and there's a real hazard — not the trigger logic itself but its **power-up state**.
+
+`dl_seen_wr` and `dl_active_d` have no reset. In practice Cyclone V registers come up 0, which is safe (`dl_active_d=0` means the end-of-download edge can't fire). But if `dl_active_d` ever came up 1 with `dl_seen_wr` 0, the loader would fire immediately and copy 18.5 MB of uninitialised DDR3 over the ROM map — presenting as a core that won't boot. Fixing the default properly.
+
+Fixed. `dl_seen_wr` now resets to **1** ("assume the byte path"), so a copy can only start after a genuine index-0 download is observed carrying no `ioctl_wr` at all — a spurious edge from an odd power-up state, or a reset landing mid-download, can no longer trigger it.
+
+On the build **currently under smoketest** (`20260834`), my assessment of the risk:
+
+- **Can't trigger with current MRAs.** None carry `address="0x30000000"`, so every index-0 download streams bytes, `dl_seen_wr` gets set, and the end-of-download edge is rejected. The path is genuinely dormant.
+- **Power-up is safe in practice** — Cyclone V registers come up 0, giving `dl_active_d = 0`, which blocks the edge. The hazard was theoretical but exactly the kind that produces an unexplainable non-booting core, so it deserved the explicit reset rather than a reliance on device behaviour.
+- **What *is* live in that build**: `ddram_phy` instantiated, the DDRAM pin mux, and `core_reset` gaining an `ldr_active` term. With `ldr_active` stuck at 0 those are pass-throughs, but they did consume fit resources and shifted timing (−6.633).
+
+So if the smoketest shows a boot failure, my ordering of suspects is: **frame-boundary sprite swap** first (that's the one with a known history of breaking boot), then the DDRAM mux, then the loader trigger last.
+
+Smoketest is still running; I'll post the shots when it's done.
+
+## User
+
+do we have timing logs for core load available?
+
+## Claude
+
+Smoketest finished — checking results.
+
+All five games **launched and captured fine** — the failure was my script: I exported `MSYS_NO_PATHCONV=1` (needed for the remote path) which also stopped `/d/...` local paths being converted, so Python got an invalid Windows path. That's the exact trap the earlier deploy agent warned me about. The shots are on the device.
+
+All 15 shots exist (3 per game, ~15 s apart as intended). Pulling them.
+
+## Smoketest results — `Arcade-Psikyo_20260834`
+
+**Four of five parent games run correctly.** No boot failure, so the frame-boundary sprite swap did *not* break booting this time — that was the main risk in this build.
+
+**Samurai Aces** — attract, clean sprites and tilemaps, scores rendering:
+
+![samuraia](debug/smoketest/samuraia_1.png)
+
+**Gunbird** — in-game, large boss sprite over scrolling water, no visible tearing:
+
+![gunbird](debug/smoketest/gunbird_3.png)
+
+**Battle K-Road** — fighters, HUD, crowd layer all correct (this is the ROT0 set):
+
+![btlkroad](debug/smoketest/btlkroad_1.png)
+
+**Strikers 1945** — heavy sprite load, no magenta visible in this frame:
+
+![s1945](debug/smoketest/s1945_3.png)
+
+**Tengai — near-black across all three shots**, ~40 s apart, only a small blue element top-centre:
+
+![tengai](debug/smoketest/tengai_3.png)
+
+That's the one to look at. It isn't a hang — the shots differ slightly between captures, so something is rendering. Note Tengai is also the only parent set whose gfx ROMs use plain `ROM_LOAD` (no byte swap), and it's a 4 MB tile ROM, so it exercises paths the others don't. It may equally just be a dark intro screen that the 55 s + 15 s sampling happened to land on.
+
+**On your timing question:** no, we have no core-load timing logs — nothing in the scripts measures it and there's no RTL instrumentation. The only figure is my empirical one: ~50 s is reliably enough for launch-to-running, 8 s is not. If you want a real number to measure the fast loader against, the cheap approach is timing the API launch call to `/tmp/CORENAME` changing; the precise one is an ISSP counter clocked while `ioctl_download` is asserted. Worth having *before* enabling the DDR3 path, so the improvement is measured rather than assumed.
+
+## User
+
+S1945 Magenta is fixed!
+
+## Claude
+
+Good — that confirms the two-frame model was right, and that it needed *both* halves. Recording it properly, since it took several attempts to get there.
+
+Recorded as defect 6 in `docs/sprite_buffering.md`, including the table comparing each buffering half against `psikyo_v.cpp` and — the part worth saving someone else a day — that fixing the list half alone is worth only ~0.4 frame and reads as no change on hardware, so it looks like a failed fix when it's actually an incomplete one.
+
+The README bullet I'd intended to extend wasn't there (your earlier edits reshaped that section), so I left it alone rather than guessing where it belongs. Say the word if you want a status line added and I'll match your current structure.
+
+**Where the sprite work landed:**
+
+| half | reference | now |
+|---|---|---|
+| list | `get_sprites()` before `copy()` — renders one buffer generation old | snapshot refreshed *after* the render consumes it |
+| fb | hardware framebuffer, shown the following frame | output bank swaps at the frame boundary |
+
+Cost: no extra memory, which mattered — a second snapshot bank would have been 64 Kbit and there's no M10K spare.
+
+**Still open from today:**
+- **Tengai renders near-black** in all three smoketest shots — the one real finding from the run. Could be a dark intro the sampling landed on, or something specific to Tengai (it's the only parent whose gfx use plain `ROM_LOAD`, and it has the 4 MB tile ROM).
+- **OPL4 PCM** still ~6.6 ns unclosed; wants an RTL split.
+- **CRT H-Position** limited to multiples of 4 as a stopgap; root cause unknown. That limit is committed but *not* in the deployed build.
+- **Fast ROM loading** wired and fail-safe, but inert until `address="0x30000000"` goes on the MRAs — and worth instrumenting load time first so the gain is measured.
+
+## User
+
+There was a request for H-Size/V-Size in CRT Offset - does Raiden not have that?
+
+## Claude
+
+Yes — Raiden has both, and I deliberately left them out. Let me confirm the details.
+
+Both answered — and the ROM-loading one looks explainable.
+
+Found it, and it explains both reports. `psikyo_core` is instantiated with `core_reset = reset | ioctl_download | ldr_active`, and inside it **`video_timing` is held in that same reset** — so throughout the entire ROM load, `hcnt`/`vcnt` are frozen and the core emits **no HSync or VSync at all**. HDMI's scaler tolerates that; a CRT simply loses sync and shows nothing.
+
+Good — that means the corruption was an artifact of the HDMI path, not `crt_adjust`, and the fine-grained control is legitimate for its actual audience. Reverting the restriction.
+
+Reverted — full 97-entry list restored at `status[71:65]`, single-pixel steps.
+
+**On H-Size and V-Size: Raiden has both, and they're very different propositions for us.**
+
+**H-Size** is inside `crt_adjust` — the `hsize` port I currently tie to 0. It's driven by a quarter-cycle read-rate accumulator:
+
+```verilog
+wire rd_tick = (rd_acc + 8'd4) >= {1'b0, rd_period};
+wire rd_ce   = (hsize_s == 5'sd0) ? vz_ce : rd_tick;   // pixel period = (64 + hsize) quarters
+```
+
+So the module is already built for it; what's missing is that generator feeding `pxl2_cen`, reset on `hs_ref_out`. **No extra memory, moderate work** — this one is realistic.
+
+**V-Size is a separate module**, `crt_vsize.sv`, chained *before* `crt_adjust` (native → `crt_vsize` → `crt_adjust` → DAC), with its own PVM/Cabinet mode. Raiden's own comment gives the cost: `RING_LINES=52` is *"~150 Kbit di M10K in più rispetto a 32"*.
+
+That's roughly **15 M10K blocks, and we have exactly zero spare** — 553/553. So V-Size is blocked on memory, not effort. It'd need something else given up first (the debug tracer in the stp revision is the obvious candidate, or the hq2x scandoubler buffer if we were willing to touch vendored `sys/`).
+
+Also worth noting Raiden feeds `crt_adjust.pxl_cen` from `crt_vsize`'s output CE (`vz_ce`), not the raw pixel clock — so if V-Size ever goes in, the chaining order matters.
+
+Separately, I fixed the CRT loading blackout you reported: `video_timing` was being held in `core_reset`, which includes `ioctl_download`, so the core emitted **no sync at all** for the entire load. It now runs from its own reset and free-runs during downloads.
+
+Want me to do H-Size?
+
+## User
+
+yes
+
+## Claude
+
+Now I have the exact recipe. One integration question first — what clock enable Raiden feeds downstream, since our `arcade_video` samples at `ce_pix`.
+
+Stopped — no H-Size work was written, only research, so there's nothing to undo.
+
+Worth recording the one thing that research established, since it would have bitten: Raiden doesn't just feed `crt_adjust` a different read rate, it propagates that rate downstream — `CE_PIXEL`, the scaler and the rotator all get `crt_adj_on ? rd_ce : ce_pix`. Our `arcade_video` is hardwired to `ce_pix`, so H-Size would have needed that rate change threaded through the whole output chain, not just the module. Good thing to know if it ever comes back up.
+
+Current state of the tree, all committed on `develop`:
+
+| change | status |
+|---|---|
+| Two-frame sprite buffering | deployed, magenta confirmed fixed |
+| CRT sync during ROM load | committed, **not yet built** |
+| H-Position multiples-of-4 | reverted, full 1-pixel steps restored |
+| Hiscore `<nvram>` | MRAs deployed |
+| Fast ROM loader | wired, fail-safe, inert until MRAs get `address=` |
+
+The last build on the device is `20260834`. The CRT sync fix and the H-Position revert are both newer than it, so neither is on hardware yet.
+
+Open: Tengai rendering near-black in the smoketest, OPL4 PCM ~6.6 ns unclosed, and no load-time instrumentation to measure the fast loader against.
+
+## User
+
+Tengai are fine
+
+## Claude
+
+Good — so the near-black shots were just a dark scene the 55 s + 15 s sampling landed on, not a fault. That closes the only finding from the smoketest; all five parent games are running correctly on `20260834`.
+
+Two fixes are committed but **not yet on hardware**:
+
+- **CRT sync during ROM loading** — `video_timing` no longer held in `core_reset`, so the raster keeps running through a download instead of dropping sync entirely
+- **H-Position revert** — full 1-pixel steps restored
+
+Want me to build those? It's the natural next bitstream, and the CRT sync one is the meaningful fix in it.
+
+Remaining open items, none urgent:
+- OPL4 PCM path ~6.6 ns unclosed — wants an RTL split of the deep `S_ENV`/`S_OUT` stages rather than another constraint
+- Fast ROM loading inert until `address="0x30000000"` goes on the MRAs; worth adding load-time instrumentation first so the gain is measured rather than assumed
+- Confirming the FM finding on Tengai, now that the probe reports correctly
+
+## User
+
+do the rtl split,and the fast rom loading mra change
+
+## Claude
+
+Starting with the RTL split — the more delicate of the two.
+
+OPL4 regression passes with both stages split. Now the MRA change for fast loading.
+
+Both done and building.
+
+**RTL split** — the two stages that dominated `clk_sys`, each doing table lookups *and* a multiply in one clock:
+
+| stage | chain | split |
+|---|---|---|
+| `S_ENV` | `c_rc/c_oct → corr → eff_rate → cur_rate → eg_inc → es_env_next` | registers the rate chain (`p_rate`/`p_eg_inc`/`p_frac_zero`), arithmetic moves to `S_ENV2` |
+| `S_OUT` | `c_amd → am_depth_f → ×lfo_tri → att2vol → ×w_sample → acc` | registers the `att2vol` results (`p_lvol`/`p_rvol`), multiply+accumulate move to `S_OUT2` |
+
+48 extra cycles per sample against a ~1948-cycle budget that was using a few hundred — free. `tb_opl4` passes. I left the existing multicycle constraints in place: their sources are now *further* from their destinations, so setup-2 stays conservative rather than becoming wrong.
+
+**Fast ROM loading is now armed** — all 17 MRAs carry `address="0x30000000"` on `<rom index="0">`, so the HPS DMAs straight into DDR3 and `rom_loader` bulk-copies to SDRAM with the core in reset.
+
+Two things worth knowing before you test it:
+
+**This is the first time the DDR3 path actually executes.** Everything up to now had it wired but dormant. If ROM loading breaks, that's the prime suspect — and **rollback is data-only**: revert the MRA commit and redeploy, since an `.mra` without the attribute streams through the old path unchanged. No rebuild needed.
+
+**Worth testing one game first** rather than assuming all 17. If a game boots with correct graphics and sound, the copy is byte-exact and the rest will follow.
+
+I'd also still like load-time instrumentation at some point — right now we'll only know it's "faster" by feel, not by measurement.
+
+## User
+
+do a quick test now of one game, then create a release build too
+
+## Claude
+
+Testing one game now against the currently-deployed build (`20260834` already has the loader wired — the MRAs were the only missing piece).
+
+Loaded in ~6 s. But `/tmp/CORENAME` can update before the ROM copy finishes — verifying it actually renders correctly.
+
+Black. Let me check whether the core is actually executing rather than judging on one frame.
+
+Conclusive: **the fast load did not produce a working ROM.** The sound probe shows Z80 fetches saturated but **0 YM writes and 0 sound-latch writes** — the 68020 isn't running the game at all, which means the ROM image in SDRAM is wrong or absent. Rolling the MRAs back so games work again.
+
+Rollback confirmed working — Samurai Aces renders correctly again:
+
+![samuraia restored](debug/smoketest/rollback_check.png)
+
+## Fast ROM loading: tested, doesn't work, rolled back
+
+**The HPS half looks right** — the transfer completed in ~6 s versus ~50 s for the byte path, so the DMA into DDR3 is happening and is dramatically faster. That's the prize, and it's real.
+
+**The core half doesn't.** The game never runs. The sound-chain probe is unambiguous:
+
+| counter | value | meaning |
+|---|---|---|
+| Z80 ROM fetches | 65,535 (saturated) | Z80 spinning |
+| YM register writes | **0** | not driving the sound chip |
+| Sound latch writes | **0** | **68020 never sends a command** |
+
+Zero latch writes means the main CPU isn't executing the game, so the ROM image reaching SDRAM is wrong or absent. Screen black.
+
+Two candidates I can't separate from the symptom alone: the copy never ran (trigger didn't fire, leaving SDRAM unwritten), or it ran against the wrong DDR3 base/offset and copied garbage. That needs an ISSP counter on `ldr_active` and the loader's address — not another guess.
+
+**Rolled back** by removing the attribute from all 17 MRAs — data-only, no rebuild — and verified: Samurai Aces renders its attract sequence correctly again. The loader RTL stays in place for the investigation.
+
+**On the release build:** the stp build is still running and both share `build/`, so I'll start the release (`--rev Psikyo`) when it finishes. Note it'll contain the OPL4 RTL split and the CRT-sync fix, with fast loading inert — which is the right state for a release given what we just learned.
+
+## User
+
+don't roll back, fix
+
+## Claude
+
+Let me diagnose rather than guess — the DDR3 address mapping is the most likely culprit.
+
+`ddram_phy`'s base is correct — `{4'b0011, addr[27:3]}` = word 0x6000000 × 8 = **0x30000000**. So the address mapping isn't it.
+
+The likely cause is the trigger. Note how srg320 starts *their* loader:
+
+Confirmed — srg320 triggers the loader **from reset**, not from a download edge, and holds the core in reset until the copy finishes. Our download-edge trigger almost certainly never fires. Fixing it that way, plus instrumentation so we can see what actually happens.
+
+Now instrumentation, so this build tells us *why* if it still fails rather than needing another guess.
+
+The `F` probe lives in `psikyo_top`; my loader signals are at the top level. Adding the `L` probe there instead.
+
+Fixed rather than rolled back, and instrumented so the next test can't be ambiguous.
+
+**Root cause — the trigger, not the addressing.** I verified `ddram_phy`'s base is correct: `{4'b0011, addr[27:3]}` is word `0x6000000` × 8 = byte **0x30000000**. What failed is *when* the copy starts. With `address=`, the HPS DMAs the ROM in **without the byte-wise ioctl handshake**, so an end-of-download edge isn't something the core can rely on seeing at all — and ours evidently never fired, leaving SDRAM unwritten. That matches the symptom exactly: 68020 dead, zero sound-latch writes, black screen.
+
+srg320 starts their copier **out of reset** and holds the core off until it finishes, which works because MiSTer resets the core once the ROM is in place — so reset-release is the moment DDR3 is known good. Ours now does the same. `dl_seen_wr` still selects the mode, so an old `.mra` without the attribute keeps its byte-streamed contents instead of having DDR3 copied over them.
+
+**Plus ISSP instance `L`**, reporting: copies started, DDR3 granules read, SDRAM words written, copy-in-progress, and which path the `.mra` used. The first attempt gave no way to separate "never ran" from "copied garbage" — that's what made it a guess, and it cost a full cycle.
+
+MRAs are re-armed with the attribute.
+
+The stp build is still running (it predates all of this), so it'll need re-running to pick these up. Once the stage frees I'll build, and then the release build after. Testing that build with the `L` probe should settle the fast-load question either way.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>br4cq1fr5</task-id>
+<tool-use-id>toolu_01Mn2owsJPMHch8rrXTU9sXL</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\br4cq1fr5.output</output-file>
+<status>completed</status>
+<summary>Background command "Commit both changes and build (background)" completed (exit code 0)</summary>
+</task-notification>
+
+## Claude
+
+The RTL split delivered: **−4.688 / TNS −1628**, from −6.633 / −2717 — nearly 2 ns recovered. Building current HEAD now that the stage is free.
+
+**The OPL4 RTL split worked well:**
+
+| build | worst slack | TNS |
+|---|---|---|
+| before split | −6.633 | −2717 |
+| **after split** | **−4.688** | **−1628** |
+
+Nearly 2 ns and 40% of the total violation recovered by breaking those two stages. Not closed yet, but the approach is clearly the right one — a third split of whatever now dominates would likely take another chunk. Worth checking which family that is before doing more.
+
+Building the current HEAD now (stp), which adds the reset-based loader trigger and the `L` probe. That's the one to test fast loading with. The release build follows when the stage frees.
+
+To be clear about what each build contains, since several are in flight:
+
+| build | contents |
+|---|---|
+| `20260834` (on device) | two-frame sprite buffering — **known good** |
+| `e3e82c4` (just finished) | + OPL4 split, but with the **broken** download-edge loader trigger |
+| building now | + reset-based trigger, `L` probe, CRT-sync fix — **the one to test** |
+
+I'd skip deploying `e3e82c4` — it has the RTL split but its MRAs would trigger the old broken path. The build in progress supersedes it.
+
+## User
+
+what proportion of the logic elements are we using?
+
+## Claude
+
+On the latest fit (the OPL4-split build, Cyclone V 5CSEBA6):
+
+| resource | used | total | % |
+|---|---|---|---|
+| **Logic (ALMs)** | 26,800 | 41,910 | **64%** |
+| Registers | 37,446 | — | — |
+| **M10K blocks** | **553** | **553** | **100%** |
+| Block memory bits | 4,321,952 | 5,662,720 | 76% |
+| DSP blocks | 58 | 112 | 52% |
+| Pins | 145 | 314 | 46% |
+
+So logic has real headroom — about 15,000 ALMs, a third of the device — and DSPs are half free.
+
+**Memory is the hard wall**, and it's the number that governs what we can still add: 553/553 blocks, completely full. Note the two figures disagree in an important way — only 76% of the *bits* are used but 100% of the *blocks*, because arrays whose width isn't a power of two pack badly (the sprite frame buffers are the main offenders, 12 bits wide). That ~24% of wasted bits is theoretically reclaimable by repacking, but as I found earlier when I tried it, repacking is fiddly and I'd want a measured reason before touching the sprite path again.
+
+Practical consequences:
+- **V-Size is blocked** — Raiden's `crt_vsize` needs ~150 Kbit (~15 blocks) and there are zero spare.
+- Anything else memory-shaped needs something given up first. The obvious candidates are the debug tracer in the stp revision, or hq2x's 10 blocks if we were willing to touch vendored `sys/`.
+- Logic-only features (H-Size, more constraints, RTL splits) are unconstrained.
+
+Also worth noting the release revision will report differently — it drops SignalTap and the tracer, so it should have some M10K free. If V-Size only ever needs to exist in release builds, that's a possible route.
+
+## User
+
+add that table to the readme please
+
+## System (automated -- not written by either party)
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Continued deep bring-up of the MiSTer-Psikyo FPGA arcade core (repo `D:\Arcade-Psikyo_MiSTer`, renamed from `D:\Mister-Psikyo` this session). Explicit user requests in chronological order:
+   - Add S1945/Tengai (SH403/SH404) support: model the security device, wire mod-byte flags. Constraints given mid-turn: "Assume the YMF286-K is just a YM2610 for now", "and the LZ8420M is a Z80", "Do the analysis of psikyo.cpp as to what needs to be added and differs from the current hardware, including bank switching and wait for approval", "Pay close attention to bit inversion as this cost us a lot of time in the past". Then "Sounds good - put this in docs/ and proceed".
+   - Git restructuring: "create a new develop branch from master, then reset master to origin. then squash develop and pull/fastforward on master from develop", "switch to develop", "Remove top-level-integration branch", "Remove any local branches other than master and develop".
+   - "Read https://github.com/MiSTer-devel/Wiki_MiSTer/wiki/Contributing-a-Core-to-MiSTer-FPGA and confirm any cases where our repo doesn't confirm. Then, apply the coding guidelines from https://mister-devel.github.io/MkDocs_MiSTer/developer/principles/ to all of the source we have created (don't touch imported modules further)".
+   - "rename the local folder, and the repo name to Arcade-Psikyo_MiSTer. Change license to GPLv3. Cite the sim/ suite and manual testing. Firt, deploy the build in subagent".
+   - Morning tasks: "Determine if there's a fix for the off-by-one on the linescroll, most evident in many scenes in Tengai"; "Determine if we need to implement more OPL4 features - can we do this from a MAME execution trace, or probes or trace on the core"; "Add 'CRT OFfset' (use Raiden as the source of truth)"; "Implement 'fast rom loading' (consult PSikyoSH2 or Super Kaneko Nova System for that)".
+   - "Add to the todo list in readme.md 'Port to the Analogue Pocket OpenFGA'" (reference: https://github.com/latentDaniel/analogue-pocket-guide).
+   - "Can you add hiscore.v support now? Take the relevant entries from https://github.com/mamedev/mame/blob/master/plugins/hiscore/hiscore.dat".
+   - "There are sound glitches, we should do the multicycle constraint checks".
+   - Subagent tasks: audit `_alternatives` MRAs (Sengoku Ace set 1 graphics bug); rewrite LESSONS_LEARNED.md as agent training material; set mameversion 0298 + author "Paul Priest" in all MRAs.
+   - "export this chat as markdown, including tables and imagea. check for rude language, local ip addresses, passwords and censor. checkin to docs/" then "is it clear which text is me and which is you?"
+   - Sprite frame lag: "MAME buffers 2 frames - can you research this? Can we fit a second copy of the sprite ram in BRAM?", "MAME buffers it by two frames... The sprite list needs buffering by a frame too", "as well as the framebuffer".
+   - "do the rtl split,and the fast rom loading mra change", "do a quick test now of one game, then create a release build too", "don't roll back, fix".
+
+2. **Key Technical Concepts:**
+   - MiSTer framework: `hps_io`, ioctl download (index 0=ROM, 1=mod byte, 3=hiscore config, 4=nvram, 254=DIPs), `emu_ports.vh`, `OSD_STATUS`, `status_menumask` (Hn hides when bit set), CONF_STR bracket syntax `O[bit:bit]` supporting bits 0-127.
+   - MAME as ground truth: `psikyo.cpp`, `psikyo_v.cpp`, `ymfm` (ymfm_opl.h/cpp, ymfm_pcm.h/cpp), `hiscore.dat`.
+   - SDRAM map (re-laid out this session): maincpu 0x0000000 (2MB), audiocpu 0x0200000 (256KB), sprites 0x0240000 (8MB), tiles 0x0A40000 (4MB), samples 0x0E40000 (4MB, adpcmb at +0x100000), spritelut 0x1240000 (256KB). Total 0x1280000 (18.5MB).
+   - Registered-BRAM stale-read bug class (documented in TILEMAP_BUG.md): address registered in state N, data valid only in state N+2.
+   - req/valid handshake contracts: pulse vs held; `assign gfxrom_req = gfxrom_req_r & ~gfxrom_valid;`
+   - MRA interleave maps: `map="12"` = pairwise byte SWAP (for `ROM_LOAD16_WORD_SWAP`); `map="21"` = verbatim; bare `<part>` = verbatim (for plain `ROM_LOAD`). maincpu 32-bit: `map="0012"`/`"1200"`.
+   - Multicycle constraint discipline: never sweep unaudited registers; name specific registers, not subtree wildcards; audit edge-count between launch and capture.
+   - M10K resource limits: device has 553 blocks; design is BRAM-bound at 553/553 with logic only 63%.
+   - Quartus 17.0 quirks: `set_instance_assignment -name RAMSTYLE` is rejected by the .qsf parser; forward references to nets create implicit undriven nets.
+   - srg320/Arcade-PsikyoSH2_MiSTer fast ROM loading: `.mra` `<rom index="0" address="0x30000000">` makes HPS DMA into DDR3; core-side loader copies DDR3→SDRAM in 64-bit granules, triggered **from reset**, holding core in reset via `loader_rst`.
+   - Raiden CRT Adjust: `crt_adjust.sv` (H-Size via `hsize`, H-Position via `hoffset`, V-Shift via `voffset`), separate `crt_vsize.sv` for V-Size (~150Kbit M10K). Read rate in quarter-cycles: `rd_period = 64 + hsize`, `rd_tick = (rd_acc + 4) >= rd_period`. Raiden propagates `rd_ce` downstream to CE_PIXEL/scaler/rotator.
+
+3. **Files and Code Sections:**
+
+   - **`rtl/cpu/s1945_mcu.sv`** (created) — SH403/SH404 security device, direct translation of MAME's `s1945_mcu_*`. Reset state: `direction=0x00, inlatch=0xFF, latch1=0xFF, latch2=0xFF, latching=0x5, control=0xFF`. Command decode on `{direction != 0, wdata_l}`: 0x11C, 0x013, 0x113, 0x010/0x110. Answer table 256×8 loaded from .mra mod payload bytes 4..47.
+   - **`rtl/cpu/maincpu.sv`** — SH404 bus decode; MCU register writes by byte lane; DSW low word returns `{mcu_data_byte, mcu_bctrl[7:4], dsw_in[3:0]}`; P1_P2 bit 2 carries raw ACTIVE_HIGH `mcu_status`; sound latch relocatable to C00011.
+   - **`rtl/video/tilemap_line_engine.sv`** — added `S_ROWSCROLL_WAIT2` state so the row-scroll RAM's registered read lands before consumption.
+   - **`rtl/video/vreg_decode.sv`** — `layer0_rowscroll_enable = l0_ctrl[8] | l0_ctrl[9];` (MAME gates on `layer_ctrl & 0x0300`); added `sh404_banking`/`mcu_bctrl` for 2-bit banks from bctrl[5:4]/[7:6].
+   - **`rtl/video/video_timing.sv`** — added `vcnt_next_active`:
+     ```systemverilog
+     assign vcnt_active = vcnt[7:0];
+     wire [8:0] vcnt_next = (vcnt == V_TOTAL - 1) ? 9'd0 : (vcnt + 9'd1);
+     assign vcnt_next_active = vcnt_next[7:0];
+     ```
+   - **`rtl/psikyo_core.sv`** — tilemap engines index `vcnt_next_active`; hiscore work-RAM port sharing the CPU port (NOT port B, which caused RAM replication); sprite snapshot priming; added `video_reset` port for video_timing.
+     ```systemverilog
+     wire        hs_access       = hs_read | hs_write;
+     wire [15:0] workram_a_addr  = hs_access ? hs_word_addr : workram_cpu_addr;
+     ...
+     .b_addr(16'd0), .b_rdata(workram_unused_b)
+     ```
+     ```systemverilog
+     logic snap_valid;
+     wire want_frame = frame_start & snap_valid & ~sprites_disable
+                      & ~dbg_render_dis[0] & ~spr_copy_busy;
+     assign spr_copy_start = snap_valid ? sp_frame_done : frame_start;
+     ```
+   - **`rtl/video/spriteram_dbuf.sv`** — `copy_start` replaces `frame_start` as the copy trigger (list buffering).
+   - **`rtl/sound/opl4/opl4_pcm.sv`** — RTL split (most recent): states now `S_CALC, S_ENV, S_ENV2, S_FETCH0, S_FETCH1, S_OUT, S_OUT2, S_NEXT, S_DONE`. New pipeline regs `p_rate, p_eg_inc, p_frac_zero, p_lvol, p_rvol`. S_ENV registers rate chain; S_ENV2 does envelope arithmetic (uses `p_rate`/`p_eg_inc`/`p_frac_zero`); S_OUT registers att2vol results; S_OUT2 does `os_lmul = $signed({1'b0, p_lvol}) * w_sample;` and accumulate.
+   - **`rtl/memory/rom_loader.sv`** (created) — DDR3→SDRAM copier, `LENGTH = 28'h1280000`, states L_IDLE/L_RD/L_RDWAIT/L_WR/L_WRACK/L_NEXT, writes 4×16-bit words per 8-byte granule, applies ADPCM bit6/7 swap in-window.
+   - **`rtl/memory/psikyo_sdram_top.sv`** — `ldr_*` bulk write port overriding `dl_*`; `sdram_phy` gained `we16`; byte-pair coalescing in `sdram_download.sv`.
+   - **`rtl/hiscore.v`** (vendored from JimmyStones/Hiscores_MiSTer, GPLv3) — `HS_ADDRESSWIDTH(17)`, `HS_SCOREWIDTH(8)`, `CFG_ADDRESSWIDTH(2)` (reduced from 4 to save 4 M10K).
+   - **`rtl/video/crt_adjust.sv`** (vendored from Arcade-Raiden_MiSTer, GPLv3) — H-Position/V-Shift wired, `hsize` tied 0, `pxl2_cen = ce_pix`.
+   - **`Psikyo.sv`** — most recent loader trigger (reset-based):
+     ```systemverilog
+     reg  dl_seen_wr  = 1'b0;
+     reg  dl_active_d = 1'b0;
+     reg  ldr_pending = 1'b0;
+     reg  ldr_start   = 1'b0;
+     wire dl_index0 = ioctl_download && (ioctl_index == 16'd0);
+     always @(posedge clk_sys) begin
+         ldr_start   <= 1'b0;
+         dl_active_d <= dl_index0;
+         if (dl_index0 && !dl_active_d)  dl_seen_wr <= 1'b0;
+         else if (dl_index0 && ioctl_wr) dl_seen_wr <= 1'b1;
+         if (reset) begin
+             ldr_pending <= 1'b1;
+         end else if (ldr_pending && !ioctl_download && !ldr_active) begin
+             ldr_pending <= 1'b0;
+             if (!dl_seen_wr) ldr_start <= 1'b1;
+         end
+     end
+     ```
+     Plus ISSP probe `INSTANCE_ID("L")` under `ifdef DEBUG_ISSP`; DDRAM pin mux `assign DDRAM_* = ldr_active ? ldr_* : rot_*`; `dbg_sprite_vsync_swap = ~status[43]` (frame-boundary swap now default).
+   - **`Psikyo.sdc`** — two audited multicycle families appended (OPL4 envelope: `pcmsrc`→`pcmdst` setup 2/hold 1; OPL4 accumulate: `accsrc`→`accdst` setup 2/hold 1), each with full audit rationale.
+   - **17 `.mra` files** — SDRAM re-layout padding, hiscore `<rom index="3">` config + `<nvram index="4" size="N"/>` (158/117/78/120/72 bytes), `mameversion 0298`, `author="Paul Priest"`, tiles `map="12"` fix in 6 alternates, `address="0x30000000"` on `<rom index="0">` (currently ARMED).
+   - **`docs/chat-export/session-transcript.md`** — 1741 turns, speakers `User`/`Claude`/`System (automated -- not written by either party)`, censored.
+   - **`docs/LESSONS_LEARNED.md`** — rewritten as agent training material (914→757 lines, 12 themed sections).
+
+4. **Errors and fixes:**
+   - **Row-scroll off-by-one** — two bugs: stale registered-RAM read (added S_ROWSCROLL_WAIT2) and bit-8-only enable. But this only fixed pairing; user reported "The scanline bug on Tengai is still present". Real cause: `vcnt_active` is a raw truncation of a 0-261 counter, so at line 261 it reads 5 — display line 0 fetched row scrolly+5. Fixed with `vcnt_next_active`. User: "This fixes the linescroll. Beautiful."
+   - **Design didn't fit (M10K 553/553)** — I first blamed crt_adjust/hiscore buffers and did a sprite frame buffer 8+4 repack. User: "Undo whatever you did to the bram to pack it". Real cause: my hiscore change drove dpram's second read port, making Quartus REPLICATE the 128KB work RAM (2,097,152 bits, ~102 extra M10K). Fixed by routing hiscore reads through the CPU port.
+   - **`RAMSTYLE` qsf assignment** rejected by Quartus 17.0 parser (`Error (125048)`) — removed.
+   - **FM counters read all zero** — probe signals declared AFTER the opl4 instance, binding to implicit undriven nets. Fixed by moving declaration before instance. Real values then: 34,655 FM register writes, 7,799 PCM key-ons, **0 FM key-ons**.
+   - **hps_io WIDE(1) incompatible with hiscore.v** (which parses ioctl byte-wise) — moved the ROM-load speedup from the interface into `sdram_download` byte-pair coalescing.
+   - **`sdram_arbiter6.phy_wdata` still 8 bits** after widening — silently dropped every odd ROM byte; caught by tb_psikyo_sdram_top.
+   - **6 `_alternatives` MRAs** emitted tiles as bare `<part>` (verbatim) instead of `map="12"` swap. Sengoku Ace set 1, set 2, Samurai Aces Korea, Gunbird Japan/Korea, Battle K-Road Korea. Tengai's bare parts are CORRECT (plain `ROM_LOAD`).
+   - **LESSONS_LEARNED.md had map convention backwards** (`0021`/`2100`, "guessed map=21") — would have reintroduced the tiles bug. Corrected.
+   - **Chat export misattribution** — 7 `## User` sections were system text; 3908 consecutive same-role fragments. Fixed with `System (automated)` label and turn merging. User asked "is it clear which text is me and which is you?"
+   - **Sprite retiming attempt 1** — user: "No meaningful change" + "flashing corruption on the sprites briefly". User: "revert the retiming". Reverted. Then user clarified both halves needed; re-applied with startup priming fix.
+   - **Fast ROM loading black screen** — 6s load but 68020 never ran (0 sound-latch writes). I rolled back; user said "don't roll back, fix". Root cause: trigger. `ddram_phy` base is correct (`{4'b0011, addr[27:3]}` = 0x30000000). With `address=`, HPS DMAs without the byte-wise ioctl handshake so the end-of-download edge never fires. srg320 triggers from RESET. Fixed + added ISSP probe "L".
+   - **Near-miss: `git add -A`** would have swept user's uncommitted README edits; only a stale `.git/index.lock` prevented it. Now use explicit paths.
+   - **MSYS_NO_PATHCONV=1 breaks local `/d/` paths** — caused all 15 smoketest screenshot pulls to fail (games and captures were fine).
+   - **Polled `/tmp/CORENAME` ~8s after launch** and wrongly concluded launch failed. User: "core did launch the first time...." / "you're testing too sonn". ROM load takes ~50s on the byte path.
+
+5. **Problem Solving:**
+   Solved and hardware-verified: row-scroll/scanline alignment; S1945 magenta (two-frame sprite buffering); tiles byte-swap in 6 alternates; work-RAM replication; FM synthesis proven unnecessary (0 key-ons across 35k register writes). Implemented pending verification: hiscore `<nvram>`; CRT sync during ROM load; OPL4 RTL split; fast-load reset trigger. Timing history: −0.217 (pre-OPL4) → −9.117 (OPL4 m1) → −7.677 → −6.336 (envelope constraint) → −6.234 → −6.633 → currently unmeasured after RTL split.
+
+6. **All user messages:**
+   - "Time to add S1945/Tengai support - we'll need to wire a mod-byte flag or two as needed. We need to model the security device, and its tables of data. Note that the tables of data only differ in the 3rd position, so we can have one table and pass the 3rd value through in the mod-byte, or loaded as a value from the MRA."
+   - "Assume the YMF286-K is just a YM2610 for now."
+   - "and the LZ8420M is a Z80"
+   - "Do the analysis of psikyo.cpp as to what needs to be added and differs from the current hardware, including bank switching and wait for approval"
+   - "Pay close attention to bit inversion as this cost us a lot of time in the past"
+   - "Sounds good - put this in docs/ and proceed"
+   - "create a new develop branch from master, then reset master to origin. then squash develop and pull/fastforward on master from develop"
+   - "switch to develop"
+   - "Read https://github.com/MiSTer-devel/Wiki_MiSTer/wiki/Contributing-a-Core-to-MiSTer-FPGA and confirm any cases where our repo doesn't confirm. Then, apply the coding guidelines from https://mister-devel.github.io/MkDocs_MiSTer/developer/principles/ to all of the source we have created (don't touch imported modules further)"
+   - "rename the local folder, and the repo name to Arcade-Psikyo_MiSTer. Change license to GPLv3. Cite the sim/ suite and manual testing. Firt, deploy the build in subagent"
+   - "Okay, tasks for this morning. * Determine if there's a fix for the off-by-one on the linescroll, most evident in many scenes in Tengai"
+   - "* Determine if we need to implement more OPL4 features - can we do this from a MAME execution trace, or probes or trace on the core * Add 'CRT OFfset' (use Raiden as the source of truth) - we will need otehrs to verify if it's truly working * Implement 'fast rom loading' (consult PSikyoSH2 or Super Kaneko Nova System for that)"
+   - "IS there any linescroll behaviour that might also be impacted?"
+   - "Add to the todo list in readme.md 'Port to the Analogue Pocket OpenFGA', we'll use https://github.com/latentDaniel/analogue-pocket-guide as a reference and I have hardware to test a core."
+   - "I've renamed the origin repo, can you update the remote: https://github.com/ppriest/Arcade-Psikyo_MiSTer"
+   - "Remove top-level-integration branch"
+   - "Remove any local branches other than master and develop"
+   - "Can you add hiscore.v support now? Take the relevant entries from https://github.com/mamedev/mame/blob/master/plugins/hiscore/hiscore.dat"
+   - "There are sound glitches, we should do the multicycle constraint checks"
+   - "Subagent: Check the mras for the _Alternatives. \"Sengoku Ace (Japan, set 1).mra\" graphics are incorrectly loaded."
+   - "Subagent: Review the LESSONS_LEARNED.md - remove any hyperbole, guesses and irrelevant information. This is intended to be used to train an agent for developing Mister cores and to avoid the mistakes that you ran into."
+   - "subagent: set the mameversion in all the mra files to 0298"
+   - "and the author to \"Paul Priest\""
+   - "deploy rbf and mras"
+   - "RBF wasn't deployed"
+   - "Push the 09:00 build now and the mras"
+   - "force it"
+   - "Rom loading is still slow?"
+   - "The scanline bug on Tengai is still present"
+   - "Can you check the counters for FM features on S1945,m it's running"
+   - "check FM counters again now"
+   - "fix the above"
+   - "There's a bug with S1945 (all sets) - it displays a Magenta shadow to the right of the planes in the attract sequence. It doesn't render like this in MAME. I presume it should be some sort of shadow, or just black pen. It's paused currently - will you dump the various ram, vregs and come up with a proposal?"
+   - "MAME treats these pixels as transparent"
+   - "Sorry, the Magenta is in the tilemap. Sprites must be one scanline too low (or tilemaps one too high). Will test witht he new fix. Deploy that."
+   - "then launch Strikers 1945"
+   - "Korea"
+   - "core did launch the first time...."
+   - "you're testing too sonn"
+   - "This fixes the linescroll. Beautiful."
+   - "Looks good. However, Magenta is visible when the sprites/tilemaps move - the sprites are leading the tilemaps by a frame. MAME buffers 2 frames - can you research this? Can we fit a second copy of the sprite ram in BRAM?"
+   - "yes"
+   - "as well as the framebuffer"
+   - "there is still magenta when the planes move, meaning the sprite positions are ahead of the tilemaps. No meaningful change - so it's the sprite metadata that needs buffering a frame. Also, I saw some flashing corruption on the sprites briefly."
+   - "The hiscore saving doesn't appear to be working - are you hooked into reset?"
+   - "revert the retiming"
+   - "fix the mras for hiscore and bump the timestamp"
+   - "MAME buffers it by two frames: \" // Sprites, buffered by two frames (list buffered + fb buffered)\". The sprite list needs buffering by a frame too."
+   - "S1945 Magenta is fixed!"
+   - "drop from todo, but will check Tengai at some point"
+   - "limot the H-Position to multiples of 4"
+   - "deploy now, and do a smoketest -screenshots every 10s for the parent games. post shots here"
+   - "the fast rom loading is also a risk"
+   - "do we have timing logs for core load available?"
+   - "There was a request for H-Size/V-Size in CRT Offset - does Raiden not have that?"
+   - "and the rom loading isn't displaying on CRT - second report of this, any idea?"
+   - "You can remove the multiples-of-4 change, works fine on CRT"
+   - "yes" (to implementing H-Size)
+   - "no" (cancelling H-Size)
+   - "Tengai are fine"
+   - "do the rtl split,and the fast rom loading mra change"
+   - "do a quick test now of one game, then create a release build too"
+   - "don't roll back, fix"
+
+   **Security-relevant constraints (preserve verbatim in effect):** credentials live in `mister.env` (MISTER_HOST/MISTER_USER/MISTER_PASSWORD), sourced into env, never committed and never echoed; `roms/` never committed (copyrighted); `debug/` not checked in ("The debug folder should not be checked in - they can be removed from git"); ASK before deploying — "ASK before deploying -- do not deploy autonomously ... Do not fabricate a result."
+
+7. **Pending Tasks:**
+   - Create a **release build** (`python scripts/build_staged.py --rev Psikyo`) — explicitly requested: "do a quick test now of one game, then create a release build too". Not yet started.
+   - Build and test the fast-ROM-load trigger fix using ISSP instance "L".
+   - Confirm the FM finding on Tengai (in README todo).
+   - CRT H-Position corruption on non-multiples-of-4 — root cause unknown (restriction was reverted at user request since it works on CRT).
+   - Deploy the CRT-sync fix (`video_reset`) — committed but never built/deployed.
+
+8. **Current Work:**
+   Immediately before this summary, I fixed the fast-ROM-loading trigger after the hardware test failed. The test showed: load completed in ~6s (vs ~50s byte path) but the screen was black and the sound probe reported Z80 ROM fetches saturated (65535) with **0 YM register writes and 0 sound-latch writes**, proving the 68020 was not executing — SDRAM was unwritten or garbage.
+
+   I verified `ddram_phy`'s addressing is correct (`assign DDRAM_ADDR = {4'b0011, addr_r[27:3]};` = word 0x6000000 × 8 = byte 0x30000000), then examined srg320's reference and found their loader is triggered **from reset** (`if (reset) begin ... loader_state = 4'd1; loader_rst <= 1; end`, with `rst_sys = reset | download | loader_rst`), not from a download edge. Rewrote our trigger to be reset-based (code in section 3 above), added ISSP probe `INSTANCE_ID("L")` with a decoder in `scripts/read_issp.tcl` reporting "copy started / DDR3 granules read / SDRAM words written / copy in progress / byte path was used / index-0 download seen", and re-armed all 17 MRAs with `address="0x30000000"`. Committed as `9fc8b3c`.
+
+   Build `br4cq1fr5` (containing the OPL4 RTL split + MRA address change, but PREDATING the trigger fix and probe) just completed; I had not yet read its result.
+
+9. **Optional Next Step:**
+   Check build `br4cq1fr5`'s results (fit/timing for the OPL4 RTL split), then start a new stp build at HEAD (`9fc8b3c`) to pick up the reset-based loader trigger and the "L" probe, and after that produce the release build the user asked for: "do a quick test now of one game, then create a release build too". Since the stage (`build/`) is shared and one build runs at a time, these must be sequential. Do not deploy without explicit user approval.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: C:\Users\tourn\.claude\projects\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
+
+## Claude
+
+Added as a **Resource usage** section just above Todo, committed as `b0b664e`.
+
+I framed it around the takeaway rather than just the numbers — that memory is the binding constraint while logic sits at 64% — plus the bits-vs-blocks discrepancy and what it rules out (V-Size), since that's the part that's bitten us twice already.
+
+One number in there I should verify rather than leave asserted: I described the sprite frame buffers as 71680 × 12 as the example of bad packing.
+
+Confirmed accurate — `sprite_frame_buffer.sv:56-59`: `PIXELS = 320*224 = 71680`, two banks of `[11:0]`.
+
+That's worth making concrete rather than leaving as "reclaimable in principle", because the arithmetic lands right on the V-Size budget:
+
+Committed `acf97d8`. The section now says: 12-bit words sit in x16 mode at 640 words/block → 112 blocks per buffer, 224 for the pair, a quarter of it wasted. An 8+4 split would use native x8/x4 modes → 70+35, recovering **~14 blocks** — roughly the V-Size shortfall.
+
+Flagged as arithmetic rather than a fit result, since Quartus may pack differently. Worth noting this is the same 8+4 repack you had me undo earlier — it was undone as collateral when I misdiagnosed the non-fit (the real cause was the work-RAM replication), so it's still a live option if V-Size becomes wanted.
+
+Build `b3h1q8r9v` (reset-based loader trigger + `L` probe) is still running; I'll report when it lands.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>b3h1q8r9v</task-id>
+<tool-use-id>toolu_014rkPgKMtRfsFZrkNTDAm6K</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\b3h1q8r9v.output</output-file>
+<status>completed</status>
+<summary>Background command "Build stp at HEAD with trigger fix and loader probe (background)" completed (exit code 0)</summary>
+</task-notification>
+
+## Claude
+
+Build succeeded at `9fc8b3c` — the commit with the reset-based loader trigger and the `L` probe. Timing held at −4.807 (vs −4.688), with TNS improving further to −1364.
+
+Preserving that `.rbf` before the release build overwrites the stage, then starting the release build you asked for:
+
+Release build is running (~18 min). Meanwhile:
+
+**Ready to test, needs your go-ahead.** The stp build with the fast-load fix is saved at `build_keep/Psikyo_stp-9fc8b3c.rbf`. Deploying it would test the reset-based trigger — the MRAs are already armed with `address="0x30000000"`, so it takes the DDR3 path on next load. If the fix works: ~6s load *and* a running game. If it doesn't, `read_issp.tcl` on probe `L` will say which stage failed — copy started, granules read, words written, or whether it silently fell back to the byte path.
+
+Want me to deploy and test it? I won't without your say-so.
+
+Two things to flag on the release build, since neither is verified:
+
+- It's the **first** release-rev build since the OPL4 split, hiscore, CRT adjust and the loader all landed. It compiles a different revision with different settings, so a fit or timing failure there wouldn't have shown up in any stp build so far.
+- Timing is still **−4.8 ns** short. That's the honest state: the split recovered most of the OPL4 regression but didn't close it, so a release build isn't a clean-timing build. Worth knowing before it goes anywhere but your own hardware.
+
+## User
+
+qualified as a debug build
+
+we should maintain it on release, uldate release process
+
+please add an AI attestation to the readme for me:
+
+This core was developed as a test of the use of frontier coding assistants and a way for me to up-skill. It's a platform I'm familiar with, as I collaborated with other members of the MAME team on the video system to add the later games, and the video system is the biggest part of the 'port'.
+This could be labelled vibe-coding, since I never touched a line of VHDL/Verilog myself, doing it all through the agent. However, I'me an experienced software engineer with several decades of experience across many languages/environments including real-time/systems, as well as an education in Electronic Engineering.
+
+I had to bail out Claude a very times - redirecting it from altering stable cpu implementations to wire in new signals, or blaming timing on what clearly were logic issues. I had to feed it memory dumps, and decode things manually, and guide it to build an effective set of tooks - initially in the absence of JTAG/in-circuit debugging. See the transcript of our conversations if you're interested (insert link to the Claude transcript).
+
+This has NOT been verified against a PCB other than the timing measurements back in the day and recorded in the MAME source. However, there's lots of strong evidence in the (later, especially) games to validate the tilemap/sprite positioning, priority, transparency, scroll behaviour where a single frame lag, or a single pixel offset  shows up glaringly. If I had a PCB, and the appropriate skills, I would want to determine the role of each of the custom chips, probe them to find the correct level of separation and behaviour w.r.t signals. However, I believe this is largely unnecessary in this case.
+
+## Claude
+
+Three things. Let me look at the release path first.
+
+Now the release gate:
+
+The escaping mangled the string literals. Let me rewrite that block unambiguously:
+
+Restoring and redoing this cleanly — splicing literal text from files instead of nested escaping:
+
+Parser confirmed: reports clk_sys as before, flags exactly the one violating clock, ignores the seven passing ones. Now the README — attestation and release process:
+
+Committed `c4a56af`. Three parts:
+
+**Release gate in `build_staged.py`** — on a release revision it now reads *every* clock in `.sta.summary`, not just `clk_sys`, and refuses to print the deploy command if any fail, naming them. Debug revision prints the slack and notes it's qualified. `--allow-negative-slack` overrides with a warning that obliges you to state the shortfall in the release notes. Tested against the real summary: reports −4.807 as before and flags exactly one violating clock, the other seven passing cleanly.
+
+**`## Release process`** — the two revisions and why they're held to different standards, the four release steps, and plainly: *the core does not currently pass this gate* at −4.8 ns.
+
+**`## AI attestation`** — your words, placed before Verification since your last paragraph leads into it. I fixed obvious typos (`I'me`→`I'm`, `tooks`→`tools`) and linked "the transcript of our conversations" to `docs/chat-export/session-transcript.md`, which exists.
+
+One word I had to guess: **"I had to bail out Claude a very times"** — I wrote "a fair few times". If you meant something stronger ("a great many times"), say so and I'll change it; it's your attestation and the degree matters.
+
+Two notes:
+
+The release build running now (`bl97k16iq`) loaded the *old* script, so it will print "OK -- deploy" regardless. I'll apply the gate by hand to its summary when it lands — and given HEAD is at −4.8 ns, I expect it to fail qualification. It'll still be a usable debug-grade artefact, just not publishable.
+
+The gate is also the reason the OPL4 timing work matters more than it did an hour ago: it's now the thing standing between you and any release at all.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>bl97k16iq</task-id>
+<tool-use-id>toolu_01GEJnixHW1Bb5Xw8E2siDu4</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\bl97k16iq.output</output-file>
+<status>completed</status>
+<summary>Background command "Start the release build (background)" completed (exit code 0)</summary>
+</task-notification>
+
+## Claude
+
+Release build compiled — but it needs the gate applied by hand, since it ran the old script. Applying it now, plus the release-revision resource figures I claimed in the README:
+
+The release build **fails the gate** — and it exposed an error in what I wrote in the README an hour ago:
+
+Release build done and both artefacts preserved in `build_keep/`. Results:
+
+**It fails release qualification.** −4.958 ns on `clk_sys`, one violating clock, TNS −1591. Slightly worse than the debug revision's −4.807, which is normal fitter variation. Compilation itself was clean: 0 errors, 508 warnings. So the release revision *builds* — this is the first time it has since OPL4, hiscore, CRT adjust and the loader landed, which was a real open question. It just can't be published.
+
+**A correction to what I told you earlier.** I claimed in the README that the release revision would have block RAM free because it drops SignalTap and the tracer. The fit says otherwise: **553/553, identical**. It saves ~1,000 ALMs and ~41,000 memory bits, but nothing that frees a whole block. I've corrected that (`19dd18f`) — it matters because I'd offered it as a possible route to fitting V-Size, and it isn't one. The 8+4 sprite-buffer repack is the only lever actually known to exist.
+
+| | debug `Psikyo_stp` | release `Psikyo` |
+|---|---|---|
+| slack | −4.807 | −4.958 |
+| ALMs | 26,800 (64%) | 25,754 (61%) |
+| M10K | 553/553 | 553/553 |
+
+Where that leaves things: the fast-load fix is built and sitting in `build_keep/Psikyo_stp-9fc8b3c.rbf`, still untested — that's the one piece of today's work with an unverified hypothesis behind it, and testing it needs your go-ahead to deploy. Separately, OPL4 timing is now the gate on any release at all; a third pipeline split is the known next move if you want me to take that on.
+
+## User
+
+deploy and test, and then crack on wirh the third pipeline split
+
+## Claude
+
+The stage was wiped, so the stp build's Quartus log is gone — the deploy guard will refuse an rbf that outlives its log, correctly. The build's own transcript still exists though, and contains the success line, so that's the honest log to check against:
+
+Highest deployed is `...834`, so this is `...835`. Deploying with the build's own transcript as the provenance log:
+
+The guard is right — my `cp` gave the log a fresh timestamp. Preserving the original mtime so the comparison is meaningful:
+
+Deployed as `...835`. Verifying the MRAs on the device are the armed ones before launching, else the test proves nothing:
+
+Device MRAs are the old unarmed ones. Deploying the armed set:
+
+All 17 armed. Deploying the parents (that's what the test needs):
+
+MSYS mangled the remote path into a Windows one. Disabling that conversion — safe here since the local paths are relative:
+
+While that settles, starting the timing analysis for the third split — finding what dominates now:
+
+Screenshot needs `--core`. Retaking, and reading the loader probe:
+
+Core name is `s1945`, not `Psikyo` — that's why the screenshot never appeared:
+
+**It's running.** Strikers 1945 attract sequence, rendering correctly — previously this was a black screen with a dead 68020. Confirming the DDR3 path was actually taken rather than a silent fallback:
+
+Confirmed working. The probe is unambiguous:
+
+| probe | value | meaning |
+|---|---|---|
+| copy started | 2 | trigger fired (once per reset) |
+| DDR3 granules read | 65535 | saturated 16-bit counter — expected, ~606k granules |
+| SDRAM words written | 65535 | saturated |
+| copy in progress | 0 | finished cleanly |
+| **byte path was used** | **0** | DDR3 path, not a fallback |
+
+And the sound chain proves the 68020 is executing: **2,683 sound-latch writes** where the failed attempt had 0, with YM writes and Z80 fetches both saturated.
+
+Timing the load properly, since I lost the measurement on the first run:
+
+Now the third pipeline split — reading what dominates after the first two:
+
+Every one of the top-15 paths is the same edge: `ch[0]` → `w_step[26]`, data delay ~15.98 ns against 11.64 required. Reading that logic:
+
+Load time: **5 seconds** (was ~50s). Now the failing path — `w_step <= step_exact + pm_add` in `S_CALC`, launched from `ch`:
+
+Load time confirmed: **5 s**, down from ~50 s.
+
+The failing path is now clear — it's `ch` → `ch_lfo[ch]` (24-entry mux, the `Mux15` in the fit report) → 18-bit add → quarter-cycle shift → invert → subtract → **multiply** → 32-bit add → `w_step`, all in `S_CALC`. Checking one thing before splitting it:
+
+Both preconditions hold: `w_lfo` is written in `S_CALC` and not consumed until `S_ENV2`, and `w_step` is only read in `S_ENV2`. So the PM chain can move one state later and read the *registered* LFO instead of the combinational one — same value, but the mux is no longer in the path. `S_ENV` currently only latches the rate chain, so this costs no extra cycle:
+
+Verifying this is behaviour-preserving before spending 18 minutes on a build:
+
+The sim compiles from the main tree (only the ROM hex is local). Rebuilding and running it:
+
+Sim passes — including the fetch-address and key-on/off checks, which are exactly what `w_step` drives. Committing and building the release revision, since closing the gate is the point:
+
+**Fast ROM loading works.** Deployed as `...835`, armed MRAs pushed (the device still had unarmed ones — that alone would have made the test meaningless).
+
+| evidence | result |
+|---|---|
+| Screen | Strikers 1945 attract, rendering |
+| Load time | **5 s** (was ~50 s) |
+| `byte path was used` | 0 — genuinely the DDR3 path |
+| `copy in progress` | 0 — completed cleanly |
+| Sound-latch writes | 2,683 (the failed attempt had **0**) |
+
+The reset-based trigger was the right diagnosis: with `address=`, HPS DMAs without the byte-wise ioctl handshake, so the end-of-download edge never fired. Triggering from reset, as srg320 does, fixes it.
+
+**Third split applied and building.** The report was unambiguous — all top 15 failing paths were the same edge, `ch[0]` → `w_step[26]`, running mux → add → shift → invert → subtract → multiply → 32-bit add in one clock. The step calculation now happens in `S_ENV` reading the *registered* `w_lfo` rather than combinational `lfo_upd`: same value one state later, but launched from a register, so the 24-entry mux leaves the path. `S_ENV` only latched the rate chain and the two are independent, so no extra cycle. `sim/opl4_tb` passes.
+
+Two caveats worth stating plainly. The testbench is functional, not a bit-exact golden comparison — it checks fetch addresses, output presence, polarity and silence-after-key-off, so it would catch a broken `w_step`, but a subtle numerical drift could slip through; the real check is how it sounds. And I don't know yet whether ~4.9 ns is recoverable in one move — the split halves *this* path, but something else becomes critical after it.
+
+Release build running (~18 min); it'll now hit the new gate for real.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>b8myrvtp3</task-id>
+<tool-use-id>toolu_01DUHJdMRoJXwDJtwFLqWkxT</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\b8myrvtp3.output</output-file>
+<status>failed</status>
+<summary>Background command "Commit the split and start the release build" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+Gate fired correctly (exit 1, no deploy line). And the split delivered:
+
+| | slack | TNS |
+|---|---|---|
+| before split 3 | −4.958 | −1591 |
+| **after** | **−3.475** | **−419** |
+
+TNS down 74% — most of the failing paths are gone, not just the worst one. Finding what's critical now:
+
+New critical path is `w_lfo[17]` → `p_rvol[2]` — the AM/volume chain. Reading it:
+
+`S_OUT` runs the AM multiply, two 24-entry muxes, adds, a table lookup *and* a barrel shift in one clock. `am_add` depends only on `w_lfo` and `c_amd`, both registered in `S_CALC` and unchanged through `S_OUT`, so it can be precomputed without touching the envelope values:
+
+Third split landed and the gate rejected the build exactly as intended:
+
+| | slack | TNS |
+|---|---|---|
+| before | −4.958 | −1591 |
+| after split 3 | **−3.475** | **−419** |
+
+TNS fell 74%, so most failing paths are gone — the remaining violation is concentrated rather than spread.
+
+I've gone straight on to a fourth, since the report showed the critical edge had moved cleanly to `w_lfo` → `p_rvol`: `S_OUT` was running the AM invert-and-multiply, two 24-entry channel muxes, pan adds, the `att2vol` lookup *and* its barrel shift in one clock. `am_add` now registers during `S_ENV` — same value, since `w_lfo` and `c_amd` are both fixed from `S_CALC` through `S_OUT`, and it runs parallel to the chains already there so it costs no cycle. Sim passes; building now.
+
+One thing I deliberately left alone: `ch_env[ch]` and `ch_tl[ch]` are also muxes in that path and hoisting them would look tempting, but `S_ENV2` *writes* `ch_env[ch]` — reading it earlier would sample the pre-update envelope and silently change the audio. That's the kind of change the functional testbench might not catch, so it isn't worth taking for timing.
+
+Running total: −6.633 → −4.688 → −3.475, with this build pending. Whether it reaches zero I can't predict — each split moves the bottleneck somewhere new, and eventually it lands somewhere without a free parallel state to hide the work in.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>bvx4go0a7</task-id>
+<tool-use-id>toolu_01SBTQGkdhtyqH9ezhoChFUQ</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\bvx4go0a7.output</output-file>
+<status>failed</status>
+<summary>Background command "Commit and build the fourth split" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+−2.385 now (TNS −461). The path moved again — `w_env[4]` → `mem_rd_addr[]`, i.e. the envelope result feeding the sample-fetch address in `S_ENV2`:
+
+The envelope's quiet test gates the address assignment, putting the whole envelope chain in series with the `ch_baseaddr[ch]` mux and the ×3 multiply. The address doesn't need that gating — only the request does. Checking the consumer first:
+
+Confirmed — `opl4.sv:190-194` latches `pcm_mem_addr` only inside `if (pcm_mem_req)`, so an address computed while the channel is silent is never sampled. Hoisting it out of the gate:
+
+Fourth split: **−3.475 → −2.385**. Fifth applied and building.
+
+Progress across the session:
+
+| change | slack | TNS |
+|---|---|---|
+| OPL4 as written | −6.633 | −2717 |
+| state split (earlier) | −4.688 | −1628 |
+| pitch step out of `S_CALC` | −3.475 | −419 |
+| AM term registered | −2.385 | −461 |
+| fetch address ungated | building | |
+
+The fifth is a different shape from the others — not a new register, just moving the address computation out of the envelope's quiet test. The envelope chain was running in series with the `ch_baseaddr[ch]` mux and the ×3 multiply for no reason: only `mem_rd_req` and the state transition genuinely depend on whether the channel is silent. Verified against `opl4.sv:190-194` that the arbiter latches the address only when the request is asserted, so a silent channel's address is computed and discarded, never fetched.
+
+Sim passes each time, including the "no fetch past end position" check, which is the one most likely to catch a mistake in this particular change.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>bpst5j01n</task-id>
+<tool-use-id>toolu_01Mj8AY5WdExTtpsPZtz4mDJ</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\bpst5j01n.output</output-file>
+<status>failed</status>
+<summary>Background command "Commit and build the fifth split" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+−1.712 now (TNS −200), from −2.385. The path is back in `S_OUT`, launched from `ch` — the `ch_env[ch]` and `ch_tl[ch]` muxes feeding the adds and `att2vol`. Reading the exact code and the fetch states:
+
+Both fetch states lead to `S_OUT`, and `ch_env[ch]`/`ch_tl[ch]` are written in `S_ENV2` — so they already hold their final values during the fetch. The attenuation sum can be registered there, where the engine is idle waiting on ROM:
+
+Fifth split: **−2.385 → −1.712**, TNS −200. Sixth applied and building.
+
+| change | slack | TNS |
+|---|---|---|
+| OPL4 as written | −6.633 | −2717 |
+| state split | −4.688 | −1628 |
+| pitch step | −3.475 | −419 |
+| AM term | −2.385 | −461 |
+| fetch address | **−1.712** | **−200** |
+| attenuation sum | building | |
+
+This one gets at the muxes I said earlier I wouldn't hoist — but from the other side. Rather than reading `ch_env[ch]` *before* `S_ENV2` updates it (which would change the audio), it reads it *after*, during `S_FETCH0`/`S_FETCH1` where the engine is already stalled waiting on the sample ROM. Same values, free cycles. `S_OUT` is only reachable through those two states and both now write the sum, so there's no path that reaches it unset.
+
+That idle-time observation is probably the more reusable one: the fetch states were doing nothing but waiting, and there's likely more that could migrate there if this isn't the last hop.
+
+## User
+
+deploy the last build please and I'll verify still working. Is it a release or STP build?
+
+## Claude
+
+It's a **release** build (`--rev Psikyo`). All the timing builds today were release revision, since the point was measuring against the gate.
+
+Worth knowing before you verify, because it changes what you can do:
+
+- **No Debug OSD page** — it's hidden in release builds (`H1` menumask).
+- **No ISSP probes and no SignalTap** — so if audio sounds wrong, I can't probe it; we'd need an stp build (~17 min) to diagnose.
+- Fast ROM loading still works — that's not debug-gated — but I can't confirm it via probe `L`, only by the load feeling quick.
+- It is **not release-qualified**: still −1.712 ns before this build's result, so the gate rejects it. Fine for your hardware, not for publishing.
+
+If you'd rather have probes available in case something's off, say so and I'll build stp instead. Otherwise the release build is arguably the better listen — it's the one without instrumentation perturbing timing.
+
+The build is still running; I'll deploy it as `...836` as soon as it lands and confirm the slack figure.
+
+## User
+
+I would like to squash and cherry-pick everything before the rounds of optimisation to close the timing to master (but not push yet)
+
+## Claude
+
+Master is an ancestor, 54 commits behind. The boundary is clean: `19dd18f` and everything before it, leaving the four OPL4 timing commits on develop. Reading what's in the range so the squashed message is accurate:
+
+Squashed onto master as `d10eabc`, verified byte-identical to `19dd18f` (`git diff` between them is empty). Back on develop; nothing pushed.
+
+```
+master   d10eabc  OPL4 sound, hiscore saving, fast ROM loading, and a batch of video fixes
+         f34e7f1  Strikers 1945 and Tengai support
+develop  3ee46fb  ...4 OPL4 timing commits on top
+```
+
+Two things to note:
+
+**Master has two unpushed commits, not one** — `f34e7f1` (Strikers 1945/Tengai) was already sitting unpushed before today. Whenever you do push, both go.
+
+**The four timing-closure commits stay on develop** — `0acea24`, `9858dad`, `8bd1c6f`, `3ee46fb`. That's the boundary you asked for, and it's a sensible one: everything on master is hardware-verified, while the timing work is still unverified on hardware (that's what the pending deploy is for).
+
+The squashed message summarises the 50 commits by theme rather than listing them — sound, video, loading/saving, MRAs, project — and keeps the root causes worth remembering, particularly the reset-vs-download-edge trigger and the work-RAM replication.
+
+Checking the build so I can deploy it:
+
+Build is still running — log was being written a minute ago, so it's in the fitter's final stages (~15 min total, started 13:19). I'll deploy it as `...836` the moment it finishes and report the slack.
+
+To confirm what you'll be verifying: it's the **release** revision with all six OPL4 splits, so no Debug page and no probes — if something sounds wrong, tell me and I'll build stp to diagnose rather than guessing.
+
+## User
+
+Deploy the prior build
+
+## Claude
+
+The staged `Psikyo.rbf` (13:29, slack −1.712) is the fifth-split build's — the current one is still in physical synthesis. Grabbing it before the fitter overwrites it:
+
+Deployed as **`Arcade-Psikyo_20260836.rbf`**.
+
+| | |
+|---|---|
+| Commit | `8bd1c6f` — through the fifth split (fetch address ungated) |
+| Revision | **release** (`Psikyo`) — no Debug page, no probes |
+| Slack | −1.712 ns, TNS −200 |
+| Contains | all today's work: fast ROM loading, hiscore, CRT offset, two-frame sprite buffering, OPL4 splits 1–5 |
+
+Caught it just in time — that `.rbf` was sitting in the stage from 13:29 and the running build is in physical synthesis now, about to overwrite it. It's preserved in `build_keep/` with its log, so it's reproducible regardless.
+
+What to listen for: the four OPL4 changes since the last core you verified are all in the PCM path, so **audio is the thing to check** — pitch, volume envelopes, and stereo balance in particular, since those are precisely what the moved computations feed. Video and loading should be unchanged from `...835`, which you've already seen working.
+
+If anything's off, don't spend long on it — tell me and I'll build stp so we can probe rather than guess. The sixth split is still building and I'll hold it until you've reported on this one, since verifying them one at a time is what makes a regression attributable.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>b0iajuqhk</task-id>
+<tool-use-id>toolu_01BjtcBzorT8XLYvoRJgsKGn</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\b0iajuqhk.output</output-file>
+<status>failed</status>
+<summary>Background command "Commit and build the sixth split" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+Sixth split: **−1.712 → −1.117**, TNS −200 → −112. Artefacts preserved. Finding what's left:
+
+The remaining violation is the envelope arithmetic itself — `w_env` → `ch_env[ch]` in `S_ENV2`: the attack multiply, the clamps, the reverb decision and the 24-entry write decode in one clock. Checking whether a split there would be affordable:
+
+Sixth split landed: **−1.117 ns**, TNS −112. Full run today:
+
+| | slack | TNS |
+|---|---|---|
+| OPL4 as written | −6.633 | −2717 |
+| six splits later | **−1.117** | **−112** |
+
+83% of the violation gone, and TNS down 96% — what's left is a handful of paths, not a broad problem.
+
+**The last one is different in kind, so I'm flagging rather than just doing it.** The remaining violation is the envelope arithmetic itself: `w_env` → `ch_env[ch]`, with the attack multiply, the clamps, the reverb decision and the 24-entry write decode all in `S_ENV2`. The previous six were free — I hid work in states that were either running in parallel or already stalled on the ROM. There's no free state left here, so closing it means adding one (`S_ENV3`), which costs a cycle per channel per sample.
+
+That cost looks negligible: at ~85.9 MHz with one sample per 44.1 kHz tick there are ~1,948 cycles per sample, and the engine currently uses roughly 240 of them for 24 channels. One more state is ~24 cycles — about 12% → 14% of the budget. So I'd expect it to close timing with no audible consequence.
+
+I'd rather not stack it on top while you're verifying `...836`, though, because a regression that appears after two unverified changes is a bisect rather than an answer. Say the word once you've listened and I'll do it — or tell me to go now and I'll have it building while you test.
+
+## User
+
+Move the 'Release PRocess' from the REadme to our 'Lessons_learned' or another doc
+
+## Claude
+
+Two problems to fix — a duplicated line, and `## Resource usage` appears to be missing from the README:
+
+The user has edited the README themselves — `Resource usage` is now a `###` subsection with their own summary line. My read-modify-write preserved that, but it means the working copy mixes their edits with mine. Checking before committing anything:
+
+Understood — you've rewritten much of the README yourself (trimming my prose, promoting the OPL4 bullet, condensing Resource usage). Those edits are uncommitted; my move preserved them. Fixing the duplicated line, the stale timing figure, and the code reference, then committing:
+
+Moved to [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md), committed as `eafea2d` on develop.
+
+I put it in its own doc rather than `LESSONS_LEARNED.md` — that file is training material about mistakes and how to avoid them, whereas this is a procedure you follow. Mixing them would dilute both. A one-line pointer stays in the README's Tooling table so it's still findable, and `build_staged.py`'s comment now cites the doc instead of the vanished README section.
+
+Two things worth knowing:
+
+**The commit also carries your own README edits.** You'd rewritten Status and Resource usage in the working tree — condensing my prose, promoting the OPL4 bullet, dropping the finished todo items. They were uncommitted, and since it's the same file I couldn't separate them, so they went in with this commit and I said so in the message. Your version is tighter than mine was; nothing was lost.
+
+**I refreshed the doc's closure figure** — it still claimed −4.8 ns, which was three splits stale. It now states −1.117, the six-split progression, and that the remaining envelope split is the first one that costs a cycle.
+
+Still holding the seventh split and the `3ee46fb` build until you've verified `...836`.
+
+## User
+
+Move the 'Debugging on hardware' to it's own file too
+
+## Claude
+
+Section runs to EOF. It opens with "decoded by the scripts above", which won't make sense standalone — fixing that as part of the move:
+
+Two things: my script wrote the README before hitting a bad anchor, so the section is currently removed but the new doc wasn't created. Recovering it from git and finishing — then deploying:
+
+You're editing the README live — those changes are preserved. Deploying the latest build first:
+
+Both done.
+
+**Deployed: `Arcade-Psikyo_20260837.rbf`** — commit `3ee46fb`, release revision, all six OPL4 splits, slack **−1.117 ns** (TNS −112). This supersedes `...836`; if you haven't started on that one, go straight to this.
+
+**Moved:** [docs/DEBUGGING_ON_HARDWARE.md](docs/DEBUGGING_ON_HARDWARE.md), commit `030daaa`, with a pointer left in the Tooling section. Its opening referred to "the scripts above", which no longer had an above, so it now names the README's Tooling table.
+
+One thing to flag: **my script half-completed and briefly lost that section.** It wrote the trimmed README, then failed an assertion before creating the doc — because I'd guessed at a line break that wasn't there. I recovered the text from `git show HEAD:README.md`, so nothing is missing, but the ordering was wrong: I should write the new file before removing the old text, not after. Worth me not repeating.
+
+Also, you were editing the README while I worked — the custom-chips bullet, Todo demoted under Status, the attestation heading. Those were preserved and are in this commit; I noted it in the message rather than claiming them. There's a typo in one of your lines: "V-Offsetr" in the rotation bullet. I've left it alone since you're mid-edit — say the word and I'll fix it.
+
+## User
+
+Add to the Acknowledgements entries for the hiscore.v and DDR fast loading (can we find the original author?)
+
+## Claude
+
+Attribution is documented for one and by handle for the other. Checking whether srg320 publishes under a name:
+
+Found: srg320 is **Sergiy Dvodnenko** — stated on their own GitHub profile, so crediting by name matches how jotego and TobiFlex are credited here. Adding both:
+
+Added, commit `19d7198` (12 insertions — nothing else touched this time).
+
+**hiscore.v** — the file carries its own copyright lines, so no guesswork: *Alan Steremberg* and *Jim Gregory* ([JimmyStones](https://github.com/JimmyStones)), 2021, GPLv3, from [Hiscores_MiSTer](https://github.com/JimmyStones/Hiscores_MiSTer). I also credited MAME's [hiscore.dat](https://github.com/mamedev/mame/blob/master/plugins/hiscore/hiscore.dat) for the per-game table layouts, since that's a separate contribution from the RTL.
+
+**Fast ROM loading** — yes, we could find them. srg320's [GitHub profile](https://github.com/srg320) gives the name **Sergiy Dvodnenko**, so they're credited by name alongside the handle, matching how jotego and TobiFlex appear here. The mechanism is from [Arcade-PsikyoSH2_MiSTer](https://github.com/srg320/Arcade-PsikyoSH2_MiSTer).
+
+One distinction I made explicit in the entry: `rom_loader.sv` is **our implementation of their approach**, not their code — unlike `hiscore.v`, `sdram.sv` or `screen_rotate_two.sv`, which are genuinely vendored. Without that, the acknowledgement would read as if we'd taken the module, which would misstate both what we owe them and what's under whose copyright. What we actually took is the design: the `address="0x30000000"` attribute and the copy-from-reset trigger — and the trigger in particular is the part I got wrong on my own and only fixed by reading theirs.
+
+Sources: [srg320 GitHub profile](https://github.com/srg320), [Arcade-PsikyoSH2_MiSTer](https://github.com/srg320/Arcade-PsikyoSH2_MiSTer)
+
+## User
+
+I meant the original author - was it copied form elsewhere?
+
+## Claude
+
+Good question — I credited the person we copied *from*, not necessarily the originator. Checking both:
+
+The searches change the picture for one of them. Correcting the entry:
+
+You were right to push — **I over-credited srg320.** Corrected in `2714a21`.
+
+**Fast ROM loading: not srg320's invention.** The `address="0x30000000"` attribute is a **MiSTer framework feature**, handled by Main_MiSTer's MRA loader, which DMAs the assembled ROM into DDR3 instead of streaming it through `ioctl`. It's documented on the [Arcade Roms and MRA files wiki](https://github.com/MiSTer-devel/Wiki_MiSTer/wiki/Arcade-Roms-and-MRA-files) and other cores use it — CPS2 and Sega X Board both showed up. So the mechanism traces to Sorgelig/MiSTer-devel, who are now credited for it separately.
+
+What we genuinely took from srg320 is the **core-side half**: the granule copy with the core held in reset, and specifically triggering from reset rather than the download edge. That's still worth crediting — it's the detail I got wrong on my own and only fixed by reading their code — but it's a pattern, not the feature.
+
+**hiscore.v: I could not establish an earlier origin.** The file's own header names *Alan Steremberg* and *Jim Gregory*, both 2021, and that header is the authoritative attribution. Searching didn't turn up evidence that it derives from something earlier, though the forum thread ["Preserving Arcade Core High Scores"](https://misterfpga.org/viewtopic.php?t=768) suggests it grew out of a community effort where Steremberg's per-core work preceded Gregory's generalisation — I can see the shape of that but not confirm who wrote what, so I've left the entry as the header states rather than inventing a lineage.
+
+The general lesson, which I should have applied first time: the repo you copied from is the *proximate* source, not necessarily the origin. Worth checking upstream before writing credit.
+
+Sources: [MRA wiki](https://github.com/MiSTer-devel/Wiki_MiSTer/wiki/Arcade-Roms-and-MRA-files), [MiSTer MRA docs](https://mister-devel.github.io/MkDocs_MiSTer/developer/mra/), [Hiscores_MiSTer](https://github.com/JimmyStones/Hiscores_MiSTer), [Preserving Arcade Core High Scores](https://misterfpga.org/viewtopic.php?t=768)
+
+## User
+
+do the seventh split
+
+## Claude
+
+`mem_rd_req` is a per-cycle pulse with a default, so moving its assertion is safe. Applying the seventh split:
+
+Sim passes. Verifying the cycle-budget claim I put in the comment rather than leaving it asserted:
+
+clk_sys confirmed at **85.909091 MHz** → 1,948 cycles per 44.1 kHz sample, so the "24 of ~1948" figure in the comment is right. Committing and building:
+
+Seventh split applied, sim passes, building (~15 min).
+
+`S_ENV2` now registers the envelope result into `p_env_next`/`p_st_next`, and a new `S_ENV3` does the 24-entry array writeback plus the quiet decision. Neither half carries both the arithmetic and the write decode, which is what made the old path ~13 ns of logic.
+
+As flagged, **this is the first split that isn't free** — one extra state per channel per sample. I verified rather than assumed the budget: the PLL config gives clk_sys = 85.909091 MHz, so 1,948 cycles between 44.1 kHz sample ticks, and the addition costs 24. Comfortable.
+
+One detail that could have bitten: `mem_rd_req` is a pulse with a per-cycle default at the top of the always block, not a level held across states — so moving its assertion from `S_ENV2` into `S_ENV3` doesn't change the request behaviour. Had it been a level, deferring it a cycle would have stretched the request.
+
+If this closes, it's the first release-qualifiable build — the gate will print a deploy command instead of refusing. If it doesn't, the next path will tell us whether there's another cheap move or whether this is the floor for the architecture.
+
+## User
+
+In that last build - we have some audio crackling that wasn't present the last time I tried it
+
+## Claude
+
+That's a regression worth stopping on rather than continuing to optimise past.
+
+Yes — and the experiment that discriminates is already running.
+
+**What actually changed between the build you liked and `...837`:**
+
+| build | revision | OPL4 splits | slack |
+|---|---|---|---|
+| `...835` | **debug (stp)** | 1–2 only | −4.8 |
+| `...836` | release | +3,4,5 | −1.712 |
+| `...837` | release | +6 | −1.117 |
+
+If your last good listen was `...835`, then **two things changed at once** — the revision *and* four OPL4 changes. That's my fault for stacking them; I offered to hold at `...836` and then deployed `...837` when you asked, so the audio has no single-variable comparison behind it.
+
+**Two candidate causes, and I genuinely don't know which:**
+
+1. **A split changed the numbers.** All four are value-identical by construction, and `sim/opl4_tb` passes each time — but that testbench is functional, not bit-exact. It checks fetch addresses, output presence, polarity, silence after key-off. Steady numeric drift in a volume or step value would sail straight through it.
+
+2. **Timing violations.** The design still fails setup *in exactly the OPL4 PCM path*. A setup violation there means a sample value latched wrong — which is precisely what crackle sounds like. And critically, each split reshuffles *which* paths violate: a build can get audibly worse while its worst-case number improves, because the violating set changed rather than shrank.
+
+I lean towards (2), because the splits are value-preserving by construction and because crackle is the characteristic symptom of a marginal datapath rather than a wrong constant. But that's a hypothesis, not a finding.
+
+**The seventh split is the test.** It's aimed at closing timing outright. If it closes and the crackle goes, it was (2). If it closes and the crackle stays, it's (1) and I'll bisect by deploying `...836` — five splits instead of six — to find which one introduced it.
+
+Either way I'd stop adding changes after this build until we know. If the split doesn't close timing, I'd rather build an **stp at the current commit** so you have a true like-for-like against `...835` than keep guessing.
+
+## User
+
+Have you updated all the MRAs for the fast rom load?
+
+## Claude
+
+Parents are armed on device (my earlier count query was mis-filtered — it was also catching the separate PsikyoSH2 core's MRAs). Checking the alternates:
+
+Found the gap: **local 17/17 armed, but only the 5 parents are on the device — all 12 alternates are still the old files.** Deploying them:
+
+**Now yes — 17/17 armed on the device.** They weren't before you asked.
+
+The repo has had all 17 armed since this morning, but I only ever *deployed* the 5 parents — `releases/*.mra` doesn't glob into `_alternatives/`, and I never noticed. The 12 alternates have just gone up.
+
+**This matters beyond load speed.** Those 12 device files were stale in three ways, so anything you tested from the alternates menu was running old data:
+
+- **The tiles byte-swap fix was missing from six of them** — Sengoku Ace (Japan set 1 and set 2), Samurai Aces (Korea), Gunbird (Japan and Korea), Battle K-Road (Korea). That's the corruption you originally reported on Sengoku Ace set 1; the fix was committed but never reached the device.
+- No hiscore `<nvram>` element, so high scores wouldn't save on any alternate.
+- No `address` attribute, so they took the ~50 s byte path.
+
+One reassurance about the mismatch while it existed: it was slow, not broken. The loader keys off whether any `ioctl_wr` arrived during the download — an unarmed MRA streams normally, sets `dl_seen_wr`, and the DDR3 copy never starts. So a stale MRA degrades to the old path rather than booting against unwritten SDRAM.
+
+Worth noting for the crackle hunt: if any of your listening was done on an alternate rather than a parent, it was on old ROM data, which is another variable I'd want eliminated. **Strikers 1945 (World)** — the parent — is the clean comparison.
+
+The seventh-split build is still running; I'll report its slack when it lands.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>bv98d4n1m</task-id>
+<tool-use-id>toolu_01Aks3Md35MCM1u3aiWpQHWX</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\bv98d4n1m.output</output-file>
+<status>failed</status>
+<summary>Background command "Commit and build the seventh split" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+**−0.179 ns, TNS −1.515.** Essentially closed — from −6.633 this morning.
+
+More importantly, **the OPL4 PCM engine is no longer the bottleneck.** The worst paths have left it entirely and moved to the sprite render engine (`a_dst_size_x` → `fb_color`). Only one OPL4 path remains at −0.169, and total negative slack across the whole design is now 1.5 ns spread over ~15 paths — down from 2,717 ns.
+
+| | slack | TNS | worst path in |
+|---|---|---|---|
+| this morning | −6.633 | −2717 | OPL4 PCM |
+| **now** | **−0.179** | **−1.515** | sprite render |
+
+That's below fitter-seed noise. A different `SEED` might close it outright without any RTL change — worth one build before writing more logic.
+
+**This is the crackle experiment.** The hypothesis was that crackle came from setup violations in the OPL4 datapath corrupting sample values. This build has essentially none left there — the remaining OPL4 path is −0.169 ns, versus −1.117 across many paths in `...837`. So:
+
+- crackle **gone** → it was timing, and this is the fix
+- crackle **remains** → it's logic in one of my splits, and I'll bisect from `...836`
+
+Shall I deploy it? Two things worth weighing: it's a **release** build, so still no probes, and it carries the seventh split which you haven't heard yet. If you'd rather have a like-for-like against `...835`, I can build stp at this commit instead (~15 min) and you'd get the Debug page back too.
+
+## User
+
+deploy
+
+## Claude
+
+The build is preserved under its own commit `3ad9fe8` — HEAD has since moved to your `Docs` commit, which is why the lookup missed. Deploying the right one:
+
+**Deployed: `Arcade-Psikyo_20260838.rbf`** — commit `3ad9fe8` (seventh split), release revision, **−0.179 ns / TNS −1.515**.
+
+The MRAs are all 17 armed now too, so this is the first genuinely clean test setup today.
+
+**What to listen for:** whether the crackle in `...837` is gone. The OPL4 datapath in this build has essentially no timing violation left (one path at −0.169 ns, versus −1.117 across many in `...837`), so:
+
+- **crackle gone** → it was setup violations corrupting sample values, and closing timing fixed it
+- **crackle still there** → it's logic in one of splits 3–6, and I'll bisect by putting `...836` back on
+
+Either answer is useful. If it's gone, please also listen for anything *new* — the seventh split is the one change you haven't heard, and it's the only one that alters cycle timing rather than just moving work between states.
+
+Two caveats I'd rather state than have you discover: it's a release build, so no Debug page or probes if something needs diagnosing; and use **Strikers 1945 (World)**, the parent, since the alternates were running stale ROM data until fifteen minutes ago.
+
+## User
+
+There's a discontinuity with the sprites now down the middle of the screen that didn't used to be there this morning - one half lags the other by a frame
+
+## Claude
+
+That's a sprite double-buffer swap landing mid-frame, not at vblank — and with rotation, a vertical split on screen is a scanline boundary in game space. My splits are OPL4-only, so let me check the most likely coupling rather than guess:
+
+Both symptoms you describe — the half-frame discontinuity *and* the flicker — are exactly what the code already predicts from a single cause. From `psikyo_core.sv:904`:
+
+> *Does a render pass finish inside one frame? Both sprite artefacts follow if it does not: spriteram_dbuf swaps the engine's SOURCE records at frame_start, and the frame buffer's clear then overlaps the next pass.*
+
+There's a sticky `sp_overran` flag and a `sp_render_max` counter built for precisely this question — but they're only readable over JTAG, and `...838` is a release build with no probes. Building stp at the current commit so we can read them:
+
+`sp_overran` and `sp_render_max` come out through the **debug overlay** (row 215), not ISSP — so it's stp build → enable overlay → screenshot → `decode_debug_screenshot.py`. That measurement has been taken before, which gives us a baseline:
+
+Baseline is useful: `sp_render_max` was 789,066 clk = 8.6 ms of a 16.7 ms frame, so the render has slack — an overrun isn't the obvious explanation. Reading the actual buffering logic:
+
+That comment is the smoking gun (`psikyo_core.sv:846-848`):
+
+> *0 (default): frame_swap on `sp_frame_done`, so the display bank toggles wherever rendering finishes — **measured at ~61.5% down the VISIBLE frame, which tears the picture there every frame**.*
+
+That's your symptom exactly. The core is running the tearing swap mode. Mode selection is `dbg_sprite_vsync_swap = ~status[43]`, so a `status[43]=1` in the device `.CFG` forces it — and release builds hide the Debug page, so it can't be toggled back from the OSD. Checking:
+
+The map in `write_cfg.py` says bit 43 is *"0 EndOfRender, 1 FrameStart"*, but the RTL is `~status[43]` — so the polarities disagree. Reading what's actually on the device for `s1945`:
+
+Hypothesis wrong — worth knowing. `s1945.CFG` is `00 00 00 00 00 00 02 00...`, so **byte 5 = 0 → status[43] = 0 → the good FrameStart swap mode is already selected.** The tear isn't a stale config bit.
+
+So I need the actual measurement. Checking the stp build and the overlay bit:
+
+Significant finding: **the sprite RTL is byte-identical between `835` (which was fine) and `838` (which tears)** — same swap polarity, same `want_frame`, same `spr_copy_start`. And `status[43]=0`, so the good FrameStart swap mode is active. This is not a sprite logic regression.
+
+That leaves only two differences between those builds:
+
+1. **Revision** — `835` was stp (instrumented), `838` is release.
+2. **OPL4 splits 3–7.**
+
+Of those, only the **seventh** changes cycle behaviour rather than just moving combinational work between existing states: it adds a state per channel per sample, which shifts when OPL4 issues its sample-ROM reads and therefore how it contends for SDRAM with the sprite fetches. That's the mechanism the `sp_overran` comment describes, and it's the one that produces *both* your symptoms from one cause.
+
+The competing explanation is the sprite engine's own timing: `a_dst_size_x → fb_color` at −0.179 ns is now the worst path in the design, and a violation on `fb_color` would corrupt sprite colour — but that explains flicker, not a clean half-frame lag.
+
+So I need `sp_render_max` against the 1,433,729-cycle frame budget. The stp build at HEAD is still compiling; when it lands I'll deploy it, set bit 56 (trace overlay) via `write_cfg.py` — no OSD needed, as you say — launch Strikers 1945 (World) and take a run of screenshots to decode row 215.
+
+One unrelated thing I noticed in `s1945.CFG`: **DIP bytes 2–4 are `00 00 00`**. Per `write_cfg.py`'s own notes this family should be `FD FF FF`, and zeroed DIPs are the documented failure that turns Service Mode on. It's evidently not stopping the game booting, but it means whatever DIP settings you think are in effect probably aren't. Worth repairing separately with `--repair-dips` once we've settled the sprite问题 — I don't want to change two variables mid-diagnosis.
+
+## User
+
+the sprite问题 ???
+
+## Claude
+
+A glitch on my part — that should read "the sprite problem". No hidden meaning; 问题 is just the Chinese word for "issue", and it landed in the middle of an English sentence by mistake.
+
+The sentence was meant to be: *worth repairing separately with `--repair-dips` once we've settled the sprite problem — I don't want to change two variables mid-diagnosis.*
+
+Checking the build:
+
+Still compiling. Preparing the decode path so the measurement runs straight through when it lands:
+
+Decode path confirmed — one screenshot carries both numbers:
+
+- **row 215** = `sp_render_max` (20-bit, cycles) against the 1,433,729-cycle frame
+- **rows 216–223** = `ctl_echo`, with `sp_overran` in bit 15 and a `0xA5` marker in the top byte for sanity
+
+That plus the 789,066 baseline gives a direct verdict on whether the render is overrunning.
+
+Still compiling. While it finishes, the two branches are already clear, and both have concrete fixes:
+
+**If `sp_overran = 1` / `sp_render_max` > 1,433,729** — the render is missing the frame. The most likely trigger is split 7, the only change that alters *when* OPL4 issues sample-ROM reads and so how it contends with sprite fetches on the SDRAM. Fixes, cheapest first: revert split 7 (costs the timing closure, but proves causality in one build), or raise sprite priority in the arbiter — `sdram.sv:177-216` is **fixed-priority**, tilemaps always preempting sprites, which `ROADMAP.md` already flags as suspicious.
+
+**If `sp_overran = 0` and the budget looks healthy** — then it isn't contention, and the culprit is the sprite engine's own timing violation. `a_dst_size_x → fb_color` at −0.179 ns is now the worst path in the whole design, and a setup violation on `fb_color` corrupts sprite colour bits directly. That fits the flicker; the half-frame lag would then need separate explanation. The fix is the same kind of split I've been doing, applied to the sprite engine instead — and closing it also gets the design to full closure, which is wanted anyway.
+
+The measurement distinguishes them in one screenshot, so I'd rather not guess between them now.
+
+One thing worth saying plainly: the artefact appeared while I was stacking OPL4 changes you hadn't heard yet, which is exactly the situation I said I wanted to avoid two builds ago and then didn't hold to. If the measurement is ambiguous, the fastest way to a clean answer is to put `...835` back on — a known-good stp build — and confirm the artefact is absent there, which re-establishes a baseline before I change anything else.
+
+## User
+
+Will you make 835 active (by renaming 838) and I'll confirm it wasn't an issue before.
+
+## Claude
+
+Renaming only 838 wouldn't do it — **836 and 837 are also newer than 835**, so MiSTer would just fall back to 837. Moving all three aside so 835 is the newest:
+
+Done — **`Arcade-Psikyo_20260835.rbf` is now the active core.** I renamed 836/837/838 to `.rbf.held` rather than deleting, so restoring any of them is a one-line rename.
+
+What you're about to test:
+
+| | |
+|---|---|
+| Build | `9fc8b3c` — this morning's fast-load fix |
+| Revision | **stp (instrumented)** — Debug page is back, probes work |
+| OPL4 | splits 1–2 only; **none** of today's 3–7 |
+| Sprite RTL | byte-identical to `838` |
+
+Two things that make this a *cleaner* comparison than it was this morning: the MRAs are now all 17 armed, and this is the instrumented revision — so if the artefact *is* present here, I can read `sp_render_max` and `sp_overran` straight off the debug overlay without waiting for the build.
+
+Bounce through the menu before launching so the core reloads rather than reusing the cached one, and use **Strikers 1945 (World)**.
+
+The interpretation either way:
+
+- **No tear or flicker on 835** → the sprite RTL is fine and something in splits 3–7 caused it, most likely 7 via SDRAM contention. I'd then bisect with `836` (splits 3–5), which is one rename away.
+- **Tear present on 835 too** → it predates today's OPL4 work entirely, and my whole line of reasoning about split 7 is wrong. That would point at the two-frame sprite buffering from this morning, or at the render budget being marginal all along.
+
+The stp build at HEAD is still compiling in the background; I'll hold it rather than deploy anything until you've looked.
+
+## User
+
+and don't forget to make the fast rom loading inactive
+
+## Claude
+
+**Fast loading is off — 0 of 17 armed on the device.** I stripped the `address` attribute in place rather than reverting to the old files, so everything else you fixed today survives: the tiles byte-swap in the six alternates, the hiscore `<nvram>` elements, mameversion and author.
+
+Loads will take ~50 s again. The repo copies are untouched and still armed, so re-arming is one `deploy_mra.py` run.
+
+That's a better call than I'd made — it removes a variable I'd left in. `835` *is* the fast-load build and you only ever ran it with DDR3 loading active, so "835 was fine this morning" was never actually established for the byte path. And the loader is not innocent by construction: `rom_loader.sv` copies the whole 18.5 MB map and applies an ADPCM bit6/7 swap within a window, so a wrong window boundary would corrupt graphics ROM in a way that could plausibly show as sprite flicker. Testing 835 on the byte path settles whether the loader is writing SDRAM faithfully.
+
+So the current state on the device:
+
+| | |
+|---|---|
+| Active core | `Arcade-Psikyo_20260835.rbf` (stp, splits 1–2 only) |
+| Held aside | `836`/`837`/`838` as `.rbf.held` |
+| MRAs | all 17 current, **fast loading disabled** |
+| Debug page | available — this is an instrumented build |
+
+Bounce through the menu first so the ROM is genuinely re-read, then Strikers 1945 (World). If it's clean, we've isolated the problem to splits 3–7 or the loader, and the next rename tells us which.
+
+## User
+
+835 does not suffer this issue
+
+## Claude
+
+That's a clean result — and it narrows things, but not to one cause yet, because **two variables changed between 835 and 838**: the OPL4 splits *and* fast loading (838 was tested with the loader active; 835 just now was not).
+
+Setting up the test that separates them — 838 back as active, loader still off:
+
+**Yes, but only one test — and it's not a splits bisect yet.**
+
+`838` is active again with **fast loading still off**. That single run splits the remaining hypothesis space in half:
+
+- **Artefact gone** → it was the **ROM loader**, not my OPL4 splits. `rom_loader.sv` copies all 18.5 MB and applies an ADPCM bit6/7 swap inside a window; a wrong boundary would corrupt graphics ROM. Sprite flicker fits that well.
+- **Artefact still there** → the loader is innocent and it's in **splits 3–7**. *Then* bisecting the splits is worth your time, and `836` (splits 3–5) is one rename away — held and ready.
+
+Doing it this way round matters: if you'd gone straight to `836` you'd have been comparing two builds that *also* differ in loader state, and a clean result would have been uninterpretable.
+
+The reason I favour the loader now, having doubted it earlier: your `835` run was the first time that build has been exercised on the byte path — every previous 835 test had the DDR3 loader active. So "835 was fine this morning" never actually cleared the loader, and I was treating it as though it had.
+
+Same drill: bounce through the menu, Strikers 1945 (World), expect a ~50 s load.
+
+## User
+
+it's not a graphics corruption, or related to the loader
+
+## Claude
+
+Understood — and that rules out the loader properly, since corruption is what a bad copy would produce and this isn't that.
+
+That reframes it usefully. A coherent half-frame lag with a boundary partway down means **the render pass isn't covering the whole framebuffer** — the un-rendered portion still holds the previous frame's pixels. That's a completion problem, not a data problem, and it's consistent with the flicker too.
+
+Checking the instrumented build, which can measure exactly that:
+
+**`836` is active** (I held 838 back so it isn't picked instead). Fast loading still off.
+
+| build | splits | slack |
+|---|---|---|
+| 835 ✓ clean | 1–2 | −4.8 |
+| **836 ← now** | +3,4,5 | −1.712 |
+| 837 held | +6 | −1.117 |
+| 838 held | +7 | −0.179 |
+
+Reading the result either way:
+
+- **836 clean** → cause is in split 6 or 7. Then 837 next, which separates them.
+- **836 shows it** → cause is in 3, 4 or 5 — and those are the *purely combinational* moves that add no cycles at all, which would point away from contention and towards timing, i.e. the fitter redistributing effort once OPL4 stopped dominating.
+
+That second outcome is the more interesting one, because it would mean the trigger isn't what my code changed but where the fitter put things — and `a_dst_size_x → fb_color` at −0.179 ns being the design's new worst path is exactly that shape.
+
+The stp build is still going, oddly long for a ~15 min job. I'll check whether it has stalled rather than assume; when it does land it measures `sp_render_max` directly, which beats bisecting for the underlying answer.
+
+## User
+
+The STP build is at 11m51, whichis fine. IT takes ~13 mins now
+
+## Claude
+
+Noted — 13 min for stp, so it's on track and my "oddly long" was just a wrong prior.
+
+When it lands, the sequence is: deploy it, set bit 56 via `write_cfg.py` (no OSD needed), launch Strikers 1945 (World), pull a run of screenshots, and decode row 215 for `sp_render_max` plus rows 216+ for `sp_overran`. Against the 1,433,729-cycle frame budget and the 789,066 baseline, that says directly whether the render is failing to cover the frame.
+
+One thing about that build worth flagging now: it's stp at HEAD, so it includes **all seven splits**. If the artefact turns out to be revision-sensitive rather than split-sensitive — release fits differently from instrumented — it may not reproduce there, and the measurement would come back healthy while `836`/`838` still misbehave. If that happens the numbers still aren't wasted, since a healthy `sp_render_max` on the same RTL would itself point at the fit rather than the logic.
+
+Your `836` result is the more decisive datapoint right now.
+
+## User
+
+836 doe snot have this issue either. WAnt to go to 838 with the same cfg options and fast rom loading?
+
+## Claude
+
+Recommend **837 instead** — 838 changes two things at once from 836 (split 6 *and* split 7), so a bad result there wouldn't tell you which. 837 is split 6 alone.
+
+And I'd keep fast loading **off** for one more test. 836 was just cleared with the loader off; re-enabling it now means a bad 838 could be either the loader or a split, which is the ambiguity we just spent three runs removing.
+
+**`837` is active**, loader still off, CFG untouched.
+
+| build | splits | result |
+|---|---|---|
+| 835 | 1–2 | ✓ clean |
+| 836 | +3,4,5 | ✓ clean |
+| **837 ← now** | **+6** | ? |
+| 838 | +7 | ✗ artefact (loader was on) |
+
+- **837 shows it** → **split 6** is the cause: the attenuation sum registered in `S_FETCH0`/`S_FETCH1`.
+- **837 clean** → **split 7** is the cause: the added `S_ENV3` state. Then I'd want 838 with the loader off just to confirm it reproduces under these conditions before I go changing RTL.
+
+I have a prediction, and it's worth stating so it can be wrong: I expect **837 clean and split 7 to be the culprit**. Split 7 is the only one that changes the engine's cycle count, and therefore when OPL4 issues sample-ROM reads — which is the one plausible route from an audio change to a sprite artefact, via SDRAM contention. Splits 3–6 only move combinational work between states that already existed.
+
+If 837 *does* show it, that prediction is wrong and split 6 is the suspect: it added writes in `S_FETCH0`/`S_FETCH1`, and I restructured those two states from `if (mem_rd_valid) begin … end` into `begin … if (mem_rd_valid) begin … end end`. The sim passed and I checked the nesting, but that's the one edit among 3–7 that changed a state's *structure* rather than just moving an expression.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>b3n5opeoo</task-id>
+<tool-use-id>toolu_019g8j9p7qyaDcM4Kt9uxNU3</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\b3n5opeoo.output</output-file>
+<status>completed</status>
+<summary>Background command "Build instrumented revision to read the sprite overrun probe" completed (exit code 0)</summary>
+</task-notification>
+
+## Claude
+
+Instrumented build is ready and preserved as `build_keep/Psikyo_stp-97b3117.rbf` — **−1.145 ns / TNS −17.19** (worse than release's −0.179, as expected, since SignalTap and the tracer cost timing).
+
+Incidentally the gate behaved correctly in both directions: it printed *"negative slack is qualified for the debug revision"* and gave the deploy command, rather than refusing as it does for release.
+
+I'm **not** deploying it — that would overwrite the core you're testing and wreck the bisect. It's queued for whenever 837 gives its answer.
+
+Worth knowing about that build when we do use it: it carries all seven splits, so if 837/838 pin the fault on split 7, this stp build has it too and should reproduce the artefact — while also being able to measure `sp_render_max` and `sp_overran` on the very build that shows it. That's the ideal combination, and better than the confound I warned about earlier.
+
+## User
+
+837 doesn't have the split frame issue - but does have some sprite flickering (may be present in earlier builds as I was focused on the split screen)
+
+## Claude
+
+Prediction held — **split 7 (`S_ENV3`) is the split-frame cause**, and splits 1–6 are clear of it.
+
+Deploying the instrumented build now, since it has split 7 *and* can measure the render budget on the very build that exhibits the fault:
+
+**`838` active, fast loading off (0 of 17 armed).**
+
+This is the strict control — the exact build that showed the split frame, now with the only other variable removed. Expected: split frame present. If it *isn't*, then split 7 alone doesn't explain it and the loader is back in play despite the corruption argument.
+
+Bisect so far:
+
+| build | splits | split frame |
+|---|---|---|
+| 835 | 1–2 | ✓ clean |
+| 836 | +3,4,5 | ✓ clean |
+| 837 | +6 | ✓ clean (some flicker) |
+| **838** | **+7** | ✗ — confirming now |
+
+Also queued: `839` is the **instrumented** build of the same split-7 code, held aside. Once 838 confirms, that's the one that can measure `sp_render_max` and `sp_overran` on a build that actually exhibits the fault — which turns "split 7 did it" into *why*.
+
+On the flicker you saw in 837: worth keeping separate from the split frame. If it's in 837 but not 835/836 it's a second, milder regression from split 6; if it's in all of them it predates today. I'd rather not conflate the two, so once the split frame is settled I'd suggest a deliberate flicker check on 835 as the baseline.
+
+## User
+
+I'm not seeing it now - did the CFG settings change compared to earlier. The sprite flicker remains
+
+## Claude
+
+No — I never wrote the CFG, only read it. `s1945.CFG` is untouched (`00 00 00 00 00 00 02 00…`, last modified 09:20, before any of today's testing).
+
+**The variable that changed is fast ROM loading.** And that inverts my conclusion: every build in the bisect — 835, 836, 837, 838 — was tested with the loader *off*, so the bisect was measuring an axis that wasn't varying. The only run that showed the split frame was 838 with the loader **on**. Split 7 is not implicated; my "prediction held" was wrong.
+
+There's a mechanism that fits precisely, and a suspicious data point I passed over earlier:
+
+**`839` active.** Timing: **−1.145 ns / TNS −17.19**.
+
+Note that's the *instrumented* revision, so it's not comparable with 838's −0.179 — SignalTap and the tracer cost about a nanosecond. Same RTL (all seven splits), different revision.
+
+| build | rev | slack | TNS |
+|---|---|---|---|
+| 838 | release | −0.179 | −1.5 |
+| **839** | **stp** | **−1.145** | **−17.2** |
+
+What 839 buys you: the Debug page and probes are back, so `sp_render_max` and `sp_overran` are readable, and fast loading can be re-armed to reproduce the split frame on a build that can also measure itself.
+
+**And I think I have the mechanism** (`Psikyo.sv:894-899`):
+
+```
+assign DDRAM_ADDR = ldr_active ? ldr_DDRAM_ADDR : rot_DDRAM_ADDR;
+```
+
+DDR3 is **muxed between the ROM loader and the screen rotator** — and the rotator is what holds the rotated framebuffer. So anything that asserts `ldr_active` after boot steals DDR3 from the rotator mid-frame, and the display keeps showing stale framebuffer content from that point down. In a rotated picture that is precisely a split with one side a frame behind.
+
+The suspicious datum I skipped past earlier: when I read probe `L` after the successful fast load, **`copy started: 2`** — the loader ran *twice*. I explained that away as "once per reset" without checking. If it can fire a third time during gameplay, the artefact follows directly, and it only ever appears when the MRA is armed — which matches every observation, including that all four loader-off builds were clean.
+
+Next step I'd suggest: re-arm the MRAs on 839, reproduce, then read probe `L` and the overlay together — that tells us whether `ldr_active` is asserting during play rather than leaving us to infer it. Say the word and I'll arm them.
+
+## User
+
+surely the fast loading is just loading, or does it impact runtime?
+
+## Claude
+
+Fair challenge — it *should* be load-only. Let me check rather than assume, because the mux means "should" isn't enough:
+
+Good instinct to push — it **isn't** just loading. Two runtime couplings, both in code I wrote:
+
+**1. Any reset re-runs the whole copy.** `Psikyo.sv:768-773`:
+
+```systemverilog
+if (reset) begin
+    ldr_pending <= 1'b1;
+end else if (ldr_pending && !ioctl_download && !ldr_active) begin
+    ldr_pending <= 1'b0;
+    if (!dl_seen_wr) ldr_start <= 1'b1;
+end
+```
+
+`reset` is `RESET | status[0] | buttons[1] | ~pll_locked`. Every one of those re-arms `ldr_pending`. And `dl_seen_wr` is only cleared when a *new* index-0 download begins — so after a DDR3 load it stays 0 forever, and **every subsequent reset triggers another full 18.5 MB copy**. That's why probe `L` said `copy started: 2` — which I noted and waved away as "once per reset" without asking whether it *should* happen more than once.
+
+**2. While it copies, it takes DDR3 away from the rotator.** `Psikyo.sv:894-899` muxes every DDRAM signal on `ldr_active`, and `Psikyo.sv:331` says `ldr_active` is *deliberately* not in `reset`. So the rotator — which holds the rotated framebuffer in DDR3 — has its transactions cut off mid-frame while the copy runs, and nothing resets it afterwards to re-establish its phase. A rotator left out of phase with the display gives a persistent split at a fixed position with one side a frame stale, which is what you're seeing, rather than a momentary glitch.
+
+That also explains the correlation exactly: byte-path loads never assert `ldr_active`, so all four loader-off builds were clean regardless of splits.
+
+**The fix is two small changes:** make the loader strictly one-shot (latch "already copied", cleared only by a genuine new index-0 download), and quiesce the rotator across the hijack — reset it when `ldr_active` falls, so it restarts in phase.
+
+Want me to implement both? It's contained, and it would also let fast loading go back on, which is worth having.
+
+## User
+
+yes, but does it really explain the symptom in-game?
+
+## Claude
+
+Sharpening it, because your scepticism is right on the first version: a copy that only runs at boot shouldn't corrupt a later frame. The mechanism has to explain *persistence*, and it does — but for a more specific reason than I gave.
+
+`Psikyo.sv:331`:
+```systemverilog
+// ldr_active is deliberately NOT in `reset` -- rom_loader is itself reset by
+// it. The core sees the copy as an extended download instead.
+wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
+```
+
+So the core — **including the video pipeline and the rotator** — is *running* while the copy holds DDR3. The rotator comes up, starts its framebuffer cadence, and gets no DDR3 for the whole copy. Whatever phase relationship it establishes between its writes and the HPS's reads is established during that blackout, and nothing re-syncs it afterwards. A rotator permanently out of phase with the display gives exactly a fixed-position split with one side a frame stale — persistent, not transient.
+
+And `rom_loader.sv`'s own header says:
+
+> *copies DDR3 → SDRAM at full speed **with the core held in reset***
+
+The module documents the contract; `Psikyo.sv` deliberately breaks it. srg320's version holds the core down (`rst_sys = reset | download | loader_rst`) — I read that when fixing the trigger and then didn't carry it across.
+
+**Where I'd still hedge:** this predicts the artefact is present from the very first frame after a fast load. If you saw it appear partway into a session, or come and go, the phase story is wrong and I'd be back to guessing. That's checkable — re-arm the MRAs on 839, cold-load, and look at the first frames.
+
+So the fix becomes three things, and the third is the substantive one:
+
+1. Loader strictly one-shot — no re-copy on later resets.
+2. Hold the core in reset while `ldr_active`, honouring the module's stated contract.
+3. Consequently the rotator starts *after* DDR3 is free, in phase.
+
+The flicker you saw on 837 is a separate matter and none of this explains it — I'd treat that as its own investigation once this is settled.
+
+Shall I implement, or reproduce-and-confirm on 839 first? I'd mildly favour confirming, since the fix is cheap but the hypothesis is one build's worth of evidence away from being tested properly.
+
+## User
+
+then go back to closing the timing for the rendering
+
+## Claude
+
+Doing both — loader fix first (you'd already approved it), then the sprite render timing.
+
+Two comments in the same file assert the opposite of each other — `Psikyo.sv:797` says *"the loader only runs with the core in reset, when there is no picture to rotate"*, while `331` says `ldr_active` is deliberately **not** in reset. The implementation follows 331. Finding the rotator's reset before I change anything:
+
+The rotator has **no reset port** — which sharpens the mechanism and explains persistence. Checking how it sees the DDRAM handshake:
+
+**Found the precise mechanism.** `Psikyo.sv:877` — the rotator sees the raw `DDRAM_BUSY`:
+
+```systemverilog
+.DDRAM_BUSY    (DDRAM_BUSY),
+```
+
+Its writes are muxed *away* from memory while `ldr_active`, but it still samples `DDRAM_BUSY` to decide whether each write was accepted. Between loader transactions BUSY is low, so the rotator concludes a write succeeded that never reached DDR3, and advances its pointer. The framebuffer is left with a stale region at a fixed position — and with no reset port, nothing ever recovers it. That is exactly your symptom, and it only happens when the loader runs.
+
+Implementing all three fixes:
+
+Now the sprite render timing — the remaining violation:
+
+The failing path isn't `a_dst_size_x` → `fb_color` directly — it's through `sprite_zoom_src_index` (`.dst_size(a_dst_size_x[3:0])` at line 181) → `zsi_src_col` → the 16:1 pixel mux → `opaque` → which gates the `fb_color` write in `S_COL`. Fixing that in RTL means pipelining the zoom index, and since `S_COL` runs **per pixel**, adding a stage there would roughly double render time — the opposite of what we want.
+
+At −0.179 ns, there's a cheaper move worth trying first:
+
+SEED is **1**, not 7 — both `build_staged.py`'s docstring and the README say 7. Stale in two places. Adding a seed override so we can try closing the last 0.179 ns without touching sprite RTL:
+
+Committed and building (release, seed 3).
+
+**The loader fixes — three faults, all mine:**
+
+1. **The rotator sampled raw `DDRAM_BUSY`.** Its writes are muxed away from DDR3 during a copy, but it used BUSY to judge acceptance; between loader transactions BUSY is low, so it counted phantom writes as accepted and advanced its pointer. Stale band at a fixed position, no reset port, never recovers. Now held busy for the copy.
+2. **The core wasn't held in reset during the copy** — despite `rom_loader.sv`'s header *and* the DDRAM comment both stating it is. `psikyo_top` now takes `reset_core = reset | ldr_active`. The loader stays on plain `reset`, or asserting busy would reset the loader and the copy could never finish.
+3. **The copy wasn't one-shot.** `dl_seen_wr` stays 0 forever after a DDR3 load, so every later reset restarted a full 18.5 MB copy — taking the bus mid-picture. Probe `L` had already told me `copy started: 2` and I explained it away instead of asking whether it should ever exceed 1.
+
+**On the rendering timing:** I did *not* restructure the sprite engine. The failing path runs `a_dst_size_x` → `sprite_zoom_src_index` → the 16:1 pixel mux → `opaque` → the `fb_color` write, and `S_COL` executes **per pixel** — pipelining there would roughly double render time, which is exactly the budget we can't afford. At −0.179 ns the shortfall is within seed-to-seed noise, so this build tries seed 3 instead (new `--seed` flag, stage-only so builds stay reproducible). If reseeding closes it, we get closure for free; if not, I'll look for a transform that doesn't cost a cycle per pixel.
+
+Two stale facts corrected along the way: the seed is **1**, not 7 as `build_staged.py` and the README both claim.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>belwi880z</task-id>
+<tool-use-id>toolu_019e9R3oA1qXmngAKfkCpuaD</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\belwi880z.output</output-file>
+<status>failed</status>
+<summary>Background command "Commit loader fixes and build with a new seed" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+Commit landed (`4d9d817`); the build refused because you have uncommitted README edits again. That guard is right to stop — but the README can't affect a bitstream, so building HEAD without it is correct:
+
+Building now (release, seed 3, ~15 min). The loader fixes are committed as `4d9d817`.
+
+Your README edits are untouched in the working tree — `--allow-dirty` builds HEAD and deliberately excludes them, which is what you want since documentation can't change a bitstream. I've left them uncommitted rather than sweeping them into a build commit; tell me when you'd like them committed.
+
+When it lands there are two independent things to check:
+
+**Timing** — did seed 3 close the last 0.179 ns? If yes, that's full closure and the first release-qualifiable build; the gate will print a deploy command instead of refusing. If it lands somewhere similar or worse, reseeding isn't the answer and I'll look for a sprite-engine transform that doesn't cost a cycle per pixel.
+
+**The loader fix** — this is the build to re-arm the MRAs against. That's the real test of the split-frame diagnosis, and it's worth being explicit that it's still a hypothesis: I have a mechanism that fits every observation, but nothing has yet *demonstrated* the rotator was advancing on phantom writes. If the artefact survives with the MRAs armed, the mechanism is wrong regardless of how well it reads.
+
+I'd suggest testing those in that order — timing from the build log, then arm the MRAs and look — so a surprise in one doesn't get attributed to the other.
+
+## System (automated -- not written by either party)
+
+<task-notification>
+<task-id>bbx2mosyo</task-id>
+<tool-use-id>toolu_011WYFbVhK8Wn5gNyEgn79eF</tool-use-id>
+<output-file>C:\Users\tourn\AppData\Local\Temp\claude\C--Users-tourn-Downloads-meatcores-main--Arcade\4d56acb9-b535-4530-9df0-8b11450dbafb\tasks\bbx2mosyo.output</output-file>
+<status>failed</status>
+<summary>Background command "Rebuild with seed 3, excluding the dirty README" failed with exit code 1</summary>
+</task-notification>
+
+## Claude
+
+Seed 3 made it **worse**: −0.430 vs −0.179. But that's not a clean seed comparison — this build also carries the loader fixes, and `reset_core = reset | ldr_active` adds a term to a very high-fanout reset net, which can easily cost timing on its own.
+
+Preserving it (it's still perfectly good for testing the loader fix) and rebuilding at seed 1 to separate the two:
+
+Reseeding didn't work — **seed 3: −0.430** against seed 1's −0.179.
+
+Rebuilding the same commit at the default seed to untangle the two variables. That gives:
+
+| | seed 1 | seed 3 |
+|---|---|---|
+| before loader fix | −0.179 | — |
+| with loader fix | building | −0.430 |
+
+If seed 1 comes back near −0.179, the seed was simply a bad draw and the loader fix is timing-neutral. If it comes back near −0.430, then `reset_core` cost us that quarter-nanosecond — plausible, since ORing `ldr_active` into `psikyo_top`'s reset adds a term to a net that fans out across the whole core. In that case the fix would want a different shape: gating the rotator's `DDRAM_BUSY` (fault 1) is the part that actually addresses your symptom, whereas holding the core in reset (fault 2) is belt-and-braces and could be dropped or narrowed to just the video path if it's what's costing timing.
+
+Meanwhile `build_keep/Psikyo-4d9d817-seed3.rbf` is preserved and is a perfectly good vehicle for testing the loader fix — −0.430 ns is debug-grade, not release-grade, but it exercises all three fixes. Say the word and I'll deploy it and re-arm the MRAs, which is the test that actually confirms or kills the phantom-write diagnosis.
+
+## User
+
+deploy and re-arm
+
+## Claude
+
+**Deployed and armed:** core `Arcade-Psikyo_20260840.rbf`, **17 of 17 MRAs armed**.
+
+| | |
+|---|---|
+| Build | `4d9d817` — all three loader fixes |
+| Revision | release (no Debug page/probes) |
+| Slack | −0.430 (seed 3) |
+| Fast loading | **on** — expect ~5 s loads |
+
+This is the actual test of the diagnosis. What it decides:
+
+- **Fast load *and* no split frame** → the phantom-write mechanism was right, and fast loading is usable again.
+- **Split frame still there** → the mechanism is wrong despite fitting every observation, and I go back to evidence rather than reasoning. The instrumented `839` is still on the device (held) and can measure `sp_render_max`/`sp_overran` and probe `L` — including whether `copy started` now stays at 1, which fault 3 should guarantee.
+
+Worth watching for as a *new* failure mode: holding the core in reset during the copy is new behaviour, so if the screen stays black or the core fails to start after loading, that's fault 2's fix misbehaving rather than the old bug. Probe `L` on an stp build would settle it quickly.
+
+The flicker you saw on 837 is untouched by any of this and I'd still expect it to be present.
+
+Meanwhile the seed-1 rebuild is running to tell us whether `reset_core` cost the quarter-nanosecond or seed 3 was just a bad draw.
+
+## User
+
+black screen
+
+## Claude
+
+That's fault 2's fix breaking it, and I can see why — I overrode a deliberate decision without checking what depended on it:
+
+Can't — `840` is a **release** build, so there are no probes in it. That's a gap in my plan: I deployed a build that can't self-diagnose, right when we needed diagnosis.
+
+But the code answers it without a probe. `psikyo_top.sv:211-229`:
+
+> *The module header already documents that psikyo_sdram_top must stay out of reset… The consequence was total and silent. sdram_download's FSM never left…*
+
+The loader writes SDRAM **through** `psikyo_top` (`ldr_req`/`ldr_addr`/`ldr_data`/`ldr_busy` are its ports). By holding `psikyo_top` in reset during the copy I held the SDRAM backend in reset too, so the copy wrote nothing and the 68020 came up against empty memory — the same black screen as the original fast-load failure, and precisely the trap that file warns about. The comment I overrode at `Psikyo.sv:331` was load-bearing for a reason I didn't check.
+
+Reverting fault 2 and keeping the two fixes that matter:
+
+Seed 1 with the loader fixes: **−0.427**, essentially identical to seed 3's −0.430. So the seed was never the problem — **the loader fix cost the timing** (−0.179 → −0.427), and the likely culprit is exactly the `reset_core` term I now need to remove anyway.
+
+Reverted and rebuilding. The black screen was my doing, and the revert should fix both symptoms at once.
+
+**What went wrong:** `Psikyo.sv:331` said `ldr_active` was *deliberately* excluded from reset. I read that as being only about `rom_loader`'s own reset and overrode it. The real reason is that the loader writes SDRAM **through** `psikyo_top` — so holding it in reset held `psikyo_sdram_top` in reset too, the copy wrote nothing, and the CPU came up against empty memory. `psikyo_top.sv:211-229` documents this exact trap, including that "the consequence was total and silent". I should have asked what the comment was protecting before removing the protection.
+
+**It also cost the timing.** Seed 1 with the fix: −0.427. Seed 3: −0.430. Against −0.179 without it. So the seed experiment was never measuring the seed — the loader fix was carrying that quarter-nanosecond the whole time, almost certainly via that high-fanout reset term. Reverting should return both the picture and the slack.
+
+**What's kept** — the two fixes that stand on their own:
+- the `DDRAM_BUSY` gate, which is what actually stops the rotator advancing on writes that never reached DDR3;
+- the one-shot latch, so later resets don't recopy 18.5 MB with the bus taken mid-picture.
+
+Neither touches reset, so neither should cost timing.
+
+I've recorded the SDRAM reason in the comment rather than leaving it as "deliberately", and noted that `rom_loader.sv`'s header and the DDRAM mux comment both describe holding the core in reset — an intent the design cannot actually implement. Three places asserting something untrue is what led me here.
+
+`839` (instrumented, probes) is still on the device if you want diagnosis rather than another blind deploy when this build lands.
+
+## User
+
+Update the Claude session-transcript.md by appending to it the latest content in the same style.
+

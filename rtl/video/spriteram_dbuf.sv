@@ -20,12 +20,13 @@
 // ORDERING. psikyo_v.cpp's screen_vblank does get_sprites() and THEN
 // m_spriteram->copy() -- it builds the display list from the buffer as it
 // stands and only then refreshes that buffer, so the list a frame renders is
-// one buffer-generation old. Copying at frame_start and rendering the fresh
-// data instead (which this module used to do) drops that frame of latency
-// and makes sprites lead the live-VRAM tilemaps on screen. The copy is
-// therefore triggered when the render pass FINISHES with the snapshot, which
-// costs no extra memory -- the alternative, a second snapshot bank, is 64Kbit
-// of block RAM this design does not have spare.
+// one buffer-generation old. WHEN copy_start fires is the pipeline's capture
+// instant and is owned by psikyo_core's sequencing (it depends on the swap
+// policy -- see the spr_copy_start comment there): under the FrameStart
+// policy it fires at the frame boundary, matching MAME's screen_vblank()
+// capture instant, with the generation delay supplied by the frame buffer's
+// own double buffering. A second snapshot bank (64Kbit of block RAM this
+// design does not have spare) is what this arrangement avoids.
 module spriteram_dbuf (
 	input  logic clk,
 	input  logic reset,

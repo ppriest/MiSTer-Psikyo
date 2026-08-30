@@ -1,5 +1,7 @@
-cd D:/Mister-Psikyo
-project_open Psikyo -revision Psikyo
+# Run from the stage: quartus_sta -t ../scripts/sta_all_fail.tcl [rev]
+set rev "Psikyo"
+if {[llength $quartus(args)] > 0} { set rev [lindex $quartus(args) 0] }
+project_open $rev
 create_timing_netlist
 set_operating_conditions 7_slow_1100mv_100c
 read_sdc
