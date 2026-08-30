@@ -1,7 +1,6 @@
 # Psikyo core for MiSTer
 
-MiSTer FPGA core for the original 68k Psikyo arcade platform(s) that preceded the Hitachi SH-2 era, built with Quartus Prime
-17.0.2 Lite for the DE10-nano.
+MiSTer FPGA core for the original 68k Psikyo (pronounced "SIGH-kyoh" from the Japanese word Saikyō (最強), which means "strongest.") arcade platform(s) that preceded the Hitachi SH-2 era, built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 Supports the following games
 
@@ -85,9 +84,9 @@ Details:
 
 ### Todo
 
-- [ ] Finding a stable way to close the timing, hovering around -0.2-1.4ns and unstable with different seeds
+- [ ] Finding a stable way to close the timing, hovering around 0 +/- 200ns and unstable with different seeds
+- [ ] Implement the Flipscreen DIP, for CRT owners
 - [ ] Screen Clear / background colour is still unclear. Currently taken from the highest priority visible tilemap, falling back to pen 0
-- [ ] Confirm the FM finding on Tengai (a different sound program to s1945)
 - [ ] Port to the Analogue Pocket (openFPGA) - looking unlikely
 
 ### Resource usage

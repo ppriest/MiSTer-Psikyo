@@ -72,5 +72,5 @@
 		<dip name="Region" bits="16,17,18,19" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7,0xb,0xd,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260830113651</mratimestamp>
+	<mratimestamp>20260830211239</mratimestamp>
 </misterromdescription>
