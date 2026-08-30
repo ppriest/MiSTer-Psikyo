@@ -14,128 +14,142 @@
 // exported so the render engine can be held off until it completes.
 //
 // The control word (0xFFF) is not read back through at_addr/dl_addr, so it is
-// shadowed on the live side and latched into ctrl_active at frame_start.
+// shadowed on the live side and latched into ctrl_active alongside the copy,
+// so the control bits always describe the data the render pass will read.
+//
+// ORDERING. psikyo_v.cpp's screen_vblank does get_sprites() and THEN
+// m_spriteram->copy() -- it builds the display list from the buffer as it
+// stands and only then refreshes that buffer, so the list a frame renders is
+// one buffer-generation old. Copying at frame_start and rendering the fresh
+// data instead (which this module used to do) drops that frame of latency
+// and makes sprites lead the live-VRAM tilemaps on screen. The copy is
+// therefore triggered when the render pass FINISHES with the snapshot, which
+// costs no extra memory -- the alternative, a second snapshot bank, is 64Kbit
+// of block RAM this design does not have spare.
 module spriteram_dbuf (
-    input  logic clk,
-    input  logic reset,
+	input  logic clk,
+	input  logic reset,
 
-    input  logic frame_start,   // pulse: snapshot the live RAM (video_timing.sv's vblank-rising pulse)
-    output logic copy_busy,     // 1 while the snapshot is being taken; render must not start
+	// Pulse: refresh the snapshot from the live RAM. Driven from the END of
+	// the render pass, NOT from frame_start -- see the ordering note below.
+	input  logic copy_start,
+	output logic copy_busy,     // 1 while the snapshot is being taken; render must not start
 
-    // CPU-facing port -- always the live bank, never swapped.
-    input  logic [11:0] cpu_addr,
-    input  logic         cpu_wel,
-    input  logic         cpu_weh,
-    input  logic [15:0] cpu_wdata,
-    output logic [15:0] cpu_rdata,
+	// CPU-facing port -- always the live bank, never swapped.
+	input  logic [11:0] cpu_addr,
+	input  logic         cpu_wel,
+	input  logic         cpu_weh,
+	input  logic [15:0] cpu_wdata,
+	output logic [15:0] cpu_rdata,
 
-    // Render-facing ports -- always the frozen snapshot bank.
-    input  logic [11:0] dl_addr,
-    output logic [15:0] dl_data,
-    input  logic [11:0] at_addr,
-    output logic [15:0] at_data,
+	// Render-facing ports -- always the frozen snapshot bank.
+	input  logic [11:0] dl_addr,
+	output logic [15:0] dl_data,
+	input  logic [11:0] at_addr,
+	output logic [15:0] at_data,
 
-    // This frame's frozen control-word bits (docs/phase1_memory_map.md):
-    // bit 0 sprites-disable, bit 2 -> trans pen 0, bit 3 -> trans pen 15.
-    output logic         sprites_disable,
-    output logic         trans_pen0,
-    output logic         trans_pen15
+	// This frame's frozen control-word bits (docs/phase1_memory_map.md):
+	// bit 0 sprites-disable, bit 2 -> trans pen 0, bit 3 -> trans pen 15.
+	output logic         sprites_disable,
+	output logic         trans_pen0,
+	output logic         trans_pen15
 );
 
-    localparam logic [11:0] CTRL_ADDR = 12'hFFF;
-    localparam int          DEPTH      = 4096;
+	localparam logic [11:0] CTRL_ADDR = 12'hFFF;
+	localparam int          DEPTH      = 4096;
 
-    // ---- copy sequencer ----
-    // copy_rd_addr is presented to the live bank's port B; dpram registers
-    // its read, so the word arrives one cycle later and is written to the
-    // snapshot at copy_wr_addr, which trails by exactly that one cycle.
-    logic         copying;
-    logic [11:0] copy_rd_addr;
-    logic [11:0] copy_wr_addr;
-    logic         copy_wr_en;
+	// ---- copy sequencer ----
+	// copy_rd_addr is presented to the live bank's port B; dpram registers
+	// its read, so the word arrives one cycle later and is written to the
+	// snapshot at copy_wr_addr, which trails by exactly that one cycle.
+	logic         copying;
+	logic [11:0] copy_rd_addr;
+	logic [11:0] copy_wr_addr;
+	logic         copy_wr_en;
 
-    assign copy_busy = copying | copy_wr_en;
+	assign copy_busy = copying | copy_wr_en;
 
-    logic [15:0] live_b_rdata;
+	logic [15:0] live_b_rdata;
 
-    // ---- live bank: CPU on port A, copy read on port B ----
-    logic [15:0] live_a_rdata;
-    dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_live (
-        .clk(clk),
-        .a_addr(cpu_addr),
-        .a_wel(cpu_wel),
-        .a_weh(cpu_weh),
-        .a_wdata(cpu_wdata),
-        .a_rdata(live_a_rdata),
-        .b_addr(copy_rd_addr),
-        .b_rdata(live_b_rdata)
-    );
+	// ---- live bank: CPU on port A, copy read on port B ----
+	logic [15:0] live_a_rdata;
+	dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_live (
+		.clk(clk),
+		.a_addr(cpu_addr),
+		.a_wel(cpu_wel),
+		.a_weh(cpu_weh),
+		.a_wdata(cpu_wdata),
+		.a_rdata(live_a_rdata),
+		.b_addr(copy_rd_addr),
+		.b_rdata(live_b_rdata)
+	);
 
-    // ---- snapshot bank: copy write / attribute read on port A, display
-    // list read on port B. at_addr's read is meaningless during the copy,
-    // which is safe because copy_busy holds the render engine off.
-    logic [15:0] snap_a_rdata;
-    dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_snap (
-        .clk(clk),
-        .a_addr(copy_wr_en ? copy_wr_addr : at_addr),
-        .a_wel(copy_wr_en),
-        .a_weh(copy_wr_en),
-        .a_wdata(live_b_rdata),
-        .a_rdata(snap_a_rdata),
-        .b_addr(dl_addr),
-        .b_rdata(dl_data)
-    );
+	// ---- snapshot bank: copy write / attribute read on port A, display
+	// list read on port B. at_addr's read is meaningless during the copy,
+	// which is safe because copy_busy holds the render engine off.
+	logic [15:0] snap_a_rdata;
+	dpram #(.ADDR_WIDTH(12), .DATA_WIDTH(16)) u_snap (
+		.clk(clk),
+		.a_addr(copy_wr_en ? copy_wr_addr : at_addr),
+		.a_wel(copy_wr_en),
+		.a_weh(copy_wr_en),
+		.a_wdata(live_b_rdata),
+		.a_rdata(snap_a_rdata),
+		.b_addr(dl_addr),
+		.b_rdata(dl_data)
+	);
 
-    assign cpu_rdata = live_a_rdata;
-    assign at_data   = snap_a_rdata;
+	assign cpu_rdata = live_a_rdata;
+	assign at_data   = snap_a_rdata;
 
-    // ---- control word shadow (live side) and this frame's frozen value ----
-    logic [15:0] ctrl_shadow;
-    logic [15:0] ctrl_active;
-    wire         cpu_we = cpu_wel | cpu_weh;
+	// ---- control word shadow (live side) and this frame's frozen value ----
+	logic [15:0] ctrl_shadow;
+	logic [15:0] ctrl_active;
+	wire         cpu_we = cpu_wel | cpu_weh;
 
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset)                                   ctrl_shadow <= 16'h0000;
-        else if (cpu_we && cpu_addr == CTRL_ADDR)  ctrl_shadow <= cpu_wdata;
-    end
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset)                                   ctrl_shadow <= 16'h0000;
+		else if (cpu_we && cpu_addr == CTRL_ADDR)  ctrl_shadow <= cpu_wdata;
+	end
 
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            copying      <= 1'b0;
-            copy_rd_addr <= 12'd0;
-            copy_wr_addr <= 12'd0;
-            copy_wr_en   <= 1'b0;
-            // Sprites held disabled (bit 0) until the first real frame_start
-            // latches genuine CPU-written content -- a safe power-on default.
-            ctrl_active  <= 16'h0001;
-        end else begin
-            copy_wr_en <= 1'b0;
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			copying      <= 1'b0;
+			copy_rd_addr <= 12'd0;
+			copy_wr_addr <= 12'd0;
+			copy_wr_en   <= 1'b0;
+			// Sprites held disabled (bit 0) until the first real frame_start
+			// latches genuine CPU-written content -- a safe power-on default.
+			ctrl_active  <= 16'h0001;
+		end else begin
+			copy_wr_en <= 1'b0;
 
-            if (frame_start) begin
-                copying      <= 1'b1;
-                copy_rd_addr <= 12'd0;
-                ctrl_active  <= ctrl_shadow;
-            end else if (copying) begin
-                copy_wr_en   <= 1'b1;
-                copy_wr_addr <= copy_rd_addr;
-                if (copy_rd_addr == DEPTH - 1) copying      <= 1'b0;
-                else                             copy_rd_addr <= copy_rd_addr + 12'd1;
-            end
-        end
-    end
+			if (copy_start) begin
+				copying      <= 1'b1;
+				copy_rd_addr <= 12'd0;
+				ctrl_active  <= ctrl_shadow;
+			end else if (copying) begin
+				copy_wr_en   <= 1'b1;
+				copy_wr_addr <= copy_rd_addr;
+				if (copy_rd_addr == DEPTH - 1) copying      <= 1'b0;
+				else                             copy_rd_addr <= copy_rd_addr + 12'd1;
+			end
+		end
+	end
 
-    // The global sprite ENABLE is deliberately LIVE (ctrl_shadow, the last
-    // CPU-written value), not the frame-latched copy -- per the author of
-    // MAME's Psikyo renderer (2026-08-29): the bit takes effect immediately,
-    // so the caller gates the DISPLAY with it and sprites blank the moment
-    // the game writes it, exactly like the OSD debug toggle. Latching it to
-    // frame_start held the last rendered bank on screen instead.
-    //
-    // The transparent-pen selects stay frame-latched: they parameterize the
-    // RENDER pass, which consumes the frame_start snapshot -- a live pen
-    // change would tear the pass that is already in flight.
-    assign sprites_disable = ctrl_shadow[0];
-    assign trans_pen0       = ctrl_active[2];
-    assign trans_pen15      = ctrl_active[3];
+	// The global sprite ENABLE is deliberately LIVE (ctrl_shadow, the last
+	// CPU-written value), not the frame-latched copy -- per the author of
+	// MAME's Psikyo renderer: the bit takes effect immediately,
+	// so the caller gates the DISPLAY with it and sprites blank the moment
+	// the game writes it, exactly like the OSD debug toggle. Latching it to
+	// frame_start held the last rendered bank on screen instead.
+	//
+	// The transparent-pen selects stay latched with the copy: they parameterize
+	// the RENDER pass, which consumes that snapshot -- a live pen change would
+	// tear the pass already in flight, and MAME likewise reads its sprite
+	// control word from the buffer rather than from live spriteram.
+	assign sprites_disable = ctrl_shadow[0];
+	assign trans_pen0       = ctrl_active[2];
+	assign trans_pen15      = ctrl_active[3];
 
 endmodule

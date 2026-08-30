@@ -25,13 +25,13 @@
 // non-uniform content to exercise this at all (docs/phase1_sdram_map.md).
 
 module gfxrom_byte_reorder (
-    input  logic [63:0] sdram_granule,
-    output logic [63:0] gfxrom_data
+	input  logic [63:0] sdram_granule,
+	output logic [63:0] gfxrom_data
 );
 
-    assign gfxrom_data = {sdram_granule[7:0],   sdram_granule[15:8],
-                            sdram_granule[23:16], sdram_granule[31:24],
-                            sdram_granule[39:32], sdram_granule[47:40],
-                            sdram_granule[55:48], sdram_granule[63:56]};
+	assign gfxrom_data = {sdram_granule[7:0],   sdram_granule[15:8],
+							sdram_granule[23:16], sdram_granule[31:24],
+							sdram_granule[39:32], sdram_granule[47:40],
+							sdram_granule[55:48], sdram_granule[63:56]};
 
 endmodule

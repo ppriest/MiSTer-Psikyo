@@ -1,7 +1,8 @@
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
-	<name>Sengoku Ace (Japan, set 2)</name>
-	<setname>sngkacea</setname>
+	<about author="Paul Priest" webpage="" source="MAME psikyo.cpp"/>
+	<name>Sengoku Ace (Japan, set 1)</name>
+	<setname>sngkace</setname>
+	<mameversion>0298</mameversion>
 	<year>1993</year>
 	<manufacturer>Psikyo (Banpresto license)</manufacturer>
 	<category>Shoot 'Em Up</category>
@@ -12,10 +13,10 @@
 	<region>Japan</region>
 
 	<rom index="1"><part>02</part></rom>
-	<rom index="0" zip="sngkacea.zip|samuraia.zip" md5="none">
+	<rom index="0" zip="sngkace.zip|samuraia.zip" md5="none" address="0x30000000">
 		<interleave output="32">
-			<part name="1.-u127.bin" crc="3a43708d" map="0012"/>
-			<part name="2.-u126.bin" crc="7aa50c46" map="1200"/>
+			<part name="1-u127.bin" crc="6c45b2f8" map="0012"/>
+			<part name="2-u126.bin" crc="845a6760" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
@@ -27,8 +28,12 @@
 		</interleave>
 		<part repeat="0x600000">FF</part>
 
-		<part name="u34.bin" crc="e6a75bd8"/>
-		<part name="u35.bin" crc="c4ca0164"/>
+		<interleave output="16">
+			<part name="u34.bin" crc="e6a75bd8" map="12"/>
+		</interleave>
+		<interleave output="16">
+			<part name="u35.bin" crc="c4ca0164" map="12"/>
+		</interleave>
 
 		<part repeat="0x200000">FF</part>
 
@@ -38,6 +43,15 @@
 
 		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
+
+	<rom index="3">
+		<part>
+		00 00 00 00 3F FF 00 02 00 02 00 01 00 0F 10 00
+		00 FE 7D 88 9E 00 04 00
+		</part>
+	</rom>
+
+	<nvram index="4" size="158"/>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
@@ -55,5 +69,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260830000000</mratimestamp>
+	<mratimestamp>20260830113651</mratimestamp>
 </misterromdescription>

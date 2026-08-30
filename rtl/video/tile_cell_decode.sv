@@ -13,22 +13,22 @@
 // not a runtime input -- each tilemap layer gets its own instance.
 
 module tile_cell_decode #(
-    parameter int LAYER = 0   // 0 or 1
+	parameter int LAYER = 0   // 0 or 1
 ) (
-    input  logic [15:0] vram_cell,
-    input  logic [1:0]  bank,
-    output logic [14:0] tile_number,
-    output logic [6:0]  color
+	input  logic [15:0] vram_cell,
+	input  logic [1:0]  bank,
+	output logic [14:0] tile_number,
+	output logic [6:0]  color
 );
 
-    // Concatenation-based bank/layer-offset construction throughout,
-    // deliberately avoiding bare shift/multiply-by-parameter expressions --
-    // see the tile_row_decode_tb commit message for why: Verilog's
-    // self-determined operand widths inside arithmetic expressions are an
-    // easy silent-corruption trap.
-    localparam logic [6:0] LAYER_BASE = (LAYER != 0) ? 7'd64 : 7'd0;
+	// Concatenation-based bank/layer-offset construction throughout,
+	// deliberately avoiding bare shift/multiply-by-parameter expressions --
+	// see the tile_row_decode_tb commit message for why: Verilog's
+	// self-determined operand widths inside arithmetic expressions are an
+	// easy silent-corruption trap.
+	localparam logic [6:0] LAYER_BASE = (LAYER != 0) ? 7'd64 : 7'd0;
 
-    assign tile_number = {2'b00, vram_cell[12:0]} + {bank, 13'd0};
-    assign color        = {4'b0000, vram_cell[15:13]} + LAYER_BASE;
+	assign tile_number = {2'b00, vram_cell[12:0]} + {bank, 13'd0};
+	assign color        = {4'b0000, vram_cell[15:13]} + LAYER_BASE;
 
 endmodule

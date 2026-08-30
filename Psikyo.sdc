@@ -149,3 +149,85 @@ if {[get_collection_size $jtsrc] > 0 && [get_collection_size $jtdst] > 0} {
     post_message -type critical_warning \
         "Psikyo.sdc: jt12 slot-scan multicycle NOT applied (empty collection)"
 }
+
+# ---------------------------------------------------------------------------
+# OPL4 PCM envelope-rate chain -> the registers written in S_ENV
+#
+# Reported worst clk_sys path after the OPL4 PCM engine landed: -7.677 ns,
+# TNS -3900, every top path of the form
+#     opl4_pcm|c_rc[3] / c_oct[0]  ->  opl4_pcm|mem_rd_addr[17]
+# The DATA into mem_rd_addr is just ch_baseaddr + w_curpos; what is slow is
+# that register's ENABLE, which in S_ENV carries the whole envelope
+# computation:
+#     c_rc,c_oct -> corr -> eff_rate -> cur_rate -> eg_inc
+#                -> es_env_next (incl. the (w_env+1)*eg_inc multiply)
+#                -> (es_env_next > EG_QUIET) -> the S_ENV fetch/skip branch
+#
+# Audit (rtl/sound/opl4/opl4_pcm.sv), same discipline as the entries above --
+# the cached c_* fields are latched by the slot's gather states and are NOT
+# consumed on the very next edge:
+#   * The slot FSM advances exactly one state per clk with no waits between
+#     S_RD1 and S_ENV: S_RD2 -> S_RD3 -> ... -> S_RD8 -> S_CALC -> S_ENV,
+#     each an unconditional single-cycle assignment.
+#   * LATEST-updating sources are c_rc/c_rr, latched at the edge ending
+#     S_RD8. Their only consumers are corr/slot_rate -> cur_rate, and
+#     cur_rate/eg_inc/frac_zero are read ONLY in S_ENV (lines 473-485) --
+#     nothing in S_CALC touches them. That is 2 edges (end S_CALC, end
+#     S_ENV), so setup 2 is the exact available window, not a guess.
+#   * c_sl feeds eg_sustain, which IS read in S_CALC -- latched at the edge
+#     ending S_RD7, that is also 2 edges. Still setup 2.
+#   * Everything else here is latched earlier still (c_oct in S_RD2, c_fnum
+#     in S_RD3, c_ar/c_dr in S_RD6), so 4-8 edges.
+# The 1-cycle paths are deliberately NOT included: w_env/w_curpos/w_step/
+# w_state_eg are latched in S_CALC and consumed in S_ENV on the very next
+# edge, so the (w_env+1)*eg_inc multiply itself stays a full-rate path.
+# Sources are the NAMED cached registers, never an opl4_pcm|* glob, so the
+# single-cycle w_* family cannot be swept in by accident.
+set pcmsrc [get_registers {*|opl4_pcm:u_pcm|c_rc[*] *|opl4_pcm:u_pcm|c_rr[*] *|opl4_pcm:u_pcm|c_ar[*] *|opl4_pcm:u_pcm|c_dr[*] *|opl4_pcm:u_pcm|c_sl[*] *|opl4_pcm:u_pcm|c_sr[*] *|opl4_pcm:u_pcm|c_oct[*] *|opl4_pcm:u_pcm|c_fnum[*] *|opl4_pcm:u_pcm|c_damp}]
+set pcmdst [get_registers {*|opl4_pcm:u_pcm|mem_rd_addr[*] *|opl4_pcm:u_pcm|mem_rd_req *|opl4_pcm:u_pcm|state[*] *|opl4_pcm:u_pcm|ch_env[*] *|opl4_pcm:u_pcm|ch_eg_state[*] *|opl4_pcm:u_pcm|ch_nextpos[*] *|opl4_pcm:u_pcm|ch_tl[*] *|opl4_pcm:u_pcm|ch_lfo[*] *|opl4_pcm:u_pcm|w_step[*]}]
+if {[get_collection_size $pcmsrc] > 0 && [get_collection_size $pcmdst] > 0} {
+    set_multicycle_path -setup -end 2 -from $pcmsrc -to $pcmdst
+    set_multicycle_path -hold  -end 1 -from $pcmsrc -to $pcmdst
+} else {
+    post_message -type critical_warning \
+        "Psikyo.sdc: OPL4 PCM envelope multicycle NOT applied (empty collection)"
+}
+
+# ---------------------------------------------------------------------------
+# OPL4 PCM output accumulate -> acc_l / acc_r
+#
+# With the envelope family above constrained, every remaining violated
+# clk_sys path (all 400 sampled) converges on one destination family:
+# opl4_pcm's acc_l/acc_r. S_OUT does two multiplies and two table lookups in
+# a single cycle:
+#     c_amd -> am_depth_f -> (* lfo_tri) -> am_add ---+
+#     ch_env, ch_tl[16:8] ----------------------------+-> os_env_eff
+#     c_pan -> pan_att_l/r -> pan_l/r ----------------+-> os_lenv/os_renv
+#          -> att2vol -> os_lvol/os_rvol -> (* w_sample) -> acc_l/acc_r
+#
+# Audit (rtl/sound/opl4/opl4_pcm.sv). S_OUT is reachable only via
+# S_CALC -> S_ENV -> S_FETCH0 [-> S_FETCH1] -> S_OUT, one state per clk:
+#   * c_amd and w_lfo are latched at the edge ending S_CALC -> 3 edges to
+#     S_OUT. c_pan is latched back in S_RD1, so more still.
+#   * ch_env and ch_tl are written in S_ENV -> 2 edges to S_OUT. Their only
+#     earlier readers are the next channel's S_RD1/S_CALC, a whole slot
+#     later.
+#   * am_add, pan_l and pan_r are read ONLY in S_OUT -- nothing consumes
+#     them a cycle after their sources are latched.
+# So 2 is the tightest available window across the listed sources; setup 2
+# doubles the budget, which is enough for a path measured at ~19 ns.
+#
+# w_sample is deliberately EXCLUDED as a source: it is written in
+# S_FETCH0/S_FETCH1 and consumed in S_OUT on the very next edge, so the
+# final multiply stays a full-rate path. acc_l/acc_r as sources are likewise
+# excluded -- listing only the named registers keeps that single-cycle
+# feedback out of the exception.
+set accsrc [get_registers {*|opl4_pcm:u_pcm|c_amd[*] *|opl4_pcm:u_pcm|c_pan[*] *|opl4_pcm:u_pcm|w_lfo[*] *|opl4_pcm:u_pcm|ch_env[*] *|opl4_pcm:u_pcm|ch_tl[*]}]
+set accdst [get_registers {*|opl4_pcm:u_pcm|acc_l[*] *|opl4_pcm:u_pcm|acc_r[*]}]
+if {[get_collection_size $accsrc] > 0 && [get_collection_size $accdst] > 0} {
+    set_multicycle_path -setup -end 2 -from $accsrc -to $accdst
+    set_multicycle_path -hold  -end 1 -from $accsrc -to $accdst
+} else {
+    post_message -type critical_warning \
+        "Psikyo.sdc: OPL4 PCM accumulate multicycle NOT applied (empty collection)"
+}

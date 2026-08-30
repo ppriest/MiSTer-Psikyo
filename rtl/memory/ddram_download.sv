@@ -27,57 +27,57 @@
 // misdirected into the DDRAM ROM region.
 
 module ddram_download (
-    input  logic clk,
-    input  logic reset,
+	input  logic clk,
+	input  logic reset,
 
-    // hps_io side
-    input  logic         ioctl_download,
-    input  logic [15:0] ioctl_index,
-    input  logic         ioctl_wr,
-    input  logic [26:0] ioctl_addr,
-    input  logic [7:0]  ioctl_dout,
-    output logic         ioctl_wait,
+	// hps_io side
+	input  logic         ioctl_download,
+	input  logic [15:0] ioctl_index,
+	input  logic         ioctl_wr,
+	input  logic [26:0] ioctl_addr,
+	input  logic [7:0]  ioctl_dout,
+	output logic         ioctl_wait,
 
-    // ddram_arbiter side
-    output logic         dl_req,
-    output logic [27:0] dl_addr,
-    output logic [7:0]  dl_data,
-    input  logic         dl_busy
+	// ddram_arbiter side
+	output logic         dl_req,
+	output logic [27:0] dl_addr,
+	output logic [7:0]  dl_data,
+	input  logic         dl_busy
 );
 
-    typedef enum logic [1:0] {D_IDLE, D_REQ, D_WAIT} dstate_t;
-    dstate_t dstate;
+	typedef enum logic [1:0] {D_IDLE, D_REQ, D_WAIT} dstate_t;
+	dstate_t dstate;
 
-    logic [26:0] addr_r;
-    logic [7:0]  data_r;
+	logic [26:0] addr_r;
+	logic [7:0]  data_r;
 
-    assign dl_addr = {1'b0, addr_r};
-    assign dl_data = data_r;
-    assign dl_req  = (dstate == D_REQ);
-    assign ioctl_wait = (dstate != D_IDLE);
+	assign dl_addr = {1'b0, addr_r};
+	assign dl_data = data_r;
+	assign dl_req  = (dstate == D_REQ);
+	assign ioctl_wait = (dstate != D_IDLE);
 
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            dstate <= D_IDLE;
-        end else begin
-            case (dstate)
-                D_IDLE: begin
-                    if (ioctl_download && (ioctl_index == 16'd0) && ioctl_wr) begin
-                        addr_r <= ioctl_addr;
-                        data_r <= ioctl_dout;
-                        dstate <= D_REQ;
-                    end
-                end
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			dstate <= D_IDLE;
+		end else begin
+			case (dstate)
+				D_IDLE: begin
+					if (ioctl_download && (ioctl_index == 16'd0) && ioctl_wr) begin
+						addr_r <= ioctl_addr;
+						data_r <= ioctl_dout;
+						dstate <= D_REQ;
+					end
+				end
 
-                D_REQ: begin
-                    if (dl_busy) dstate <= D_WAIT;
-                end
+				D_REQ: begin
+					if (dl_busy) dstate <= D_WAIT;
+				end
 
-                D_WAIT: begin
-                    if (!dl_busy) dstate <= D_IDLE;
-                end
-            endcase
-        end
-    end
+				D_WAIT: begin
+					if (!dl_busy) dstate <= D_IDLE;
+				end
+			endcase
+		end
+	end
 
 endmodule

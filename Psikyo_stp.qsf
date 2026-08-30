@@ -265,7 +265,6 @@ set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_Reg.vhd
 set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80.vhd
 set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80se.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/maincpu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/s1945_mcu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu_sngkace.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu_gunbird.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/dpram.sv

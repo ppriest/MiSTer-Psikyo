@@ -51,8 +51,38 @@ def run(cmd, **kw):
     return r.stdout.strip()
 
 
+def read_slacks(summary):
+    """Print each clock's setup slack; return the ones that fail.
+
+    Reads every Type/Slack/TNS triple rather than clk_sys alone, so a release
+    is gated on the whole design -- a violation on any clock is a violation.
+    """
+    out = []
+    if not os.path.exists(summary):
+        print("no timing summary at %s -- treating as unverified" % summary)
+        return out
+    lines = open(summary, errors="replace").read().splitlines()
+    for i, ln in enumerate(lines):
+        if not ln.startswith("Type  : Setup ") or i + 2 >= len(lines):
+            continue
+        clk = ln.split("Setup ", 1)[1].strip().strip("'")
+        try:
+            slack = float(lines[i + 1].split(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        tns = lines[i + 2].split(":", 1)[1].strip()
+        if "emu|pll" in clk:
+            print("worst clk_sys setup: Slack : %.3f / TNS   : %s" % (slack, tns))
+        if slack < 0:
+            out.append((clk[-58:], slack, tns))
+    return out
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--allow-negative-slack", action="store_true",
+                    help="publish a release build that fails timing; prints a "
+                         "warning, and the shortfall must be stated in the "
+                         "release notes")
     ap.add_argument("--rev", default="Psikyo_stp",
                     help="Quartus revision (default: Psikyo_stp, the "
                          "instrumented build -- the project default)")
@@ -108,15 +138,40 @@ def main():
         if any(k in ln for k in ("successful", "Error", "Elapsed")):
             print(ln.strip())
     summary = os.path.join(stage, "output_files", "%s.sta.summary" % args.rev)
-    if os.path.exists(summary):
-        lines = open(summary).read().splitlines()
-        for i, ln in enumerate(lines):
-            if ln.startswith("Type  : Setup 'emu|pll"):
-                print("worst clk_sys setup: %s / %s"
-                      % (lines[i + 1].strip(), lines[i + 2].strip()))
-                break
+    violations = read_slacks(summary)
+
     if not ok:
         sys.exit("BUILD FAILED -- see %s" % log_path)
+
+    # A debug build may ship with negative slack: it runs on our own hardware,
+    # and the instrumented revision carries SignalTap and the tracer, which cost
+    # timing we do not intend to pay in a release. A release build may not --
+    # once it leaves here we cannot know what it runs on, and a marginal path is
+    # exactly the fault that surfaces as someone else's intermittent glitch.
+    # See "Release process" in README.md.
+    is_release = not args.rev.endswith("_stp")
+    if violations and is_release and not args.allow_negative_slack:
+        print("")
+        for clk, slack, tns in violations:
+            print("  FAILING: %-58s %8.3f  TNS %s" % (clk, slack, tns))
+        sys.exit(
+            "NOT RELEASE QUALIFIED -- %d clock(s) fail timing.\n"
+            "The .rbf is at %s but must not be published.\n"
+            "Close timing, rebuild as the debug revision (--rev Psikyo_stp), or\n"
+            "pass --allow-negative-slack if you are deliberately publishing a\n"
+            "known-marginal build and will say so in the release notes."
+            % (len(violations),
+               os.path.join(stage, "output_files", "%s.rbf" % args.rev)))
+
+    if violations and is_release:
+        print("")
+        print("WARNING: --allow-negative-slack given; publishing a build that")
+        print("         fails timing on %d clock(s). Say so in the release notes."
+              % len(violations))
+    elif violations:
+        print("(negative slack is qualified for the debug revision; a release")
+        print(" build is gated on closing it)")
+
     print("OK -- deploy with:\n  python scripts/deploy_rbf.py --log \"%s\" "
           "--rbf \"%s\" --name Arcade-Psikyo_NNNNNNNN.rbf"
           % (log_path, os.path.join(stage, "output_files", "%s.rbf" % args.rev)))

@@ -112,6 +112,20 @@ foreach inst $insts {
         puts [format "  adpcma valid seen  : %d" [bits_to_int $p 50 50]]
         puts [format "  adpcma bytes read  : %d" [bits_to_int $p 52 54]]
         puts [format "  last adpcma byte   : %02X" [expr {[bits_to_int $p 74 89] & 0xFF}]]
+    } elseif {$iid eq "L"} {
+        puts "FAST ROM LOAD (DDR3 -> SDRAM copier):"
+        puts [format "  copy started      : %d   <-- 0 => trigger never fired" [bits_to_int $p 0 15]]
+        puts [format "  DDR3 granules read: %d" [bits_to_int $p 16 31]]
+        puts [format "  SDRAM words written: %d" [bits_to_int $p 32 47]]
+        puts [format "  copy in progress  : %d" [bits_to_int $p 48 48]]
+        puts [format "  byte path was used: %d   <-- 1 => .mra had no address attr" [bits_to_int $p 49 49]]
+        puts [format "  index-0 download seen: %d" [bits_to_int $p 50 50]]
+    } elseif {$iid eq "F"} {
+        puts "OPL4 FM USAGE (is milestone-2 FM synthesis actually needed?):"
+        puts [format "  FM register writes : %d" [bits_to_int $p 0 15]]
+        puts [format "  FM KEY-ONS         : %d   <-- 0 => FM is never audible" [bits_to_int $p 16 31]]
+        puts [format "  PCM key-ons        : %d" [bits_to_int $p 32 47]]
+        puts [format "  board_sh404        : %d" [bits_to_int $p 48 48]]
     } else {
         puts "unknown instance id '$iid' -- no decoder for this probe"
     }

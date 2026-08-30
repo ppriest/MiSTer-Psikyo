@@ -1,6 +1,6 @@
 # Tilemap wrong-palette / tile-offset bug — findings (2026-08-29)
 
-Status: **FIXED AND CONFIRMED ON HARDWARE** (fix commit `f54e69b`, deployed as
+Status: **FIXED** (fix commit `f54e69b`, deployed as
 `Arcade-Psikyo_20260864.rbf` 2026-08-29): the Gunbird attract cycle shows zero
 wrong-palette green pixels (previously 149 on the title card alone) and the layer
 offset is gone, confirmed visually on the real display.

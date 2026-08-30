@@ -125,6 +125,10 @@ localparam CONF_STR = {
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"O[48:47],Rotation,Off,CW,CCW;",
 	"O[49],Flip 180,Off,On;",
+	"H3O[78],Autosave Hiscores,Off,On;",
+	"O[64],CRT Adjust,Off,On;",
+	"H2O[71:65],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[77:72],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -138,7 +142,7 @@ localparam CONF_STR = {
 	"H1P1O[40],Sprites,On,Off;",
 	"H1P1O[41],Tilemap 0,On,Off;",
 	"H1P1O[42],Tilemap 1,On,Off;",
-	"H1P1O[43],Sprite swap,EndOfRender,FrameStart;",
+	"H1P1O[43],Sprite swap,FrameStart,EndOfRender;",
 	"H1P1O[51],Sound IRQ,On,Off;",
 	"H1P1O[53],C00008 bit0,Zero,VBlank;",
 	"H1P1O[50],VRAM write auto-pause,Off,On;",
@@ -159,6 +163,9 @@ wire [31:0] joystick_0, joystick_1;
 
 wire         ioctl_download;
 wire [15:0] ioctl_index;
+wire        ioctl_upload;
+wire        ioctl_upload_req;
+wire  [7:0] ioctl_din;
 wire         ioctl_wr;
 wire [26:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
@@ -192,6 +199,14 @@ altsource_probe #(
 );
 `endif
 
+// NOTE: hps_io stays in BYTE mode (no WIDE). WIDE(1) would halve the
+// HPS-side transfers, but sys/hiscore.v parses the ioctl stream a byte at
+// a time (field positions from ioctl_addr[2:0], byte-cascaded registers)
+// and returns 8-bit upload data, so it cannot run on a 16-bit ioctl.
+// ROM loading is sped up on the SDRAM side instead -- sdram_download
+// coalesces byte pairs into single word writes, which also halves the
+// ioctl_wait stalls since even bytes are accepted without any SDRAM
+// transaction at all.
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
 	.clk_sys(clk_sys),
@@ -203,7 +218,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({debug_menu_hide, status[5]}),
+	.status_menumask({~hs_configured, ~status[64], debug_menu_hide, status[5]}),  // H2: CRT sub-options while CRT Adjust On; H3: autosave only if the .mra carried hiscore data
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -214,6 +229,14 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(ioctl_wait),
+
+	// hiscore save/restore (rtl/hiscore.v): index 3 is the config the .mra
+	// carries, index 4 the saved score dump read back and written out.
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(ioctl_upload_req),
+	.ioctl_upload_index(8'd4),
+	.ioctl_din(ioctl_din),
+	.ioctl_rd(),
 
 	.ps2_key(ps2_key)
 );
@@ -287,7 +310,7 @@ always @(posedge clk_sys) begin
 	if (ioctl_wr && ioctl_index == 16'd1 && ioctl_addr == 25'd0) mod_board <= ioctl_dout;
 end
 wire mcu_table_we = ioctl_wr && (ioctl_index == 16'd1)
-                  && (ioctl_addr >= 25'd4) && (ioctl_addr < 25'd260);
+				  && (ioctl_addr >= 25'd4) && (ioctl_addr < 25'd260);
 wire [7:0] mcu_table_waddr = 8'(ioctl_addr - 25'd4);
 wire board_gunbird = mod_board[0];
 // bit 1: samuraia/samuraiak/sngkace/sngkacea's ADPCM-A ROM needs MAME's
@@ -305,6 +328,8 @@ wire snd_latch_c00011 = mod_board[2];
 wire board_sh404      = mod_board[3];
 wire mcu_table_absent = mod_board[4];
 
+// ldr_active is deliberately NOT in `reset` -- rom_loader is itself reset by
+// it. The core sees the copy as an extended download instead.
 wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 
 ///////////////////////   INPUTS   ////////////////////////////////
@@ -433,6 +458,10 @@ always @(posedge clk_sys) begin
 	if (reset)                        pause <= 1'b0;
 	else if (pause_btn & ~pause_btn_d) pause <= ~pause;
 end
+// The CPU is also paused while hiscore touches work RAM; it borrows the CPU's
+// RAM port for writes, so the core must actually be stopped first. hiscore
+// waits ACCESS_PAUSEPAD cycles after asserting this before it reads or writes.
+wire pause_core = pause | hs_pause;
 // YM2610 IRQ -> Z80 INT. MAME wires ymsnd.irq_handler() to the audiocpu.
 // FM timers drive music tempo -- with the IRQ disabled samuraia plays no
 // music at all (verified by ear on hardware). Default ON: status[51] is
@@ -444,11 +473,68 @@ wire        snd_irq_en = ~status[51];
 wire        vblank_wait_en   = status[53];
 // Experimental: swap the sprite output buffer at the frame boundary rather
 // than at end-of-render. Default 0 = the behaviour known to boot.
-wire        dbg_sprite_vsync_swap = status[43];
+// Swap the sprite output buffer at the FRAME BOUNDARY by default. MAME's
+// memory map calls the sprites "buffered by two frames (list buffered + fb
+// buffered)": the list buffer is spriteram_dbuf's snapshot, and this is the
+// fb half. Swapping at end-of-render instead (the old default, still
+// selectable) shows a pass ~61% down the same frame it was drawn in, so the
+// fb contributes only a fraction of a frame and sprites lead the live-VRAM
+// tilemaps on screen. Inverted so a cleared .CFG gets the correct behaviour.
+wire        dbg_sprite_vsync_swap = ~status[43];
 wire [1:0] dbg_src     = status[58:57];
 wire [3:0] dbg_window  = status[62:59];
 wire        dbg_rearm   = status[63];
 wire [23:0] dbg_pixel;
+
+// ---- MAME hiscore.dat support (rtl/hiscore.v) ----
+// Restores the score table into work RAM once the game has initialised it,
+// and reads it back out to be saved. The .mra carries the hiscore.dat entry
+// as rom index 3 (address/length plus the start/end sentinel bytes that
+// tell the module the table is initialised and safe to write); index 4 is
+// the saved dump. With no index-3 data the module stays unconfigured and
+// nothing ever touches game RAM.
+//
+// HS_ADDRESSWIDTH=17: the entries are 0xFExxxx and work RAM is the 128KB at
+// 0xFE0000, so the low 17 bits of the configured address ARE the offset.
+// HS_SCOREWIDTH=8: the largest table here is 0x9E bytes (samuraia).
+wire        hs_configured;
+wire [16:0] hs_address;
+wire  [7:0] hs_data_in, hs_data_out;
+wire        hs_write;
+wire        hs_read;
+wire        hs_pause;
+
+hiscore #(
+	.HS_ADDRESSWIDTH(17),
+	.HS_SCOREWIDTH(8),
+	// One hiscore.dat entry per game here, so the config tables are tiny;
+	// the default depth of 16 cost four whole M10K blocks and this design
+	// is BRAM-bound (the fitter reported 553/553 with logic at 40%).
+	.CFG_ADDRESSWIDTH(2),
+	.CFG_LENGTHWIDTH(1)
+) u_hiscore (
+	.clk(clk_sys),
+	.reset(reset),
+	.paused(pause_core),
+	.autosave(status[78]),
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(ioctl_upload_req),
+	.ioctl_download(ioctl_download),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr[24:0]),
+	.ioctl_index(ioctl_index[7:0]),
+	.OSD_STATUS(OSD_STATUS),
+	.data_from_hps(ioctl_dout),
+	.data_from_ram(hs_data_out),
+	.ram_address(hs_address),
+	.data_to_hps(ioctl_din),
+	.data_to_ram(hs_data_in),
+	.ram_write(hs_write),
+	.ram_intent_read(hs_read),
+	.ram_intent_write(),
+	.pause_cpu(hs_pause),
+	.configured(hs_configured)
+);
 
 ///////////////////////   VIDEO   ///////////////////////////////
 
@@ -536,6 +622,8 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0), .DEBUG_TRACER(DEBUG_TRACER_EN)) psikyo_top
 	.mcu_table_waddr(mcu_table_waddr),
 	.mcu_table_wdata(ioctl_dout),
 	.needs_adpcma_swap(needs_adpcma_swap),
+	.ldr_active(ldr_active), .ldr_req(ldr_req), .ldr_addr(ldr_addr),
+	.ldr_data(ldr_data), .ldr_we16(ldr_we16), .ldr_busy(ldr_busy),
 	.snd_left(snd_left), .snd_right(snd_right),
 
 	.nmi_pending(nmi_pending),
@@ -543,7 +631,9 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0), .DEBUG_TRACER(DEBUG_TRACER_EN)) psikyo_top
 	.hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
 	.hsync(hsync), .vsync(vsync), .rgb(rgb),
 
-	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause),
+	.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause_core),
+	.hs_address(hs_address), .hs_data_in(hs_data_in),
+	.hs_data_out(hs_data_out), .hs_read(hs_read), .hs_write(hs_write),
 `ifdef DEBUG_ISSP
 	.dbg_autopause_wr_en(dbg_autopause_wr_en), .dbg_autopause_frame_en(dbg_autopause_frame_en),
 `endif
@@ -566,20 +656,70 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0), .DEBUG_TRACER(DEBUG_TRACER_EN)) psikyo_top
 // The debug overlay is injected BEFORE arcade_video so it still works, but note
 // that scanlines/gamma will alter the pixel values the decoder reads -- keep
 // fx=0 and gamma off when capturing a trace, or the decode is meaningless.
-wire [7:0] r8 = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
-wire [7:0] g8 = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
-wire [7:0] b8 = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
+// ---- CRT Offset (rtl/video/crt_adjust.sv, vendored from Arcade-Raiden_MiSTer) ----
+// Slides the picture on an analog CRT without ever touching the sync: the
+// CONTENT is moved inside a line buffer while HSync/VSync stay native, so the
+// monitor keeps its lock while you adjust. Sits between the core's raster and
+// arcade_video, so (as the module documents for the core-side variant) HDMI
+// follows the adjustment too -- leave CRT Adjust Off for an untouched HDMI
+// image. NOTE this core is rotated: on the HDMI/rotated output H-Position
+// moves the image vertically and V-Shift horizontally, since both act on the
+// NATIVE raster, which is what a real CRT in a TATE cabinet wants.
+//
+// Only the two offsets are wired ("CRT Offset"); hsize is tied to 0, the
+// module's documented no-scaling case, which also makes the read rate equal
+// the write rate so pxl2_cen is just ce_pix. H-Size would additionally need a
+// variable read-rate generator (Raiden builds one from clk quarters).
+wire crt_adj_on = status[64];
+// H-Position: the OSD stores the INDEX into the option list, and that list has
+// 97 entries (0, +1..+48, -48..-1) -- so the negative half wraps at 97, NOT at
+// 128. Raiden hit exactly this: wrapping at 128 made "-1" jump 32 pixels.
+wire  [6:0] crt_hpos_idx = crt_adj_on ? status[71:65] : 7'd0;
+wire signed [8:0] crt_hoffset = (crt_hpos_idx <= 7'd48)
+	? $signed({2'b00, crt_hpos_idx})
+	: $signed({2'b00, crt_hpos_idx}) - 9'sd97;
+// V-Shift is a plain signed 6-bit field: its 64-entry list (0..+31, -32..-1)
+// IS two's complement, so no wrap fixup is needed.
+wire signed [5:0] crt_voffset = crt_adj_on ? $signed(status[77:72]) : 6'sd0;
+
+wire [7:0] crt_r, crt_g, crt_b;
+wire       crt_hs, crt_vs, crt_hb, crt_vb;
+
+crt_adjust #(
+	.VTOTAL   (262),
+	.HTOTAL   (456),
+	// CONTENTSHIFT keeps HSync byte-for-byte native (SYNCSHIFT moves the sync
+	// itself); this is the mode Raiden ships and the safer one for sync lock.
+	.HPOS_MODE(1)
+) u_crt_adjust (
+	.clk      (clk_sys),
+	.pxl_cen  (ce_pix),
+	.pxl2_cen (ce_pix),      // hsize tied 0 -> read rate == write rate
+	.active   (crt_adj_on),
+	.hsize    (5'sd0),
+	.hoffset  (crt_hoffset),
+	.voffset  (crt_voffset),
+	.r_in(r8_raw), .g_in(g8_raw), .b_in(b8_raw),
+	.hs_in(hsync), .vs_in(vsync), .hb_in(hblank), .vb_in(vblank),
+	.r_out(crt_r), .g_out(crt_g), .b_out(crt_b),
+	.hs_out(crt_hs), .vs_out(crt_vs), .hb_out(crt_hb), .vb_out(crt_vb),
+	.hs_ref_out()
+);
+
+wire [7:0] r8_raw = dbg_overlay ? dbg_pixel[23:16] : {rgb[14:10], rgb[14:12]};
+wire [7:0] g8_raw = dbg_overlay ? dbg_pixel[15:8]  : {rgb[9:5],   rgb[9:7]};
+wire [7:0] b8_raw = dbg_overlay ? dbg_pixel[7:0]   : {rgb[4:0],   rgb[4:2]};
 
 arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_sys),
 	.ce_pix(ce_pix),
 
-	.RGB_in({r8, g8, b8}),
-	.HBlank(hblank),
-	.VBlank(vblank),
-	.HSync(hsync),
-	.VSync(vsync),
+	.RGB_in({crt_r, crt_g, crt_b}),
+	.HBlank(crt_hb),
+	.VBlank(crt_vb),
+	.HSync(crt_hs),
+	.VSync(crt_vs),
 
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
@@ -596,12 +736,107 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 	.gamma_bus(gamma_bus)
 );
 
+// ---- Fast ROM loading (rtl/memory/rom_loader.sv) ----
+// The .mra's <rom index="0"> carries address="0x30000000", which makes the HPS
+// DMA the ROM straight into DDR3: the core sees ioctl_download assert and
+// deassert with NO ioctl_wr pulses at all. That is how the mode is detected --
+// if any ioctl_wr arrives for index 0 the .mra is an old byte-streaming one and
+// sdram_download handles it exactly as before, so both kinds still load.
+// (Mechanism from srg320/Arcade-PsikyoSH2_MiSTer.)
+// Trigger, mirroring srg320/Arcade-PsikyoSH2_MiSTer: the copy is started out of
+// RESET, not from a download-completion edge. With address=0x30000000 the HPS
+// DMAs the ROM into DDR3 without the byte-wise ioctl handshake, so an
+// end-of-download edge is not a signal the core can rely on seeing at all --
+// which is why the first attempt loaded nothing and left SDRAM unwritten.
+// MiSTer resets the core once the ROM is in place, so reset-release is the
+// point at which DDR3 is known good.
+//
+// dl_seen_wr still selects the mode: if any ioctl_wr arrived for index 0 the
+// .mra is an old byte-streaming one, sdram_download has already filled SDRAM,
+// and copying DDR3 over it would destroy a working load.
+reg  dl_seen_wr  = 1'b0;   // any byte streamed through the FPGA for index 0
+reg  dl_active_d = 1'b0;
+reg  ldr_pending = 1'b0;
+reg  ldr_start   = 1'b0;
+wire dl_index0 = ioctl_download && (ioctl_index == 16'd0);
+always @(posedge clk_sys) begin
+	ldr_start   <= 1'b0;
+	dl_active_d <= dl_index0;
+	if (dl_index0 && !dl_active_d)  dl_seen_wr <= 1'b0;   // a new index-0 load begins
+	else if (dl_index0 && ioctl_wr) dl_seen_wr <= 1'b1;   // ...and it is streaming bytes
+
+	if (reset) begin
+		ldr_pending <= 1'b1;
+	end else if (ldr_pending && !ioctl_download && !ldr_active) begin
+		ldr_pending <= 1'b0;
+		// only when the ROM did NOT come through the byte path
+		if (!dl_seen_wr) ldr_start <= 1'b1;
+	end
+end
+
+wire        ldr_active;
+wire        ldr_req, ldr_we16, ldr_busy;
+wire [24:0] ldr_addr;
+wire [15:0] ldr_data;
+wire        ldr_ddr_req, ldr_ddr_busy, ldr_ddr_valid;
+wire [27:0] ldr_ddr_addr;
+wire [63:0] ldr_ddr_rdata;
+
+rom_loader u_rom_loader (
+	.clk(clk_sys), .reset(reset),
+	.start(ldr_start), .busy(ldr_active),
+	.needs_adpcma_swap(needs_adpcma_swap), .adpcma_base(25'h0E40000),
+	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
+	.ddr_valid(ldr_ddr_valid), .ddr_rdata(ldr_ddr_rdata),
+	.dl_req(ldr_req), .dl_addr(ldr_addr), .dl_data(ldr_data),
+	.dl_we16(ldr_we16), .dl_busy(ldr_busy)
+);
+
+// DDR3 read port for the loader. DDRAM is otherwise owned by the rotator, so
+// the physical pins are muxed below: the loader only runs with the core in
+// reset, when there is no picture to rotate.
+wire [7:0]  ldr_DDRAM_BURSTCNT;
+wire [28:0] ldr_DDRAM_ADDR;
+wire        ldr_DDRAM_RD, ldr_DDRAM_WE;
+wire [63:0] ldr_DDRAM_DIN;
+wire [7:0]  ldr_DDRAM_BE;
+
+ddram_phy u_ldr_ddram (
+	.clk(clk_sys), .reset(reset),
+	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(ldr_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(ldr_DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(ldr_DDRAM_RD),
+	.DDRAM_DIN(ldr_DDRAM_DIN), .DDRAM_BE(ldr_DDRAM_BE), .DDRAM_WE(ldr_DDRAM_WE),
+	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
+	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
+);
+
+`ifdef DEBUG_ISSP
+// Fast ROM load visibility. The first attempt produced an unbootable core with
+// no way to tell whether the copy never ran or ran against the wrong data, so
+// the loader now reports its own progress. reset is tied low so the counters
+// survive the core resets that bracket a load.
+issp_probe #(.INSTANCE_ID("L")) u_issp_loader (
+	.clk(clk_sys),
+	.wr_issued(ldr_start),               // times the copy was started
+	.wr_acked(ldr_ddr_valid),            // DDR3 granules actually returned
+	.cpu_rd_acked(ldr_req & ~ldr_busy),  // SDRAM word writes issued
+	.cpu_rd_nonzero(1'b1),
+	.sdram_ready(ldr_active),
+	.dl_req(dl_seen_wr),                 // 1 = the byte path was used
+	.ioctl_download(dl_index0),
+	.reset(1'b0),
+	.cpu_rd_addr({4'd0, ldr_addr[24:10]}),
+	.cpu_rd_data(ldr_data)
+);
+`endif
+
 // ---- HDMI rotation / flip via the HPS framebuffer (sys DDRAM) ----
 // Psikyo boards are vertical (TATE), and flip_screen is not implemented in
 // the video pipeline itself -- both orientation and flip are handled here.
 //
-// screen_rotate_two is Sorgelig's standard MiSTer rotator (GPL v2, same as
-// this project), taken from Arcade-SKNS_MiSTer. It is a TAP, not a filter:
+// screen_rotate_two is Sorgelig's standard MiSTer rotator (GPL v2), taken
+// from Arcade-SKNS_MiSTer. It is a TAP, not a filter:
 // VGA_R/G/B/HS/VS/DE still drive the analog output directly for CRT use,
 // while this writes a rotated (and optionally 180-flipped) copy into DDRAM
 // and points the HPS framebuffer at it for HDMI. So CRT keeps the native
@@ -638,15 +873,31 @@ screen_rotate_two screen_rotate_two
 	.FB_VBL        (FB_VBL),
 	.FB_LL         (FB_LL),
 
-	.DDRAM_CLK     (DDRAM_CLK),
+	.DDRAM_CLK     (rot_DDRAM_CLK),
 	.DDRAM_BUSY    (DDRAM_BUSY),
-	.DDRAM_BURSTCNT(DDRAM_BURSTCNT),
-	.DDRAM_ADDR    (DDRAM_ADDR),
-	.DDRAM_DIN     (DDRAM_DIN),
-	.DDRAM_BE      (DDRAM_BE),
-	.DDRAM_WE      (DDRAM_WE),
-	.DDRAM_RD      (DDRAM_RD)
+	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
+	.DDRAM_ADDR    (rot_DDRAM_ADDR),
+	.DDRAM_DIN     (rot_DDRAM_DIN),
+	.DDRAM_BE      (rot_DDRAM_BE),
+	.DDRAM_WE      (rot_DDRAM_WE),
+	.DDRAM_RD      (rot_DDRAM_RD)
 );
+
+// DDRAM pin mux: the ROM loader takes the bus while it is copying (core in
+// reset, nothing to display), the rotator has it the rest of the time.
+wire        rot_DDRAM_CLK;
+wire [7:0]  rot_DDRAM_BURSTCNT, rot_DDRAM_BE;
+wire [28:0] rot_DDRAM_ADDR;
+wire [63:0] rot_DDRAM_DIN;
+wire        rot_DDRAM_WE, rot_DDRAM_RD;
+
+assign DDRAM_CLK      = ldr_active ? clk_sys            : rot_DDRAM_CLK;
+assign DDRAM_BURSTCNT = ldr_active ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_active ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_active ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_active ? ldr_DDRAM_BE       : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_active ? ldr_DDRAM_WE       : rot_DDRAM_WE;
+assign DDRAM_RD       = ldr_active ? ldr_DDRAM_RD       : rot_DDRAM_RD;
 
 reg  [26:0] act_cnt;
 always @(posedge clk_sys) act_cnt <= act_cnt + 1'd1;

@@ -35,124 +35,124 @@
 // advance to.
 
 module sprite_display_list_walker (
-    input  logic clk,
-    input  logic reset,
+	input  logic clk,
+	input  logic reset,
 
-    input  logic start,   // pulse: begin walking the display list from offset 0
-    output logic busy,
+	input  logic start,   // pulse: begin walking the display list from offset 0
+	output logic busy,
 
-    input  logic advance,  // pulse: consumer has finished with the held entry, fetch the next
+	input  logic advance,  // pulse: consumer has finished with the held entry, fetch the next
 
-    output logic [11:0] sram_addr,   // 0xC00-0xFFE
-    input  logic [15:0] sram_data,   // 1-cycle sync read latency
+	output logic [11:0] sram_addr,   // 0xC00-0xFFE
+	input  logic [15:0] sram_data,   // 1-cycle sync read latency
 
-    output logic         entry_valid,   // pulses once per non-terminator entry
-    output logic [9:0]  sprite_index,  // 0-767, valid when entry_valid pulses AND while held
-    output logic         done            // pulses once when the walk ends (sentinel or exhausted)
+	output logic         entry_valid,   // pulses once per non-terminator entry
+	output logic [9:0]  sprite_index,  // 0-767, valid when entry_valid pulses AND while held
+	output logic         done            // pulses once when the walk ends (sentinel or exhausted)
 );
 
-    // DO NOT change this to walk backward. It was tried -- scan for the
-    // terminator, then emit from the last entry down to 0, on the reading that
-    // psikyo_v.cpp's `while (...) { sprite_ptr--; }` puts entry 0 on top. On
-    // hardware that inverted sprite depth ordering and slowed the game.
-    // The forward walk, with later writes overwriting earlier ones in
-    // sprite_frame_buffer, matches the hardware. See docs/LESSONS_LEARNED.md.
+	// DO NOT change this to walk backward. It was tried -- scan for the
+	// terminator, then emit from the last entry down to 0, on the reading that
+	// psikyo_v.cpp's `while (...) { sprite_ptr--; }` puts entry 0 on top. On
+	// hardware that inverted sprite depth ordering and slowed the game.
+	// The forward walk, with later writes overwriting earlier ones in
+	// sprite_frame_buffer, matches the hardware. See docs/LESSONS_LEARNED.md.
 
-    localparam logic [11:0] DL_BASE       = 12'hC00;
-    localparam int          DL_MAX_ENTRIES = 1023;
+	localparam logic [11:0] DL_BASE       = 12'hC00;
+	localparam int          DL_MAX_ENTRIES = 1023;
 
-    typedef enum logic [1:0] {S_IDLE, S_FETCH, S_PROCESS, S_HOLD} state_t;
-    state_t state;
+	typedef enum logic [1:0] {S_IDLE, S_FETCH, S_PROCESS, S_HOLD} state_t;
+	state_t state;
 
-    logic [11:0] addr_r;
-    logic [9:0]  count_r;   // 0..1022 -- entries issued so far, zero-based
+	logic [11:0] addr_r;
+	logic [9:0]  count_r;   // 0..1022 -- entries issued so far, zero-based
 
-    assign sram_addr = addr_r;
-    assign busy        = (state != S_IDLE);
+	assign sram_addr = addr_r;
+	assign busy        = (state != S_IDLE);
 
-    // sram_data % 768, full 16-bit range (matches MAME's `sprite %= 0x300`
-    // applied directly to the raw 16-bit display-list word, no prior
-    // masking -- see this module's header). Written as an explicit 7-stage
-    // conditional-subtraction chain (the standard technique for modulo by
-    // a compile-time non-power-of-2 constant) instead of Verilog's `%`
-    // operator: a real `quartus_fit` run against the full Psikyo.sv build
-    // found the plain `%` synthesized as a slow generic iterative divider
-    // (`Mod0|auto_generated|divider`) that was this design's single worst
-    // timing-closure offender by a wide margin (-5.862ns setup slack at
-    // clk_sys, the worst path in the whole build). Each stage below
-    // subtracts a decreasing power-of-2 multiple of 768 when it fits --
-    // textbook restoring division, unrolled combinationally, correct for
-    // any 16-bit input (65535/768 < 127 = 64+32+16+8+4+2+1, so the chain
-    // always fully reduces) -- same one-cycle combinational timing as the
-    // `%` it replaces, so no change to this module's cycle-count contract
-    // or any test that depends on it.
-    function automatic logic [9:0] mod768(input logic [15:0] x);
-        logic [15:0] v;
-        begin
-            v = x;
-            if (v >= 16'd49152) v = v - 16'd49152; // 768*64
-            if (v >= 16'd24576) v = v - 16'd24576; // 768*32
-            if (v >= 16'd12288) v = v - 16'd12288; // 768*16
-            if (v >= 16'd6144)  v = v - 16'd6144;  // 768*8
-            if (v >= 16'd3072)  v = v - 16'd3072;  // 768*4
-            if (v >= 16'd1536)  v = v - 16'd1536;  // 768*2
-            if (v >= 16'd768)   v = v - 16'd768;   // 768*1
-            mod768 = v[9:0];
-        end
-    endfunction
+	// sram_data % 768, full 16-bit range (matches MAME's `sprite %= 0x300`
+	// applied directly to the raw 16-bit display-list word, no prior
+	// masking -- see this module's header). Written as an explicit 7-stage
+	// conditional-subtraction chain (the standard technique for modulo by
+	// a compile-time non-power-of-2 constant) instead of Verilog's `%`
+	// operator: a real `quartus_fit` run against the full Psikyo.sv build
+	// found the plain `%` synthesized as a slow generic iterative divider
+	// (`Mod0|auto_generated|divider`) that was this design's single worst
+	// timing-closure offender by a wide margin (-5.862ns setup slack at
+	// clk_sys, the worst path in the whole build). Each stage below
+	// subtracts a decreasing power-of-2 multiple of 768 when it fits --
+	// textbook restoring division, unrolled combinationally, correct for
+	// any 16-bit input (65535/768 < 127 = 64+32+16+8+4+2+1, so the chain
+	// always fully reduces) -- same one-cycle combinational timing as the
+	// `%` it replaces, so no change to this module's cycle-count contract
+	// or any test that depends on it.
+	function automatic logic [9:0] mod768(input logic [15:0] x);
+		logic [15:0] v;
+		begin
+			v = x;
+			if (v >= 16'd49152) v = v - 16'd49152; // 768*64
+			if (v >= 16'd24576) v = v - 16'd24576; // 768*32
+			if (v >= 16'd12288) v = v - 16'd12288; // 768*16
+			if (v >= 16'd6144)  v = v - 16'd6144;  // 768*8
+			if (v >= 16'd3072)  v = v - 16'd3072;  // 768*4
+			if (v >= 16'd1536)  v = v - 16'd1536;  // 768*2
+			if (v >= 16'd768)   v = v - 16'd768;   // 768*1
+			mod768 = v[9:0];
+		end
+	endfunction
 
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            state        <= S_IDLE;
-            addr_r        <= DL_BASE;
-            count_r       <= 10'd0;
-            entry_valid  <= 1'b0;
-            sprite_index <= 10'd0;
-            done          <= 1'b0;
-        end else begin
-            entry_valid <= 1'b0;
-            done         <= 1'b0;
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			state        <= S_IDLE;
+			addr_r        <= DL_BASE;
+			count_r       <= 10'd0;
+			entry_valid  <= 1'b0;
+			sprite_index <= 10'd0;
+			done          <= 1'b0;
+		end else begin
+			entry_valid <= 1'b0;
+			done         <= 1'b0;
 
-            case (state)
-                S_IDLE: begin
-                    if (start) begin
-                        addr_r  <= DL_BASE;
-                        count_r <= 10'd0;
-                        state    <= S_FETCH;
-                    end
-                end
+			case (state)
+				S_IDLE: begin
+					if (start) begin
+						addr_r  <= DL_BASE;
+						count_r <= 10'd0;
+						state    <= S_FETCH;
+					end
+				end
 
-                S_FETCH: begin
-                    state <= S_PROCESS;
-                end
+				S_FETCH: begin
+					state <= S_PROCESS;
+				end
 
-                S_PROCESS: begin
-                    if (sram_data == 16'hFFFF) begin
-                        done  <= 1'b1;
-                        state <= S_IDLE;
-                    end else begin
-                        entry_valid  <= 1'b1;
-                        sprite_index <= mod768(sram_data);
-                        state          <= S_HOLD;
-                    end
-                end
+				S_PROCESS: begin
+					if (sram_data == 16'hFFFF) begin
+						done  <= 1'b1;
+						state <= S_IDLE;
+					end else begin
+						entry_valid  <= 1'b1;
+						sprite_index <= mod768(sram_data);
+						state          <= S_HOLD;
+					end
+				end
 
-                S_HOLD: begin
-                    if (advance) begin
-                        if (count_r == DL_MAX_ENTRIES - 1) begin
-                            done  <= 1'b1;
-                            state <= S_IDLE;
-                        end else begin
-                            addr_r  <= addr_r + 12'd1;
-                            count_r <= count_r + 10'd1;
-                            state    <= S_FETCH;
-                        end
-                    end
-                end
+				S_HOLD: begin
+					if (advance) begin
+						if (count_r == DL_MAX_ENTRIES - 1) begin
+							done  <= 1'b1;
+							state <= S_IDLE;
+						end else begin
+							addr_r  <= addr_r + 12'd1;
+							count_r <= count_r + 10'd1;
+							state    <= S_FETCH;
+						end
+					end
+				end
 
-                default: state <= S_IDLE;
-            endcase
-        end
-    end
+				default: state <= S_IDLE;
+			endcase
+		end
+	end
 
 endmodule

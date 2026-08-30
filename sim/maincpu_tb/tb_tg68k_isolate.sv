@@ -11,64 +11,64 @@
 
 module tb_tg68k_isolate;
 
-    logic clk = 0;
-    always #5 clk = ~clk;
+	logic clk = 0;
+	always #5 clk = ~clk;
 
-    logic reset;
+	logic reset;
 
-    logic [31:0] a;
-    logic [2:0]  fc;
-    logic         as_n, uds_n, lds_n, rw;
-    logic [2:0]  ipl = 3'b111;   // never requested, matches the spike
-    wire  [15:0] cpu_data;
-    tri1          cpu_reset_n, cpu_halt_n;
+	logic [31:0] a;
+	logic [2:0]  fc;
+	logic         as_n, uds_n, lds_n, rw;
+	logic [2:0]  ipl = 3'b111;   // never requested, matches the spike
+	wire  [15:0] cpu_data;
+	tri1          cpu_reset_n, cpu_halt_n;
 
-    assign cpu_reset_n = reset ? 1'b0 : 1'bz;
-    assign cpu_halt_n  = reset ? 1'b0 : 1'bz;
+	assign cpu_reset_n = reset ? 1'b0 : 1'bz;
+	assign cpu_halt_n  = reset ? 1'b0 : 1'bz;
 
-    logic vpa;
-    assign vpa = (fc == 3'b111) ? 1'b0 : 1'b1;
+	logic vpa;
+	assign vpa = (fc == 3'b111) ? 1'b0 : 1'b1;
 
-    logic dtack_n;
-    assign dtack_n = (as_n == 1'b0) ? 1'b0 : 1'b1;   // spike's own trivial zero-wait scheme
+	logic dtack_n;
+	assign dtack_n = (as_n == 1'b0) ? 1'b0 : 1'b1;   // spike's own trivial zero-wait scheme
 
-    TG68K #(
-        .CPU(2'b11)
-    ) u_cpu (
-        .CLK(clk),
-        .RESET(cpu_reset_n),
-        .HALT(cpu_halt_n),
-        .BERR(1'b0),
-        .IPL(ipl),
-        .ADDR(a),
-        .FC(fc),
-        .DATA(cpu_data),
-        .AS(as_n),
-        .UDS(uds_n),
-        .LDS(lds_n),
-        .RW(rw),
-        .DTACK(dtack_n),
-        .E(),
-        .VPA(vpa),
-        .VMA()
-    );
+	TG68K #(
+		.CPU(2'b11)
+	) u_cpu (
+		.CLK(clk),
+		.RESET(cpu_reset_n),
+		.HALT(cpu_halt_n),
+		.BERR(1'b0),
+		.IPL(ipl),
+		.ADDR(a),
+		.FC(fc),
+		.DATA(cpu_data),
+		.AS(as_n),
+		.UDS(uds_n),
+		.LDS(lds_n),
+		.RW(rw),
+		.DTACK(dtack_n),
+		.E(),
+		.VPA(vpa),
+		.VMA()
+	);
 
-    // trivial ROM: NOP forever, immediate (0-wait) response, matches
-    // dtack_n's own zero-wait contract
-    logic [15:0] read_data;
-    assign read_data = 16'h4E71;   // NOP
-    assign cpu_data = (as_n == 1'b0 && rw == 1'b1) ? read_data : 16'bz;
+	// trivial ROM: NOP forever, immediate (0-wait) response, matches
+	// dtack_n's own zero-wait contract
+	logic [15:0] read_data;
+	assign read_data = 16'h4E71;   // NOP
+	assign cpu_data = (as_n == 1'b0 && rw == 1'b1) ? read_data : 16'bz;
 
-    initial begin
-        #200000;
-        $display("Ran 200000ps with no crash -- base CPU/RESET/HALT/VPA wiring is clean");
-        $finish;
-    end
+	initial begin
+		#200000;
+		$display("Ran 200000ps with no crash -- base CPU/RESET/HALT/VPA wiring is clean");
+		$finish;
+	end
 
-    initial begin
-        reset = 1;
-        repeat (15) @(posedge clk);
-        reset = 0;
-    end
+	initial begin
+		reset = 1;
+		repeat (15) @(posedge clk);
+		reset = 0;
+	end
 
 endmodule

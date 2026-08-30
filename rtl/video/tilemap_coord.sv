@@ -12,29 +12,29 @@
 // 0 from the masking, which is exactly what tilemap_addrgen expects).
 
 module tilemap_coord (
-    input  logic [1:0]  mode,
-    input  logic [15:0] eff_x,
-    input  logic [15:0] eff_y,
-    output logic [7:0]  tile_col,
-    output logic [6:0]  tile_row,
-    output logic [3:0]  fine_x,
-    output logic [3:0]  fine_y
+	input  logic [1:0]  mode,
+	input  logic [15:0] eff_x,
+	input  logic [15:0] eff_y,
+	output logic [7:0]  tile_col,
+	output logic [6:0]  tile_row,
+	output logic [3:0]  fine_x,
+	output logic [3:0]  fine_y
 );
 
-    logic [15:0] masked_x, masked_y;
+	logic [15:0] masked_x, masked_y;
 
-    always_comb begin
-        unique case (mode)
-            2'd0: begin masked_x = eff_x & 16'h03FF; masked_y = eff_y & 16'h03FF; end // 1024x1024
-            2'd1: begin masked_x = eff_x & 16'h07FF; masked_y = eff_y & 16'h01FF; end // 2048x512
-            2'd2: begin masked_x = eff_x & 16'h0FFF; masked_y = eff_y & 16'h00FF; end // 4096x256
-            2'd3: begin masked_x = eff_x & 16'h01FF; masked_y = eff_y & 16'h07FF; end // 512x2048
-        endcase
-    end
+	always_comb begin
+		unique case (mode)
+			2'd0: begin masked_x = eff_x & 16'h03FF; masked_y = eff_y & 16'h03FF; end // 1024x1024
+			2'd1: begin masked_x = eff_x & 16'h07FF; masked_y = eff_y & 16'h01FF; end // 2048x512
+			2'd2: begin masked_x = eff_x & 16'h0FFF; masked_y = eff_y & 16'h00FF; end // 4096x256
+			2'd3: begin masked_x = eff_x & 16'h01FF; masked_y = eff_y & 16'h07FF; end // 512x2048
+		endcase
+	end
 
-    assign tile_col = masked_x[11:4];
-    assign tile_row = masked_y[10:4];
-    assign fine_x   = masked_x[3:0];
-    assign fine_y   = masked_y[3:0];
+	assign tile_col = masked_x[11:4];
+	assign tile_row = masked_y[10:4];
+	assign fine_x   = masked_x[3:0];
+	assign fine_y   = masked_y[3:0];
 
 endmodule

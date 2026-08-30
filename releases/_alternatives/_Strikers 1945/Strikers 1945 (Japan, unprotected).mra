@@ -1,7 +1,8 @@
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
-	<name>Strikers 1945 (Japan)</name>
-	<setname>s1945j</setname>
+	<about author="Paul Priest" webpage="" source="MAME psikyo.cpp"/>
+	<name>Strikers 1945 (Japan, unprotected)</name>
+	<setname>s1945nj</setname>
+	<mameversion>0298</mameversion>
 	<year>1995</year>
 	<manufacturer>Psikyo</manufacturer>
 	<category>Shoot 'Em Up</category>
@@ -11,15 +12,15 @@
 	<joystick>8-way</joystick>
 	<region>Japan</region>
 
-	<rom index="1"><part>0D 00 00 00 00 00 64 B6 00 00 26 2C 00 00 2C DA 00 00 2C BC 00 00 2C 9E 00 00 2F 0E 00 00 31 10 00 00 C5 92 00 00 32 90 00 00 AC 64 00 00 2B C0</part></rom>
-	<rom index="0" zip="s1945j.zip|s1945.zip" md5="none">
+	<rom index="1"><part>05</part></rom>
+	<rom index="0" zip="s1945nj.zip|s1945.zip" md5="none" address="0x30000000">
 		<interleave output="32">
-			<part name="1-u40.bin" crc="c00eb012" map="0012"/>
-			<part name="2-u41.bin" crc="3f5a134b" map="1200"/>
+			<part name="1-u46.bin" crc="95028132" map="0012"/>
+			<part name="2-u39.bin" crc="3df79a16" map="1200"/>
 		</interleave>
 		<part repeat="0x180000">FF</part>
 
-		<part name="3-u63.bin" crc="42d40ae1"/>
+		<part name="3-u71.bin" crc="e3e366bd"/>
 		<part repeat="0x20000">FF</part>
 
 		<interleave output="16">
@@ -39,11 +40,22 @@
 		</interleave>
 		<part repeat="0x200000">FF</part>
 
-		<part name="u61.bin" crc="a839cf47"/>
-		<part repeat="0x200000">FF</part>
+		<part name="u56.bin" crc="fe1312c2"/>
+
+		<part name="u64.bin" crc="a44a4a9b"/>
+		<part repeat="0x280000">FF</part>
 
 		<part name="u1.bin" crc="dee22654"/>
 	</rom>
+
+	<rom index="3">
+		<part>
+		00 00 00 00 3F FF 00 02 00 02 00 01 00 0F 10 00
+		00 FE 2A F8 78 2D F8 00
+		</part>
+	</rom>
+
+	<nvram index="4" size="120"/>
 
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
@@ -61,5 +73,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On,Off"/>
 	</switches>
 
-	<mratimestamp>20260830000000</mratimestamp>
+	<mratimestamp>20260830113651</mratimestamp>
 </misterromdescription>

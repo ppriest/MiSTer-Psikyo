@@ -39,73 +39,83 @@
 // sprite_frame_buffer's frame_swap and sprite_render_engine's frame_start.
 
 module video_timing (
-    input  logic clk,
-    input  logic ce_pix,
-    input  logic reset,
+	input  logic clk,
+	input  logic ce_pix,
+	input  logic reset,
 
-    output logic [8:0] hcnt,          // 0-455, raw raster column
-    output logic [8:0] vcnt,          // 0-261, raw raster line
-    output logic [7:0] vcnt_active,   // vcnt truncated to tilemap_line_engine's 0-223 port width
+	output logic [8:0] hcnt,          // 0-455, raw raster column
+	output logic [8:0] vcnt,          // 0-261, raw raster line
+	output logic [7:0] vcnt_active,   // vcnt truncated to tilemap_line_engine's 0-223 port width
+	// The line the NEXT line_start prefetches for. line_start fires at the end
+	// of the ACTIVE window (hcnt == H_ACTIVE-1) while vcnt still holds the line
+	// just displayed, but the data it fetches is shown on the following line --
+	// so the tilemap engines must index with vcnt+1, not vcnt. Wrapped on
+	// V_TOTAL before truncating: vcnt_active is a raw truncation of a 0-261
+	// counter, so at the last raster line it reads 5, and a plain vcnt+1 would
+	// fetch line 0 as row 6.
+	output logic [7:0] vcnt_next_active,
 
-    output logic h_active,   // 1 while hcnt in [0,319]
-    output logic v_active,   // 1 while vcnt in [0,223]
-    output logic hblank,
-    output logic vblank,
-    output logic hsync,
-    output logic vsync,
+	output logic h_active,   // 1 while hcnt in [0,319]
+	output logic v_active,   // 1 while vcnt in [0,223]
+	output logic hblank,
+	output logic vblank,
+	output logic hsync,
+	output logic vsync,
 
-    output logic line_start,    // 1-cycle pulse (on a ce_pix cycle), hcnt==320
-    output logic frame_start    // 1-cycle pulse (on a ce_pix cycle), vblank rising edge
+	output logic line_start,    // 1-cycle pulse (on a ce_pix cycle), hcnt==320
+	output logic frame_start    // 1-cycle pulse (on a ce_pix cycle), vblank rising edge
 );
 
-    localparam int H_TOTAL   = 456;
-    localparam int H_ACTIVE  = 320;
-    localparam int H_SYNC_ST = 320 + 16;
-    localparam int H_SYNC_EN = 320 + 16 + 32;
+	localparam int H_TOTAL   = 456;
+	localparam int H_ACTIVE  = 320;
+	localparam int H_SYNC_ST = 320 + 16;
+	localparam int H_SYNC_EN = 320 + 16 + 32;
 
-    localparam int V_TOTAL   = 262;
-    localparam int V_ACTIVE  = 224;
-    localparam int V_SYNC_ST = 224 + 4;
-    localparam int V_SYNC_EN = 224 + 4 + 3;
+	localparam int V_TOTAL   = 262;
+	localparam int V_ACTIVE  = 224;
+	localparam int V_SYNC_ST = 224 + 4;
+	localparam int V_SYNC_EN = 224 + 4 + 3;
 
-    assign h_active = (hcnt < H_ACTIVE);
-    assign v_active = (vcnt < V_ACTIVE);
-    assign hblank   = ~h_active;
-    assign vblank   = ~v_active;
-    assign hsync    = (hcnt >= H_SYNC_ST) && (hcnt < H_SYNC_EN);
-    assign vsync    = (vcnt >= V_SYNC_ST) && (vcnt < V_SYNC_EN);
+	assign h_active = (hcnt < H_ACTIVE);
+	assign v_active = (vcnt < V_ACTIVE);
+	assign hblank   = ~h_active;
+	assign vblank   = ~v_active;
+	assign hsync    = (hcnt >= H_SYNC_ST) && (hcnt < H_SYNC_EN);
+	assign vsync    = (vcnt >= V_SYNC_ST) && (vcnt < V_SYNC_EN);
 
-    assign vcnt_active = vcnt[7:0];
+	assign vcnt_active = vcnt[7:0];
+	wire [8:0] vcnt_next = (vcnt == V_TOTAL - 1) ? 9'd0 : (vcnt + 9'd1);
+	assign vcnt_next_active = vcnt_next[7:0];
 
-    logic v_active_prev;
+	logic v_active_prev;
 
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            hcnt          <= 9'd0;
-            vcnt          <= 9'd0;
-            line_start    <= 1'b0;
-            frame_start   <= 1'b0;
-            v_active_prev <= 1'b1;
-        end else begin
-            line_start  <= 1'b0;
-            frame_start <= 1'b0;
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			hcnt          <= 9'd0;
+			vcnt          <= 9'd0;
+			line_start    <= 1'b0;
+			frame_start   <= 1'b0;
+			v_active_prev <= 1'b1;
+		end else begin
+			line_start  <= 1'b0;
+			frame_start <= 1'b0;
 
-            if (ce_pix) begin
-                v_active_prev <= v_active;
+			if (ce_pix) begin
+				v_active_prev <= v_active;
 
-                if (hcnt == H_TOTAL - 1) begin
-                    hcnt <= 9'd0;
-                    if (vcnt == V_TOTAL - 1) vcnt <= 9'd0;
-                    else                       vcnt <= vcnt + 9'd1;
-                end else begin
-                    hcnt <= hcnt + 9'd1;
-                end
+				if (hcnt == H_TOTAL - 1) begin
+					hcnt <= 9'd0;
+					if (vcnt == V_TOTAL - 1) vcnt <= 9'd0;
+					else                       vcnt <= vcnt + 9'd1;
+				end else begin
+					hcnt <= hcnt + 9'd1;
+				end
 
-                if (hcnt == H_ACTIVE - 1) line_start <= 1'b1;   // fires the cycle hcnt is about to become H_ACTIVE (320)
+				if (hcnt == H_ACTIVE - 1) line_start <= 1'b1;   // fires the cycle hcnt is about to become H_ACTIVE (320)
 
-                if (v_active_prev && !v_active) frame_start <= 1'b1;
-            end
-        end
-    end
+				if (v_active_prev && !v_active) frame_start <= 1'b1;
+			end
+		end
+	end
 
 endmodule

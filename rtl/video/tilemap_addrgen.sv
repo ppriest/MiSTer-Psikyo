@@ -21,19 +21,19 @@
 // mode's actual grid extent, just feed the logical tilemap-space coordinate.
 
 module tilemap_addrgen (
-    input  logic [1:0] mode,
-    input  logic [7:0] col,
-    input  logic [6:0] row,
-    output logic [11:0] vram_index
+	input  logic [1:0] mode,
+	input  logic [7:0] col,
+	input  logic [6:0] row,
+	output logic [11:0] vram_index
 );
 
-    always_comb begin
-        unique case (mode)
-            2'd0: vram_index = {6'd0, col[5:0]} | ({6'd0, row[5:0]} << 6);
-            2'd1: vram_index = {5'd0, col[6:0]} | ({5'd0, row[4:0]} << 7);
-            2'd2: vram_index = {4'd0, col[7:0]} | ({4'd0, row[3:0]} << 8);
-            2'd3: vram_index = {7'd0, col[4:0]} | ({7'd0, row[6:0]} << 5);
-        endcase
-    end
+	always_comb begin
+		unique case (mode)
+			2'd0: vram_index = {6'd0, col[5:0]} | ({6'd0, row[5:0]} << 6);
+			2'd1: vram_index = {5'd0, col[6:0]} | ({5'd0, row[4:0]} << 7);
+			2'd2: vram_index = {4'd0, col[7:0]} | ({4'd0, row[3:0]} << 8);
+			2'd3: vram_index = {7'd0, col[4:0]} | ({7'd0, row[6:0]} << 5);
+		endcase
+	end
 
 endmodule

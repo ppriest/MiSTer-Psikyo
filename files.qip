@@ -23,6 +23,14 @@ set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80se.vhd
 # maincpu.sv (68EC020 bus wrapper around TG68K.C).
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/maincpu.sv
 
+# s1945_mcu.sv (SH403/SH404 security-device simulation).
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/s1945_mcu.sv
+
+# YMF278B (OPL4) -- docs/phase2_ymf278b.md
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_pcm.sv
+
 # Sound CPU wrappers (T80 + this board's own memory map/bank/latch/NMI
 # handling).
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu.sv
@@ -40,6 +48,17 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tilemap_addrgen.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tile_cell_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tile_row_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/tilemap_line_engine.sv
+
+# crt_adjust.sv (CRT Offset; vendored from Arcade-Raiden_MiSTer).
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_adjust.sv
+
+# hiscore.v (MAME hiscore.dat support; vendored from JimmyStones/Hiscores_MiSTer).
+set_global_assignment -name VERILOG_FILE rtl/hiscore.v
+
+# Fast ROM loading: DDR3 staging (the .mra DMAs the ROM there) plus the bulk
+# DDR3 -> SDRAM copier.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/ddram_phy.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/rom_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_display_list_walker.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_record_fetch.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_record_decode.sv

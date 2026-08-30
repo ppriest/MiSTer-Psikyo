@@ -1,7 +1,8 @@
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
+	<about author="Paul Priest" webpage="" source="MAME psikyo.cpp"/>
 	<name>Tengai (World)</name>
 	<setname>tengai</setname>
+	<mameversion>0298</mameversion>
 	<year>1996</year>
 	<manufacturer>Psikyo</manufacturer>
 	<category>Shoot 'Em Up</category>
@@ -12,7 +13,7 @@
 	<region>World</region>
 
 	<rom index="1"><part>1D</part></rom>
-	<rom index="0" zip="tengai.zip" md5="none">
+	<rom index="0" zip="tengai.zip" md5="none" address="0x30000000">
 		<interleave output="32">
 			<part name="5-u40.bin" crc="90088195" map="0012"/>
 			<part name="4-u41.bin" crc="0d53196c" map="1200"/>
@@ -35,6 +36,15 @@
 		<part name="u1.bin" crc="681d7d55"/>
 	</rom>
 
+	<rom index="3">
+		<part>
+		00 00 00 00 3F FF 00 02 00 02 00 01 00 0F 10 00
+		00 FE 4C B0 48 2D 98 00
+		</part>
+	</rom>
+
+	<nvram index="4" size="72"/>
+
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
 	<switches default="FD,FF,0F">
@@ -52,5 +62,5 @@
 		<dip name="Region" bits="16,17,18,19" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7,0xb,0xd,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260830000000</mratimestamp>
+	<mratimestamp>20260830113651</mratimestamp>
 </misterromdescription>

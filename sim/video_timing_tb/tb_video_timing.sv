@@ -19,169 +19,189 @@
 
 module tb_video_timing;
 
-    logic clk = 0;
-    always #5 clk = ~clk;
+	logic clk = 0;
+	always #5 clk = ~clk;
 
-    logic reset, ce_pix;
-    logic [8:0] hcnt, vcnt;
-    logic [7:0] vcnt_active;
-    logic h_active, v_active, hblank, vblank, hsync, vsync;
-    logic line_start, frame_start;
+	logic reset, ce_pix;
+	logic [8:0] hcnt, vcnt;
+	logic [7:0] vcnt_active;
+	logic [7:0] vcnt_next_active;
+	logic h_active, v_active, hblank, vblank, hsync, vsync;
+	logic line_start, frame_start;
 
-    video_timing dut (.*);
+	video_timing dut (.*);
 
-    int errors = 0;
+	int errors = 0;
 
-    // ce_pix pulses every 3rd clk cycle -- deliberately NOT every cycle,
-    // to make Case 1 (ce_pix gating) a real test rather than a no-op
-    int ce_div;
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            ce_div <= 0;
-            ce_pix <= 0;
-        end else begin
-            ce_div <= (ce_div == 2) ? 0 : ce_div + 1;
-            ce_pix <= (ce_div == 2);
-        end
-    end
+	// vcnt_next_active must name the line that line_start prefetches for --
+	// vcnt+1, wrapped on V_TOTAL BEFORE the truncation to 8 bits. The wrap is
+	// the subtle part: vcnt_active is a raw truncation of a 0-261 counter, so
+	// at the last raster line it reads 5, and an unwrapped vcnt+1 would make
+	// the tilemap engines fetch display line 0 as row 6.
+	int vn_errors = 0;
+	always @(posedge clk) begin
+		if (!reset) begin
+			automatic int exp = (vcnt == 9'd261) ? 0 : ((vcnt + 1) & 8'hFF);
+			if (vcnt_next_active !== 8'(exp)) begin
+				vn_errors++;
+				if (vn_errors <= 5)
+					$display("FAIL vcnt_next_active: vcnt=%0d got=%0d expected=%0d",
+					          vcnt, vcnt_next_active, exp);
+			end
+		end
+	end
 
-    task automatic wait_pixel;
-        // waits for exactly one ce_pix-qualified advance
-        do @(posedge clk); while (!ce_pix);
-        @(posedge clk);   // let the NBA update settle
-    endtask
+	// ce_pix pulses every 3rd clk cycle -- deliberately NOT every cycle,
+	// to make Case 1 (ce_pix gating) a real test rather than a no-op
+	int ce_div;
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			ce_div <= 0;
+			ce_pix <= 0;
+		end else begin
+			ce_div <= (ce_div == 2) ? 0 : ce_div + 1;
+			ce_pix <= (ce_div == 2);
+		end
+	end
 
-    initial begin
-        #20000000;
-        $display("TIMEOUT: simulation did not finish in time");
-        $finish;
-    end
+	task automatic wait_pixel;
+		// waits for exactly one ce_pix-qualified advance
+		do @(posedge clk); while (!ce_pix);
+		@(posedge clk);   // let the NBA update settle
+	endtask
 
-    initial begin
-        reset = 1;
-        repeat (5) @(posedge clk);
-        reset = 0;
-        @(posedge clk);
+	initial begin
+		#20000000;
+		$display("TIMEOUT: simulation did not finish in time");
+		$finish;
+	end
 
-        // ---- Case 1: ce_pix gating ----
-        begin
-            logic [8:0] hcnt_before;
-            hcnt_before = hcnt;
-            repeat (2) @(posedge clk);   // 2 non-ce_pix cycles (ce_div cycles 0,1 don't pulse ce_pix)
-            if (hcnt !== hcnt_before) begin
-                errors++;
-                $display("FAIL(case1) hcnt advanced without ce_pix: before=%0d after=%0d", hcnt_before, hcnt);
-            end else begin
-                $display("Case 1 done (no advance without ce_pix)");
-            end
-        end
+	initial begin
+		reset = 1;
+		repeat (5) @(posedge clk);
+		reset = 0;
+		@(posedge clk);
 
-        // ---- Case 2/3/4: walk one full scanline, checking h_active/hblank/hsync/line_start ----
-        // Synchronize to hcnt==455 first (the loop below advances-then-
-        // checks, so the first wait_pixel() call inside it will wrap hcnt
-        // to 0 matching col==0) -- Case 1's own timing-dependent ce_pix
-        // window may or may not have let hcnt tick forward by the time we
-        // get here, so don't assume anything about where hcnt starts.
-        while (hcnt !== 9'd455) wait_pixel();
-        begin
-            int line_start_count;
-            line_start_count = 0;
-            for (int col = 0; col < 456; col++) begin
-                wait_pixel();
-                if (hcnt !== col[8:0]) begin
-                    errors++;
-                    $display("FAIL(case2) hcnt sequencing: expected=%0d got=%0d", col, hcnt);
-                end
-                if ((col < 320) !== h_active) begin
-                    errors++;
-                    $display("FAIL(case2) h_active wrong at hcnt=%0d: got=%b", col, h_active);
-                end
-                if ((col >= 320) !== hblank) begin
-                    errors++;
-                    $display("FAIL(case2) hblank wrong at hcnt=%0d: got=%b", col, hblank);
-                end
-                if (((col >= 336) && (col < 368)) !== hsync) begin
-                    errors++;
-                    $display("FAIL(case3) hsync wrong at hcnt=%0d: got=%b", col, hsync);
-                end
-                if (line_start) line_start_count++;
-            end
-            if (line_start_count !== 1) begin
-                errors++;
-                $display("FAIL(case4) line_start fired %0d times in one line, expected 1", line_start_count);
-            end else begin
-                $display("Case 2/3/4 done (h_active/hblank/hsync boundaries, line_start once per line)");
-            end
-        end
+		// ---- Case 1: ce_pix gating ----
+		begin
+			logic [8:0] hcnt_before;
+			hcnt_before = hcnt;
+			repeat (2) @(posedge clk);   // 2 non-ce_pix cycles (ce_div cycles 0,1 don't pulse ce_pix)
+			if (hcnt !== hcnt_before) begin
+				errors++;
+				$display("FAIL(case1) hcnt advanced without ce_pix: before=%0d after=%0d", hcnt_before, hcnt);
+			end else begin
+				$display("Case 1 done (no advance without ce_pix)");
+			end
+		end
 
-        // ---- Case 5/6/7: walk two full frames pixel-by-pixel (262*456 each) ----
-        // One flat loop, no nested "advance to next line" bookkeeping --
-        // an earlier nested version double-counted pixels at each line
-        // boundary (a redundant wait_pixel() at the bottom of the outer
-        // loop AND a fresh 456-call advance at the top of the next
-        // iteration), drifting hcnt/vcnt further out of sync every line.
-        // Re-synchronizes to the exact frame boundary first (hcnt==455 &&
-        // vcnt==261, the last pixel of a frame) rather than trusting
-        // wherever Case 2/3/4 happened to leave off.
-        while (!(hcnt === 9'd455 && vcnt === 9'd261)) wait_pixel();
-        begin
-            int vactive_lines, vblank_lines, frame_start_count;
-            int prev_vcnt;
-            vactive_lines = 0; vblank_lines = 0; frame_start_count = 0;
-            prev_vcnt = -1;
+		// ---- Case 2/3/4: walk one full scanline, checking h_active/hblank/hsync/line_start ----
+		// Synchronize to hcnt==455 first (the loop below advances-then-
+		// checks, so the first wait_pixel() call inside it will wrap hcnt
+		// to 0 matching col==0) -- Case 1's own timing-dependent ce_pix
+		// window may or may not have let hcnt tick forward by the time we
+		// get here, so don't assume anything about where hcnt starts.
+		while (hcnt !== 9'd455) wait_pixel();
+		begin
+			int line_start_count;
+			line_start_count = 0;
+			for (int col = 0; col < 456; col++) begin
+				wait_pixel();
+				if (hcnt !== col[8:0]) begin
+					errors++;
+					$display("FAIL(case2) hcnt sequencing: expected=%0d got=%0d", col, hcnt);
+				end
+				if ((col < 320) !== h_active) begin
+					errors++;
+					$display("FAIL(case2) h_active wrong at hcnt=%0d: got=%b", col, h_active);
+				end
+				if ((col >= 320) !== hblank) begin
+					errors++;
+					$display("FAIL(case2) hblank wrong at hcnt=%0d: got=%b", col, hblank);
+				end
+				if (((col >= 336) && (col < 368)) !== hsync) begin
+					errors++;
+					$display("FAIL(case3) hsync wrong at hcnt=%0d: got=%b", col, hsync);
+				end
+				if (line_start) line_start_count++;
+			end
+			if (line_start_count !== 1) begin
+				errors++;
+				$display("FAIL(case4) line_start fired %0d times in one line, expected 1", line_start_count);
+			end else begin
+				$display("Case 2/3/4 done (h_active/hblank/hsync boundaries, line_start once per line)");
+			end
+		end
 
-            repeat (2 * 262 * 456) begin
-                wait_pixel();
+		// ---- Case 5/6/7: walk two full frames pixel-by-pixel (262*456 each) ----
+		// One flat loop, no nested "advance to next line" bookkeeping --
+		// an earlier nested version double-counted pixels at each line
+		// boundary (a redundant wait_pixel() at the bottom of the outer
+		// loop AND a fresh 456-call advance at the top of the next
+		// iteration), drifting hcnt/vcnt further out of sync every line.
+		// Re-synchronizes to the exact frame boundary first (hcnt==455 &&
+		// vcnt==261, the last pixel of a frame) rather than trusting
+		// wherever Case 2/3/4 happened to leave off.
+		while (!(hcnt === 9'd455 && vcnt === 9'd261)) wait_pixel();
+		begin
+			int vactive_lines, vblank_lines, frame_start_count;
+			int prev_vcnt;
+			vactive_lines = 0; vblank_lines = 0; frame_start_count = 0;
+			prev_vcnt = -1;
 
-                if ((vcnt < 224) !== v_active) begin
-                    errors++;
-                    $display("FAIL(case5) v_active wrong at hcnt=%0d vcnt=%0d: got=%b", hcnt, vcnt, v_active);
-                end
-                if ((vcnt >= 224) !== vblank) begin
-                    errors++;
-                    $display("FAIL(case5) vblank wrong at hcnt=%0d vcnt=%0d: got=%b", hcnt, vcnt, vblank);
-                end
-                if (frame_start) frame_start_count++;
+			repeat (2 * 262 * 456) begin
+				wait_pixel();
 
-                // count each line exactly once, at its first pixel
-                if (vcnt !== prev_vcnt) begin
-                    if (v_active) vactive_lines++; else vblank_lines++;
-                    prev_vcnt = vcnt;
-                end
-            end
+				if ((vcnt < 224) !== v_active) begin
+					errors++;
+					$display("FAIL(case5) v_active wrong at hcnt=%0d vcnt=%0d: got=%b", hcnt, vcnt, v_active);
+				end
+				if ((vcnt >= 224) !== vblank) begin
+					errors++;
+					$display("FAIL(case5) vblank wrong at hcnt=%0d vcnt=%0d: got=%b", hcnt, vcnt, vblank);
+				end
+				if (frame_start) frame_start_count++;
 
-            // two full frames: expect double the per-frame counts
-            if (vactive_lines !== 2 * 224) begin
-                errors++;
-                $display("FAIL(case5) v_active line count over 2 frames: got=%0d expected=448", vactive_lines);
-            end
-            if (vblank_lines !== 2 * 38) begin
-                errors++;
-                $display("FAIL(case5) vblank line count over 2 frames: got=%0d expected=76", vblank_lines);
-            end
-            if (frame_start_count !== 2) begin
-                errors++;
-                $display("FAIL(case6) frame_start fired %0d times over 2 frames, expected 2", frame_start_count);
-            end else begin
-                $display("Case 5/6 done (v_active/vblank line counts, frame_start once per frame)");
-            end
-        end
+				// count each line exactly once, at its first pixel
+				if (vcnt !== prev_vcnt) begin
+					if (v_active) vactive_lines++; else vblank_lines++;
+					prev_vcnt = vcnt;
+				end
+			end
 
-        // ---- Case 7: after exactly 2*262*456 pixels from a known frame
-        // boundary, we must be back at that exact same boundary ----
-        if (hcnt !== 9'd455 || vcnt !== 9'd261) begin
-            errors++;
-            $display("FAIL(case7) frame wrap: expected hcnt=455,vcnt=261 got hcnt=%0d,vcnt=%0d", hcnt, vcnt);
-        end else begin
-            $display("Case 7 done (frame-to-frame wrap correct)");
-        end
+			// two full frames: expect double the per-frame counts
+			if (vactive_lines !== 2 * 224) begin
+				errors++;
+				$display("FAIL(case5) v_active line count over 2 frames: got=%0d expected=448", vactive_lines);
+			end
+			if (vblank_lines !== 2 * 38) begin
+				errors++;
+				$display("FAIL(case5) vblank line count over 2 frames: got=%0d expected=76", vblank_lines);
+			end
+			if (frame_start_count !== 2) begin
+				errors++;
+				$display("FAIL(case6) frame_start fired %0d times over 2 frames, expected 2", frame_start_count);
+			end else begin
+				$display("Case 5/6 done (v_active/vblank line counts, frame_start once per frame)");
+			end
+		end
 
-        if (errors == 0)
-            $display("PASS: video_timing matches expected behavior for all cases");
-        else
-            $display("FAIL: %0d mismatches", errors);
+		// ---- Case 7: after exactly 2*262*456 pixels from a known frame
+		// boundary, we must be back at that exact same boundary ----
+		if (hcnt !== 9'd455 || vcnt !== 9'd261) begin
+			errors++;
+			$display("FAIL(case7) frame wrap: expected hcnt=455,vcnt=261 got hcnt=%0d,vcnt=%0d", hcnt, vcnt);
+		end else begin
+			$display("Case 7 done (frame-to-frame wrap correct)");
+		end
 
-        $finish;
-    end
+		errors += vn_errors;
+		if (errors == 0)
+			$display("PASS: video_timing matches expected behavior for all cases");
+		else
+			$display("FAIL: %0d mismatches", errors);
+
+		$finish;
+	end
 
 endmodule

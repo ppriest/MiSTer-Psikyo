@@ -141,10 +141,17 @@ rbf + mra must be updated as a pair.
 | 0x10 read | sound latch |
 | 0x18 write | latch acknowledge (clears NMI) |
 
-Risk: the Z80 program may spin on OPL timer flags (status bits 6:5) that jt10 never
-sets. If boot-blocking, fallback is a ~50-line OPL timer/status shim (timers + IRQ,
-no sound). Decide from a MAME sound-CPU trace of s1945 boot; also request a 68020
-trace of the C00xxx MCU handshake as the testbench oracle.
+**Confirmed on hardware (s1945 and tengai parent sets), via the sound-chain JTAG probe
+(instance "A", `scripts/read_issp.tcl`)**: the Z80 does NOT spin/hang. Z80 ROM fetches
+saturate the counter (continuous execution), YM register writes and sound latch writes
+both climb, and the NMI handler completes (latch-ack seen) -- the driver runs its normal
+loop. `snd_left` never goes nonzero across the whole session: jt10 is alive and clocked
+(`ym_cen` is unconditional, not gated by board type) but the Z80's writes are YMF278B
+register commands with no meaning in a YM2610's register map, so no channel ever gets
+configured to produce output. This is not a wiring bug and there is no fix short of a
+real YMF278B core -- the timer/status shim considered above turned out to be unnecessary
+(nothing is blocking on a status read), but does not help either, since the underlying
+problem is the command stream, not a stuck flag.
 
 ## Mod byte
 

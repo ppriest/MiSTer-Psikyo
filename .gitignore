@@ -113,3 +113,7 @@ __pycache__/
 sim/**/*.raw
 sim/**/*.dec
 sim/**/*dump*.txt
+
+# user-local rom sync helper, not part of the release set
+releases/sync-mame-roms.sh
+build_keep/

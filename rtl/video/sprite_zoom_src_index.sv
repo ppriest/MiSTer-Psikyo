@@ -20,19 +20,19 @@
 // >>16 -- it never indexes outside the source tile's 16 pixels.
 
 module sprite_zoom_src_index (
-    input  logic [3:0]  col,        // 0..dst_size-1 (caller-guaranteed)
-    input  logic [3:0]  dst_size,   // 9-16, from sprite_zoom_lut
-    input  logic [16:0] dx,         // 16.16 fixed-point step, from sprite_zoom_lut
-    input  logic         flip,
+	input  logic [3:0]  col,        // 0..dst_size-1 (caller-guaranteed)
+	input  logic [3:0]  dst_size,   // 9-16, from sprite_zoom_lut
+	input  logic [16:0] dx,         // 16.16 fixed-point step, from sprite_zoom_lut
+	input  logic         flip,
 
-    output logic [3:0]  src_index   // 0-15
+	output logic [3:0]  src_index   // 0-15
 );
 
-    logic [3:0]  eff_col;
-    logic [20:0] prod;   // col/eff_col (4b, max 15) * dx (17b, max 0x1C71C) needs 21 bits
+	logic [3:0]  eff_col;
+	logic [20:0] prod;   // col/eff_col (4b, max 15) * dx (17b, max 0x1C71C) needs 21 bits
 
-    assign eff_col = flip ? (dst_size - 4'd1 - col) : col;
-    assign prod     = {17'd0, eff_col} * {4'd0, dx};
-    assign src_index = prod[19:16];
+	assign eff_col = flip ? (dst_size - 4'd1 - col) : col;
+	assign prod     = {17'd0, eff_col} * {4'd0, dx};
+	assign src_index = prod[19:16];
 
 endmodule

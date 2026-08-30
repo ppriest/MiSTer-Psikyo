@@ -49,40 +49,40 @@
 // the same width as sprite_pos_transform's x_adj/y_adj rather than growing.
 
 module sprite_subtile_step (
-    input  logic [3:0]        ix,                  // 0..nx-1, natural (flip-unaware) column index
-    input  logic [3:0]        iy,                  // 0..ny-1, natural (flip-unaware) row index
-    input  logic [3:0]        nx,                  // 1-8
-    input  logic [3:0]        ny,                  // 1-8
-    input  logic              flip_x,
-    input  logic              flip_y,
-    input  logic signed [9:0] x_adj,
-    input  logic signed [9:0] y_adj,
-    input  logic [5:0]        zoom_x_transformed,  // 17-32
-    input  logic [5:0]        zoom_y_transformed,  // 17-32
-    input  logic [5:0]        subtile_ordinal,     // 0-63, visitation-order iteration count
-    input  logic [16:0]       code_base,
+	input  logic [3:0]        ix,                  // 0..nx-1, natural (flip-unaware) column index
+	input  logic [3:0]        iy,                  // 0..ny-1, natural (flip-unaware) row index
+	input  logic [3:0]        nx,                  // 1-8
+	input  logic [3:0]        ny,                  // 1-8
+	input  logic              flip_x,
+	input  logic              flip_y,
+	input  logic signed [9:0] x_adj,
+	input  logic signed [9:0] y_adj,
+	input  logic [5:0]        zoom_x_transformed,  // 17-32
+	input  logic [5:0]        zoom_y_transformed,  // 17-32
+	input  logic [5:0]        subtile_ordinal,     // 0-63, visitation-order iteration count
+	input  logic [16:0]       code_base,
 
-    output logic signed [9:0] sub_x,
-    output logic signed [9:0] sub_y,
-    output logic [16:0]       sub_code
+	output logic signed [9:0] sub_x,
+	output logic signed [9:0] sub_y,
+	output logic [16:0]       sub_code
 );
 
-    logic [3:0] dx_grid, dy_grid;    // real range 0-7
+	logic [3:0] dx_grid, dy_grid;    // real range 0-7
 
-    assign dx_grid = flip_x ? (nx - 4'd1 - ix) : ix;
-    assign dy_grid = flip_y ? (ny - 4'd1 - iy) : iy;
+	assign dx_grid = flip_x ? (nx - 4'd1 - ix) : ix;
+	assign dy_grid = flip_y ? (ny - 4'd1 - iy) : iy;
 
-    logic [7:0] x_step_prod, y_step_prod;  // dx_grid(max 7) * zoom(max 32) = max 224
-    logic [6:0] x_step, y_step;            // >>1 of the above, max 112
+	logic [7:0] x_step_prod, y_step_prod;  // dx_grid(max 7) * zoom(max 32) = max 224
+	logic [6:0] x_step, y_step;            // >>1 of the above, max 112
 
-    assign x_step_prod = {4'd0, dx_grid} * {2'd0, zoom_x_transformed};
-    assign x_step       = x_step_prod[7:1];
-    assign sub_x         = x_adj + $signed({3'd0, x_step});
+	assign x_step_prod = {4'd0, dx_grid} * {2'd0, zoom_x_transformed};
+	assign x_step       = x_step_prod[7:1];
+	assign sub_x         = x_adj + $signed({3'd0, x_step});
 
-    assign y_step_prod = {4'd0, dy_grid} * {2'd0, zoom_y_transformed};
-    assign y_step       = y_step_prod[7:1];
-    assign sub_y         = y_adj + $signed({3'd0, y_step});
+	assign y_step_prod = {4'd0, dy_grid} * {2'd0, zoom_y_transformed};
+	assign y_step       = y_step_prod[7:1];
+	assign sub_y         = y_adj + $signed({3'd0, y_step});
 
-    assign sub_code = code_base + {11'd0, subtile_ordinal};
+	assign sub_code = code_base + {11'd0, subtile_ordinal};
 
 endmodule

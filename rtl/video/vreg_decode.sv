@@ -17,167 +17,173 @@
 // (unavailable) BRAM read port and giving the tilemap engines single-cycle,
 // always-current combinational access instead of a synchronous BRAM read.
 module vreg_decode (
-    // Board-specific tile gfx banking -- MAME psikyo_v.cpp's
-    // m_ka302c_banking. Two genuinely different schemes, and picking the
-    // wrong one silently renders a whole layer from the wrong artwork:
-    //
-    //   1 (gunbird/btlkroad, and s1945n in Phase 2): LIVE banking, each
-    //     layer's bank taken from its own layer-control bit 10
-    //     (psikyo_v.cpp:477, `(layer_ctrl[layer] & 0x400) >> 10`).
-    //
-    //   0 (sngkace/samuraia): NO live banking at all. Fixed banks assigned
-    //     once at video_start -- layer 0 = bank 0, layer 1 = bank 1
-    //     (psikyo_v.cpp:135-136, "sngkace / samuraia don't use banking" /
-    //     "They share gfx2 to save memory on other boards"). get_tile_info
-    //     computes `(code & 0x1fff) + 0x2000 * bank`, so layer 1 must read
-    //     the SECOND half of the tiles region -- u35.bin, at region offset
-    //     0x100000 = 0x2000 tiles x 128 bytes.
+	// Board-specific tile gfx banking -- MAME psikyo_v.cpp's
+	// m_ka302c_banking. Two genuinely different schemes, and picking the
+	// wrong one silently renders a whole layer from the wrong artwork:
+	//
+	//   1 (gunbird/btlkroad, and s1945n in Phase 2): LIVE banking, each
+	//     layer's bank taken from its own layer-control bit 10
+	//     (psikyo_v.cpp:477, `(layer_ctrl[layer] & 0x400) >> 10`).
+	//
+	//   0 (sngkace/samuraia): NO live banking at all. Fixed banks assigned
+	//     once at video_start -- layer 0 = bank 0, layer 1 = bank 1
+	//     (psikyo_v.cpp:135-136, "sngkace / samuraia don't use banking" /
+	//     "They share gfx2 to save memory on other boards"). get_tile_info
+	//     computes `(code & 0x1fff) + 0x2000 * bank`, so layer 1 must read
+	//     the SECOND half of the tiles region -- u35.bin, at region offset
+	//     0x100000 = 0x2000 tiles x 128 bytes.
 
-    input  logic         clk,
-    input  logic         reset,
+	input  logic         clk,
+	input  logic         reset,
 
-    // CPU-facing port -- same shape as maincpu.sv's other BRAM regions.
-    input  logic [12:0] cpu_addr,
-    input  logic         cpu_wel,
-    input  logic         cpu_weh,
-    input  logic [15:0] cpu_wdata,
-    output logic [15:0] cpu_rdata,
+	// CPU-facing port -- same shape as maincpu.sv's other BRAM regions.
+	input  logic [12:0] cpu_addr,
+	input  logic         cpu_wel,
+	input  logic         cpu_weh,
+	input  logic [15:0] cpu_wdata,
+	output logic [15:0] cpu_rdata,
 
-    // Row-scroll table read ports, one per layer -- module-local index
-    // 0-255 within that layer's table, matching tilemap_line_engine's
-    // rowscroll_addr/rowscroll_data port shape.
-    input  logic [7:0]  layer0_rowscroll_addr,
-    output logic [15:0] layer0_rowscroll_data,
-    input  logic [7:0]  layer1_rowscroll_addr,
-    output logic [15:0] layer1_rowscroll_data,
+	// Row-scroll table read ports, one per layer -- module-local index
+	// 0-255 within that layer's table, matching tilemap_line_engine's
+	// rowscroll_addr/rowscroll_data port shape.
+	input  logic [7:0]  layer0_rowscroll_addr,
+	output logic [15:0] layer0_rowscroll_data,
+	input  logic [7:0]  layer1_rowscroll_addr,
+	output logic [15:0] layer1_rowscroll_data,
 
-    // Decoded per-layer control outputs, matching tilemap_line_engine's
-    // mode/base_x_scroll/base_y_scroll/bank/rowscroll_enable/
-    // rowscroll_pertile input port shape directly.
-    output logic [1:0]  layer0_mode,
-    output logic [15:0] layer0_base_x_scroll,
-    output logic [15:0] layer0_base_y_scroll,
-    output logic [1:0]  layer0_bank,
-    output logic         layer0_enable,
-    output logic         layer0_opaque,          // ctrl bit 1, compositor's l0_ctrl_opaque
-    output logic         layer0_transpen_sel,     // ctrl bit 3, compositor's l0_ctrl_transpen_sel
-    output logic         layer0_rowscroll_enable,
-    output logic         layer0_rowscroll_pertile,
+	// Decoded per-layer control outputs, matching tilemap_line_engine's
+	// mode/base_x_scroll/base_y_scroll/bank/rowscroll_enable/
+	// rowscroll_pertile input port shape directly.
+	output logic [1:0]  layer0_mode,
+	output logic [15:0] layer0_base_x_scroll,
+	output logic [15:0] layer0_base_y_scroll,
+	output logic [1:0]  layer0_bank,
+	output logic         layer0_enable,
+	output logic         layer0_opaque,          // ctrl bit 1, compositor's l0_ctrl_opaque
+	output logic         layer0_transpen_sel,     // ctrl bit 3, compositor's l0_ctrl_transpen_sel
+	output logic         layer0_rowscroll_enable,
+	output logic         layer0_rowscroll_pertile,
 
-    output logic [1:0]  layer1_mode,
-    output logic [15:0] layer1_base_x_scroll,
-    output logic [15:0] layer1_base_y_scroll,
-    output logic [1:0]  layer1_bank,
-    output logic         layer1_enable,
-    output logic         layer1_opaque,
-    output logic         layer1_transpen_sel,
-    output logic         layer1_rowscroll_enable,
-    output logic         layer1_rowscroll_pertile,
+	output logic [1:0]  layer1_mode,
+	output logic [15:0] layer1_base_x_scroll,
+	output logic [15:0] layer1_base_y_scroll,
+	output logic [1:0]  layer1_bank,
+	output logic         layer1_enable,
+	output logic         layer1_opaque,
+	output logic         layer1_transpen_sel,
+	output logic         layer1_rowscroll_enable,
+	output logic         layer1_rowscroll_pertile,
 
-    // ---- debug dump port (rtl/psikyo_core.sv drives this from the video
-    // counters while the debug overlay is up). Borrows u_ram_l0's read port,
-    // which normally only ever sees the 8-bit layer-0 rowscroll index, so it
-    // cannot otherwise reach the control registers at word 0x209/0x20B. This
-    // is what distinguishes "the CPU never wrote the layer control word" from
-    // "it wrote it and vreg_decode failed to latch it" -- the two have
-    // completely different fixes and look identical from outside.
-    // KA302C tile banking, RUNTIME (see maincpu.sv's board_gunbird): gunbird
-    // and btlkroad take each layer's tile bank from layer-control bit 10,
-    // sngkace/samuraia have it fixed at 0 (layer 0) and 1 (layer 1).
-    input  logic         ka302c_banking,
-    // SH404 banking (s1945/tengai, wins over ka302c_banking): the security
-    // MCU's bctrl register drives both banks, full 2-bit -- layer 0 from
-    // bctrl[5:4], layer 1 from bctrl[7:6] (psikyo.cpp s1945_mcu_bctrl_w:
-    // switch_bgbanks(1, data>>6&3); switch_bgbanks(0, data>>4&3)). Tengai's
-    // 4MB tile ROM is why the banks are 2 bits.
-    input  logic         sh404_banking,
-    input  logic [7:0]  mcu_bctrl,
+	// ---- debug dump port (rtl/psikyo_core.sv drives this from the video
+	// counters while the debug overlay is up). Borrows u_ram_l0's read port,
+	// which normally only ever sees the 8-bit layer-0 rowscroll index, so it
+	// cannot otherwise reach the control registers at word 0x209/0x20B. This
+	// is what distinguishes "the CPU never wrote the layer control word" from
+	// "it wrote it and vreg_decode failed to latch it" -- the two have
+	// completely different fixes and look identical from outside.
+	// KA302C tile banking, RUNTIME (see maincpu.sv's board_gunbird): gunbird
+	// and btlkroad take each layer's tile bank from layer-control bit 10,
+	// sngkace/samuraia have it fixed at 0 (layer 0) and 1 (layer 1).
+	input  logic         ka302c_banking,
+	// SH404 banking (s1945/tengai, wins over ka302c_banking): the security
+	// MCU's bctrl register drives both banks, full 2-bit -- layer 0 from
+	// bctrl[5:4], layer 1 from bctrl[7:6] (psikyo.cpp s1945_mcu_bctrl_w:
+	// switch_bgbanks(1, data>>6&3); switch_bgbanks(0, data>>4&3)). Tengai's
+	// 4MB tile ROM is why the banks are 2 bits.
+	input  logic         sh404_banking,
+	input  logic [7:0]  mcu_bctrl,
 
-    input  logic         dbg_dump_en,
-    input  logic [12:0] dbg_dump_addr,
-    output logic [15:0] dbg_dump_data
+	input  logic         dbg_dump_en,
+	input  logic [12:0] dbg_dump_addr,
+	output logic [15:0] dbg_dump_data
 );
 
-    // Fixed word offsets, from docs/phase1_memory_map.md's "Video
-    // registers" table (byte offset >> 1).
-    localparam logic [12:0] ADDR_L0_YSCROLL = 13'h201; // byte 0x402
-    localparam logic [12:0] ADDR_L0_XSCROLL = 13'h203; // byte 0x406
-    localparam logic [12:0] ADDR_L1_YSCROLL = 13'h205; // byte 0x40A
-    localparam logic [12:0] ADDR_L1_XSCROLL = 13'h207; // byte 0x40E
-    localparam logic [12:0] ADDR_L0_CTRL     = 13'h209; // byte 0x412
-    localparam logic [12:0] ADDR_L1_CTRL     = 13'h20B; // byte 0x416
+	// Fixed word offsets, from docs/phase1_memory_map.md's "Video
+	// registers" table (byte offset >> 1).
+	localparam logic [12:0] ADDR_L0_YSCROLL = 13'h201; // byte 0x402
+	localparam logic [12:0] ADDR_L0_XSCROLL = 13'h203; // byte 0x406
+	localparam logic [12:0] ADDR_L1_YSCROLL = 13'h205; // byte 0x40A
+	localparam logic [12:0] ADDR_L1_XSCROLL = 13'h207; // byte 0x40E
+	localparam logic [12:0] ADDR_L0_CTRL     = 13'h209; // byte 0x412
+	localparam logic [12:0] ADDR_L1_CTRL     = 13'h20B; // byte 0x416
 
-    logic [15:0] l0_ctrl, l1_ctrl;
+	logic [15:0] l0_ctrl, l1_ctrl;
 
-    wire cpu_we = cpu_wel | cpu_weh;
-    // Both byte lanes of these registers are always written together by
-    // real code (word-sized scroll/control values) -- a lone byte write
-    // still updates the whole register from cpu_wdata, matching how a real
-    // 16-bit register would latch whichever lanes are enabled; scoped
-    // this way (not per-lane) since nothing in this project's memory map
-    // ever byte-writes these six fields individually.
-    always_ff @(posedge clk or posedge reset) begin
-        if (reset) begin
-            layer0_base_y_scroll <= 16'h0000;
-            layer0_base_x_scroll <= 16'h0000;
-            layer1_base_y_scroll <= 16'h0000;
-            layer1_base_x_scroll <= 16'h0000;
-            l0_ctrl               <= 16'h0000;
-            l1_ctrl               <= 16'h0000;
-        end else if (cpu_we) begin
-            unique case (cpu_addr)
-                ADDR_L0_YSCROLL: layer0_base_y_scroll <= cpu_wdata;
-                ADDR_L0_XSCROLL: layer0_base_x_scroll <= cpu_wdata;
-                ADDR_L1_YSCROLL: layer1_base_y_scroll <= cpu_wdata;
-                ADDR_L1_XSCROLL: layer1_base_x_scroll <= cpu_wdata;
-                ADDR_L0_CTRL:     l0_ctrl               <= cpu_wdata;
-                ADDR_L1_CTRL:     l1_ctrl               <= cpu_wdata;
-                default: ;
-            endcase
-        end
-    end
+	wire cpu_we = cpu_wel | cpu_weh;
+	// Both byte lanes of these registers are always written together by
+	// real code (word-sized scroll/control values) -- a lone byte write
+	// still updates the whole register from cpu_wdata, matching how a real
+	// 16-bit register would latch whichever lanes are enabled; scoped
+	// this way (not per-lane) since nothing in this project's memory map
+	// ever byte-writes these six fields individually.
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			layer0_base_y_scroll <= 16'h0000;
+			layer0_base_x_scroll <= 16'h0000;
+			layer1_base_y_scroll <= 16'h0000;
+			layer1_base_x_scroll <= 16'h0000;
+			l0_ctrl               <= 16'h0000;
+			l1_ctrl               <= 16'h0000;
+		end else if (cpu_we) begin
+			unique case (cpu_addr)
+				ADDR_L0_YSCROLL: layer0_base_y_scroll <= cpu_wdata;
+				ADDR_L0_XSCROLL: layer0_base_x_scroll <= cpu_wdata;
+				ADDR_L1_YSCROLL: layer1_base_y_scroll <= cpu_wdata;
+				ADDR_L1_XSCROLL: layer1_base_x_scroll <= cpu_wdata;
+				ADDR_L0_CTRL:     l0_ctrl               <= cpu_wdata;
+				ADDR_L1_CTRL:     l1_ctrl               <= cpu_wdata;
+				default: ;
+			endcase
+		end
+	end
 
-    // Layer control word bits, docs/phase1_memory_map.md's "Layer control
-    // word bits" table.
-    // ENABLE IS ACTIVE LOW: psikyo_v.cpp does
-    //     m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
-    // Reading it active-high held both layers off for every value the game
-    // writes, so the compositor painted backdrop on every pixel and only
-    // sprites appeared. Reset value 0 therefore means ENABLED, matching MAME,
-    // whose m_vregs also powers up zeroed.
-    assign layer0_enable            = ~l0_ctrl[0];
-    assign layer0_opaque            = l0_ctrl[1];
-    assign layer0_transpen_sel      = l0_ctrl[3];
-    assign layer0_mode              = l0_ctrl[7:6];
-    assign layer0_rowscroll_enable  = l0_ctrl[8];
-    assign layer0_rowscroll_pertile = l0_ctrl[9];
-    assign layer0_bank              = sh404_banking  ? mcu_bctrl[5:4]
-                                     : ka302c_banking ? {1'b0, l0_ctrl[10]} : 2'd0; // see banking comments above
+	// Layer control word bits, docs/phase1_memory_map.md's "Layer control
+	// word bits" table.
+	// ENABLE IS ACTIVE LOW: psikyo_v.cpp does
+	//     m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
+	// Reading it active-high held both layers off for every value the game
+	// writes, so the compositor painted backdrop on every pixel and only
+	// sprites appeared. Reset value 0 therefore means ENABLED, matching MAME,
+	// whose m_vregs also powers up zeroed.
+	assign layer0_enable            = ~l0_ctrl[0];
+	assign layer0_opaque            = l0_ctrl[1];
+	assign layer0_transpen_sel      = l0_ctrl[3];
+	assign layer0_mode              = l0_ctrl[7:6];
+	// Row-scroll is active when EITHER control bit is set -- psikyo_v.cpp
+	// gates on `layer_ctrl[layer] & 0x0300`, with bit 9 selecting per-tile
+	// granularity (`tile_rowscroll = (layer_ctrl & 0x0200) >> 7`, i.e. index
+	// >> 4) rather than acting as a second enable. Reading bit 8 alone made
+	// bit-9-only (per-tile row-scroll with bit 8 clear) look like "disabled"
+	// and dropped the layer's row-scroll entirely.
+	assign layer0_rowscroll_enable  = l0_ctrl[8] | l0_ctrl[9];
+	assign layer0_rowscroll_pertile = l0_ctrl[9];
+	assign layer0_bank              = sh404_banking  ? mcu_bctrl[5:4]
+									 : ka302c_banking ? {1'b0, l0_ctrl[10]} : 2'd0; // see banking comments above
 
-    assign layer1_enable            = ~l1_ctrl[0];   // active low, see layer0_enable
-    assign layer1_opaque            = l1_ctrl[1];
-    assign layer1_transpen_sel      = l1_ctrl[3];
-    assign layer1_mode              = l1_ctrl[7:6];
-    assign layer1_rowscroll_enable  = l1_ctrl[8];
-    assign layer1_rowscroll_pertile = l1_ctrl[9];
-    assign layer1_bank              = sh404_banking  ? mcu_bctrl[7:6]
-                                     : ka302c_banking ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia
+	assign layer1_enable            = ~l1_ctrl[0];   // active low, see layer0_enable
+	assign layer1_opaque            = l1_ctrl[1];
+	assign layer1_transpen_sel      = l1_ctrl[3];
+	assign layer1_mode              = l1_ctrl[7:6];
+	assign layer1_rowscroll_enable  = l1_ctrl[8] | l1_ctrl[9];
+	assign layer1_rowscroll_pertile = l1_ctrl[9];
+	assign layer1_bank              = sh404_banking  ? mcu_bctrl[7:6]
+									 : ka302c_banking ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia
 
-    logic [15:0] l0_ram_b_rdata;
-    dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l0 (
-        .clk(clk),
-        .a_addr(cpu_addr), .a_wel(cpu_wel), .a_weh(cpu_weh), .a_wdata(cpu_wdata), .a_rdata(cpu_rdata),
-        .b_addr(dbg_dump_en ? dbg_dump_addr : {5'b0, layer0_rowscroll_addr}),
-        .b_rdata(l0_ram_b_rdata)
-    );
-    assign layer0_rowscroll_data = l0_ram_b_rdata;
-    assign dbg_dump_data          = l0_ram_b_rdata;
+	logic [15:0] l0_ram_b_rdata;
+	dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l0 (
+		.clk(clk),
+		.a_addr(cpu_addr), .a_wel(cpu_wel), .a_weh(cpu_weh), .a_wdata(cpu_wdata), .a_rdata(cpu_rdata),
+		.b_addr(dbg_dump_en ? dbg_dump_addr : {5'b0, layer0_rowscroll_addr}),
+		.b_rdata(l0_ram_b_rdata)
+	);
+	assign layer0_rowscroll_data = l0_ram_b_rdata;
+	assign dbg_dump_data          = l0_ram_b_rdata;
 
-    logic [15:0] cpu_rdata_l1; // unused -- l1's copy only needed for its own read port
-    dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l1 (
-        .clk(clk),
-        .a_addr(cpu_addr), .a_wel(cpu_wel), .a_weh(cpu_weh), .a_wdata(cpu_wdata), .a_rdata(cpu_rdata_l1),
-        .b_addr({4'b0, 1'b1, layer1_rowscroll_addr}), .b_rdata(layer1_rowscroll_data)
-    );
+	logic [15:0] cpu_rdata_l1; // unused -- l1's copy only needed for its own read port
+	dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l1 (
+		.clk(clk),
+		.a_addr(cpu_addr), .a_wel(cpu_wel), .a_weh(cpu_weh), .a_wdata(cpu_wdata), .a_rdata(cpu_rdata_l1),
+		.b_addr({4'b0, 1'b1, layer1_rowscroll_addr}), .b_rdata(layer1_rowscroll_data)
+	);
 
 endmodule

@@ -134,3 +134,43 @@ with it directly, exactly like the OSD's dbg_render_dis[0] gate. Sprites
 blank the moment the game writes the bit. The transparent-pen selects stay
 frame-latched (they parameterize the render pass already in flight). See
 spriteram_dbuf.sv's closing comment.
+
+
+## Defect 6: sprites led the tilemaps by a frame -- FIXED
+
+Symptom: magenta fringing beside moving objects in Strikers 1945 (planes and
+their shadows), and generally sprites reacting a frame before the tilemaps
+they should be locked to. Tilemaps read VRAM live, so any sprite latency
+shortfall shows up as sprites running ahead.
+
+psikyo.cpp's memory map is explicit about the reference behaviour:
+
+    map(0x400000, 0x401fff).ram().share("spriteram");
+        // Sprites, buffered by two frames (list buffered + fb buffered)
+
+Two independent frames, and this core had neither in full:
+
+| half | reference | what this core did |
+|---|---|---|
+| list | `screen_vblank` runs `get_sprites()` and only THEN `m_spriteram->copy()`, so a pass renders from the buffer as it stood -- one generation old | snapshot was refreshed at `frame_start` and rendered immediately, so a pass used the CURRENT contents |
+| fb | hardware frame buffer, displayed the following frame | output bank swapped the instant rendering finished, about 61% down the same frame it was drawn in |
+
+Fixing only the list half is worth about 0.4 frame and reads as no change on
+hardware -- the fb half carries most of it. Both were needed:
+
+- `spriteram_dbuf`'s copy is triggered when the render pass finishes with the
+  snapshot (`copy_start`), not at `frame_start`. Costs no memory; a second
+  snapshot bank would be 64Kbit and this design has no M10K spare.
+- The output buffer swaps at the frame boundary (the `status[43]` policy,
+  now the default), so a rendered pass is displayed over the following whole
+  frame.
+
+Moving the copy after the render also leaves the snapshot unprimed at
+power-on, which rendered uninitialised contents as briefly corrupted sprites.
+The first `frame_start` after reset now performs a copy instead of a render,
+and rendering waits for a completed copy.
+
+Note the frame-boundary swap is the same policy that previously stopped the
+core booting (see "Defect 1"). It boots with the render start no longer gated
+behind a 4096-cycle copy, but it remains selectable on `status[43]` so a
+regression can be isolated without a rebuild.

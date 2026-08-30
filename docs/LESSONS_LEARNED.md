@@ -1,178 +1,109 @@
 # Lessons Learned
 
-Cross-cutting technical lessons from building this core — patterns, gotchas, and tool
-behaviors likely to recur. Organized by topic, not chronology. For the blow-by-blow history of
-*when* each of these was found, see git log / commit messages; per-component vendoring detail
-lives in each module's own `PROVENANCE.md` (`rtl/cpu/tg68k/`, `rtl/memory/sdram/`,
-`rtl/sound/jt10/`, `rtl/sound/jt49/`).
+Reusable rules from building this core, for whoever builds the next MiSTer arcade core. Each entry
+states the rule, the mechanism that made the wrong assumption plausible, and the evidence that
+settled it. Not a status file: current state is in `docs/ROADMAP.md`, design detail in
+`docs/phase*.md`, vendoring detail in each module's `PROVENANCE.md`.
 
-## Suspect your own changes and your integration first
+## Diagnosis discipline
 
-- **Vendored cores and MiSTer's own infrastructure are battle-tested; on balance the bug is
-  yours.** TG68K.C, T80, Sorgelig's `sdram.sv`, MRA/ROM loading, `hps_io`, `sys_top` ship in many
-  working cores. On 2026-08-23 a full day went into suspecting, in order: SDRAM pin assignments
-  (38/38 correct), SDRAM_CLK phase (irrelevant — identical output a quarter period apart), the
-  burst-4 SDRAM controller (sound), the MRA interleave (correct — "fixed" wrongly, then reverted),
-  and TG68K's exception microcode (a testbench bug). The real cause was integration glue this
-  project wrote.
-- **When a vendored module omits something obvious, that omission is usually deliberate.**
-  Upstream `sdram.v` has **no reset port at all** — driven purely by `init` — precisely so a core
-  reset cannot disturb memory. This project's wrappers added one, which is exactly what
-  reintroduced the hazard below. Read the upstream design before overriding it.
-- **Do not "fix" a loader or file format without hardware evidence it produces wrong bytes.** The
-  `.mra` maincpu interleave was rewritten from `<interleave output="16">` with `map="01"/"10"` to
-  `output="32"` with 4-digit maps, on the strength of a mental model that predicted a corrupt
-  stack pointer. The 4-digit maps turned out to be **silently ignored** (proved by swapping them
-  and getting byte-identical hardware output), and the original form was right all along. Every
-  test that seemed to indict it had run against an SDRAM that was never written — garbage
-  compared against garbage.
+### Suspect your own integration before any vendored module
 
-## MiSTer integration: ROM download and reset
+TG68K.C, T80, Sorgelig's `sdram.sv`, MRA/ROM loading, `hps_io` and `sys_top` ship in many working
+cores. One investigation suspected, in order: SDRAM pin assignments (38/38 correct), SDRAM_CLK phase
+(byte-identical output a quarter period apart), the burst-4 controller, the `.mra` interleave
+(correct; "fixed" wrongly, then reverted) and TG68K's exception microcode (a testbench bug). The
+cause was integration glue this project wrote. Rank hypotheses by how many shipping cores would have
+to be broken for them to be true.
 
-- **MiSTer holds core `RESET` asserted for the ENTIRE ROM download.** Anything in the memory path
-  that resets on `RESET` is therefore dead for the whole transfer. Here `Psikyo.sv` builds
-  `reset = RESET | status[0] | buttons[1] | ~pll_locked` and `psikyo_top` passed it into the SDRAM
-  backend, pinning `sdram_download`'s FSM in `D_IDLE`. `dl_req` never asserted, the arbiter never
-  selected the download path, and **not one `CMD_WRITE` ever reached the chip** — while the HPS
-  delivered all `0xE00000` bytes and the FSM's accept condition looked perfect. SDRAM was simply
-  never written; every read returned power-up contents. Fix: `sdram_reset = reset & ~ioctl_download`.
-- **This is invisible to simulation by construction.** A testbench drives its own reset and
-  download sequencing, so it never reproduces MiSTer holding RESET across the transfer. The same
-  blind spot produced two other bugs the same day: `vblank` driven as a one-clock pulse when real
-  hardware holds it 38 lines, and `ioctl_index` hardcoded to 0 so an index mismatch could never
-  surface. **Ask of every testbench stimulus: is this the shape the real system produces?**
-- **Verify at the pins, not at the intent.** The decisive measurement was counting real commands
-  on `{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE}` (`CMD_WRITE = 3'b100`), which are top-level signals.
-  Delivery counters and FSM accept-condition counters both looked perfect; only the pin count
-  revealed zero writes. Measure the last observable stage, not an internal signal that merely
-  implies it.
+### Treat a conspicuous omission in a vendored module as deliberate
 
-## Debug instrumentation: how to not fool yourself
+Upstream `sdram.v` has no reset port at all -- it is driven purely by `init` -- precisely so a core
+reset cannot disturb memory. This project's wrapper added one, which created the ROM-download
+hazard below. Read the upstream intent before overriding it.
 
-- **Never reset a debug counter with the reset you are investigating.** Two separate measurements
-  read `0x000000` and were reported as findings before it was noticed that the counters were
-  cleared by `reset` — which is asserted for the whole window being measured. Declare debug
-  counters with `= 0` initialisers and **no reset at all**; Quartus powers registers to zero, so
-  whatever they show is what genuinely happened since configuration.
-- **A zero can mean "did not happen" OR "was never allowed to count". Design the probe so those
-  differ.** Counting only dropped bytes was useless because zero drops and zero traffic look
-  identical. Always pair a "bad event" counter with a "total events" counter.
-- **Sample registered signals, not combinational ones, and prove the probe on a known-good
-  configuration.** A tap on `cpu_data` (combinational) sampled at `cpu_ce && !as_n && !dtack_n`
-  appeared to show the CPU latching byte-skewed data — a compelling and completely false finding.
-  Running the *same* probe in a simulation that demonstrably boots showed the same skew, proving
-  the probe mis-sampled. **Run any new probe against a known-good setup first**; if it reports a
-  fault there, the probe is the fault.
-- **Distinguish the address column from the data column before blaming the CPU.** A bus trace
-  showing `0x00000000` was read for years as "the vector fetch address comes out wrong". It was
-  the *data* read back from the correct address `0x70`, because the testbench had zeroed the
-  vector table. That misreading was recorded in two docs and used to justify not trusting
-  interrupts at all.
-- **Measurements taken while the design fails timing are worthless.** The "~51% of ROM words
-  match" figure and the original SDRAM_CLK phase sweep were both taken while the entire clk_sys
-  domain failed by 8.9 ns, and both were used to rule the memory interface *out*. Re-run any
-  measurement that predates a timing fix.
-- **Never let the probe's step size share a factor with the period you are trying to measure.**
-  The BRAM tracer's capture window skipped `window * 256` events. Windows 0, 8 and 15 (skips of
-  0, 2048, 3840 — all multiples of 256) returned *byte-identical* 128-entry captures. That is
-  consistent with two completely different faults: a CPU resetting every 256 reads, or a ROM read
-  path aliasing every 256 words. A sampling step that is always a multiple of 256 lands on a
-  period boundary of **any** stream whose period divides 256, so it cannot separate them. The step
-  is now `window * 8191` — odd, so it cannot alias with a power-of-two period. When a probe gives
-  the same answer at every setting, suspect the probe's step before believing the answer.
-- **Truncating an address in the capture destroys the distinction between "progressing" and
-  "stuck".** Packing only `addr[7:0]` into the 24-bit pixel made a genuine linear sweep through
-  ROM (low bits wrapping every 256 words) look exactly like a read path dropping its high address
-  bits. Capture the *full* address — if it does not fit alongside the data, use two buffers
-  strobed by the same event, so entry N of each describes the same bus cycle.
+### Read both halves of a mechanism before changing it
 
-## Check whether a measurement is arithmetically exact
+Sprite depth ordering was inverted on the strength of MAME's draw loop alone
+(`while (sprite_ptr != m_spritelist.get()) { sprite_ptr--; ... }` reads as "draws backward, so entry
+0 lands on top"). Never checked: `sprite_frame_buffer`'s `write_en` is unconditional so later writes
+win, and the *append* side of `get_sprites()`, which decides the net order. Hardware inverted; the
+change was reverted. Half a mechanism is enough to build a confident wrong change.
+
+### Read the framework's source instead of inferring its behaviour
+
+DIP switches were assumed to arrive through the status word, and two fixes were built on that
+assumption -- a `.CFG` generator and a `base="16"` attribute on `<switches>` -- both invented. One
+read of `Main_MiSTer`'s `mra_loader.cpp` showed DIPs arrive as an ioctl download with index 254,
+saved to `config/dips/<mra name>`, and that `<switches>` has no `base` attribute because
+`hexstr_to_char()` is always hex.
+
+### Copy a driver's register expression including its operators
+
+`psikyo_v.cpp` enables a layer with `m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);`.
+`vreg_decode.sv` had `assign layer0_enable = l0_ctrl[0]` -- right bit, wrong sense -- so both layers
+were off for every value the game writes, the compositor fell through to backdrop, only sprites
+appeared, and the search went into fetch paths and VRAM contents. Where MAME writes `~x & 1`,
+`!(x & 1)` or `x & 8 ? 0 : 15`, carry the sense across and comment it: a polarity error passes review
+because the bit index looks correct.
+
+### Make the hardware report its own state rather than re-reading the RTL
+
+That polarity bug was found by extending the debug overlay to dump the video-register RAM. One
+screenshot showed the control word the CPU had written (`0x00D0`, bit 0 clear) beside the core's
+decoded `layer_enable` of 0. Dump the register, not the intent.
+
+### Prefer a hypothesis that predicts the number exactly
 
 Tilemaps rendered correct content across exactly 28 columns of every scanline, backdrop for the
-remaining 292, with the sticky `fetch_overrun` flag set. That was chased as a memory-bandwidth
-problem: SDRAM contention, arbiter priority, prefetch depth, sprite engine starving the tilemap
-ports. It was none of those.
-
-`tilemap_line_engine` had no `ce_pix` port. Its display side advanced one pixel per `clk`
-(85.909 MHz) instead of per pixel clock (85.909/12 = 7.159 MHz), draining each line's prefetched
-tiles twelve times too fast:
+other 292, with `fetch_overrun` set. Chased as memory bandwidth (contention, arbiter priority,
+prefetch depth). Cause: `tilemap_line_engine` had no `ce_pix` port, so its display side advanced one
+pixel per `clk` (85.909 MHz) instead of per pixel clock (85.909/12 = 7.159 MHz).
 
 ```
 21 tiles x 16 px = 336 pixels, one per clk = 336 clk cycles
 336 / 12 clk-per-pixel                     = 28 displayed pixels
 ```
 
-The content was always correct; it was consumed 12x too early, and `fetch_overrun` was a real
-symptom of over-consumption rather than under-supply.
+28 of 320 is not "about an eighth", it is 336/12, and that division identifies the cause. Contention
+would give a ragged, load-dependent boundary, not the same column every line. Corollary: any module
+feeding the compositor directly must consume at `ce_pix`; only a module rendering a frame ahead into
+a buffer (the sprite path) may run at full clock.
 
-28 of 320 is not "about an eighth", it is 336/12, and that division identifies the cause. A
-hypothesis that predicts the number exactly is worth more than one that explains the shape of
-the symptom: contention would give a ragged, load-dependent boundary, not the same column on
-every line.
+### Do not re-guess a sign from the reasoning that produced the wrong one
 
-Corollary: any module feeding pixels to the display must consume at `ce_pix`, not `clk`. The
-sprite path renders a frame ahead into a buffer and may run at full clock; the tilemap engines
-feed the compositor directly and may not.
+A one-tile X offset on both layers was patched with -16 on `base_x_scroll`, derived from
+`tilemap_x(screen_col) = base_x_scroll + screen_col*16`. Hardware moved the wrong way. The patch was
+removed rather than flipped: the derivation was internally consistent and still wrong, so +16 would
+be a second guess wearing the first guess's confidence. The real cause was a `gfxrom_req`/
+`gfxrom_valid` handshake bug -- not a scroll constant, not addressing math.
 
-## A locally correct fix can still break a shared resource
+### Add runtime A/B switches when the alternative is a rebuild per bisection step
 
-`sprite_frame_buffer`'s header asks the caller to pulse `frame_swap` at vblank and wait for
-`swap_done`. Doing exactly that stopped the core booting: the CPU ended up on the boot's
-`bra.s *` stub at 0xB5E with the video registers never programmed. Holding the render start
-across frames left the engine rendering back-to-back, and it shares the SDRAM arbiter with CPU
-program fetches.
+Following `sprite_frame_buffer`'s documented contract (pulse `frame_swap` at vblank, wait for
+`swap_done`) stopped the core booting: holding render start across frames left the engine rendering
+back-to-back, and it shares the SDRAM arbiter with CPU program fetches. A locally correct fix can
+starve a shared resource. It was isolated without rebuilding, using OSD render-disable switches:
+forcing both tilemap layers off in the same bitstream still hung, excluding the tilemap change and
+the instrumentation and leaving only the sequencing change.
 
-It was isolated without rebuilding, using the OSD render-disable switches: forcing both tilemap
-layers off in the same bitstream (overlay off, so nothing was borrowing a memory port) still
-hung, which excluded the tilemap enable change and the debug instrumentation and left only the
-sequencing change. Runtime A/B switches are worth adding when the alternative is a 12-minute
-build per bisection step.
+### A swap is not a copy
 
-## Copy the polarity, not just the bit position
+`spriteram_dbuf` ping-ponged two banks, arguing this was equivalent to MAME's copy as long as the
+CPU never touches the render-role bank. That condition held and the claim was still wrong: under
+ping-pong the CPU's view alternates between two memories, so any entry it does not rewrite every
+frame reads back what was written two frames ago -- including the display list's end-of-list marker.
+A long frame that missed the marker inherited a stale one further down and rendered far more
+sprites, compounding under load. A real copy removed the ghosting and the per-scene sprite freeze.
 
-`psikyo_v.cpp` enables a tilemap with
+## ROM loading: .mra, byte order, deployment
 
-```c
-m_tilemap[layer]->enable(~layer_ctrl[layer] & 1);
-```
+### Prove the interleave against MAME's disassembly offline, before building
 
-`vreg_decode.sv` had `assign layer0_enable = l0_ctrl[0]` — the right bit, read the wrong way
-round — so both layers were held off for every value the game writes. The compositor fell
-through to backdrop on every pixel and only sprites appeared, which looks like a rendering
-failure and sent the investigation into the fetch path, addressing and VRAM contents.
-
-Everything else in that path was verified correct at the same time: `tile_scan` for all four
-size modes (each reduces to row-major once masked with `tile_index & 0xfff`), the six vreg
-offsets (`0x402/0x406/0x412`, `0x40a/0x40e/0x416`), the control bit positions,
-`get_tile_info`'s tile/colour split, and the rowscroll table layout
-(`vregs[(layer*0x200)/2 + (i >> tile_rowscroll)]`, word indices, indexed by the raw scanline).
-
-When transcribing a driver's register semantics, copy the expression including its operators.
-Where MAME writes `~x & 1`, `!(x & 1)` or `x & 8 ? 0 : 15`, carry the sense across and note it
-in a comment: a polarity error is invisible in review because the bit index looks correct.
-
-It was found by making the hardware report its own state, not by re-reading the RTL. The debug
-overlay was extended to dump the video-register RAM (borrowing `vreg_decode`'s rowscroll read
-port while the overlay is up, since the picture is discarded anyway). One screenshot showed the
-control words the CPU had written — `0x00D0`, bit 0 clear — next to the core's decoded
-`layer_enable` of 0. Dump the register, not the intent.
-
-## A hardware-vs-image comparison cannot detect a wrong image
-
-A hardware trace of CPU ROM reads was checked against the ROM image assembled from the `.mra`
-and matched 128/128, reported as "the SDRAM read path is verified sound". It was — but the same
-measurement was also taken as evidence the `.mra` was right, and it cannot show that: both sides
-of the comparison were built from the same assumption about byte order. A wrong map is invisible
-to it.
-
-The reset vector had to be byte-swapped in the analysis script to make it match MAME
-(`SP=FFFF8000 PC=00000400`). That swap was written off as a capture artifact. It was real: the CPU
-genuinely received `PC=0x00000004`, jumped to address 4, executed the **vector table as code**,
-hit an illegal instruction, and looped forever fetching vector 4. The "sequential sweep from
-address 0" that looked like the boot ROM checksum was actually the CPU running off the end of the
-vector table.
-
-**Use an independent oracle.** MAME's disassembly is one:
+"It boots" is weak evidence -- a wrong map can boot far enough to look plausible. Every interleave
+here that was *derived* by reasoning about byte order was wrong; the working maincpu map came from
+copying a shipped core's idiom (`Bucky O'Hare.mra`). Reconstruct known words from the ROM files and
+score them against MAME's disassembly:
 
 ```
 000404: lea $ffff7000.l,A0   -> 41F9 FFFF 7000
@@ -181,723 +112,646 @@ vector table.
 000410: movec D0,CACR        -> 4E7B 0002
 ```
 
-Reconstructing those exact words from the two ROM files scores 18/18 for one interleave model and
-5/18 for the other, offline, in seconds, with no hardware involved. Do that **before** building.
+18/18 for one interleave model, 5/18 for the other -- offline, in seconds, no hardware.
 
-## MiSTer caches the loaded ROM -- an .mra edit alone does nothing
+### Treat the map-digit rule as mechanical and check it, do not reason about it
 
-Deploying a corrected `.mra` and re-launching produced a byte-identical trace, which nearly led to
-the fix being discarded as ineffective. Re-launching a game that is already loaded reuses the ROM.
-Force a genuine reload by bouncing through the menu first:
+mra-tools-c decrements each map digit and emits bytes in that order, so `map="12"` is a pairwise
+SWAP and `map="21"` is verbatim.
+
+| MAME region macro | `.mra` form |
+| --- | --- |
+| `ROM_LOAD16_WORD_SWAP` | `<interleave output="16">` with `map="12"` |
+| plain `ROM_LOAD` | bare `<part>`, no interleave |
+
+Getting this backwards un-swaps tile ROMs silently: six `_alternatives` MRAs emitted tiles as a bare
+`<part>` while their sprites were correctly swapped, rendering tile layers as garbage while sprites
+looked fine. The inverse trap is real too -- tengai's gfx genuinely is plain `ROM_LOAD`, so its bare
+parts are correct and must not be "fixed".
+
+### Do not "fix" a loader or file format without hardware evidence of wrong bytes
+
+The maincpu interleave was rewritten on a mental model predicting a corrupt stack pointer. Every
+test that seemed to indict it had run against an SDRAM that was never written -- garbage compared
+against garbage. The rewrite was also inert: swapping the four-digit maps produced byte-identical
+hardware output, i.e. the loader ignored them.
+
+### Verify content against a hardware trace, and know what that does not prove
+
+`scripts/verify_rom_trace.py` takes a decoded on-hardware trace of ROM reads plus the ROM zip,
+brute-forces the plausible interleaves, and reports which reproduces the observed data exactly. It
+returned 128/128 for the shipped maincpu map, simultaneously proving the SDRAM read path returns
+byte-perfect data at those addresses. It verifies *content*, not *address reach*: the trace address
+is truncated, so a path aliasing high address bits still scores 100%.
+
+### A hardware-vs-image comparison cannot detect a wrong image
+
+An earlier 128/128 match of a hardware trace against the image assembled from the `.mra` was also
+taken as evidence the `.mra` was right. It cannot be -- both sides were built from the same
+byte-order assumption. The tell was dismissed: the reset vector had to be byte-swapped in the
+analysis script to match MAME's `SP=FFFF8000 PC=00000400`, written off as a capture artifact. It was
+real. The CPU received `PC=0x00000004`, executed the vector table as code, hit an illegal
+instruction and looped; the "sequential sweep from address 0" that looked like a boot checksum was
+the CPU running off the end of the vector table.
+
+### List `<rom index="1">` before `<rom index="0">` when a mod byte gates download-time logic
+
+The mod byte is sent in file order and `mod_board` powers up 0 on every FPGA reprogram. Listed after
+`<rom index="0">`, any download-time consumer of it (here `needs_adpcma_swap`) sees 0 for the whole
+download and silently does nothing; a runtime-only consumer never exposes this. The swap logic,
+transform and address window were all verified correct while the feature did nothing at all -- the
+gate opened after the data had passed. Confirmed by ear on hardware, same bitstream, byte last vs
+first.
+
+### Gate every deploy on an XML well-formedness check
+
+An edited comment block left a `-->` that had already closed the comment, so new prose landed as
+character data -- containing `<- u127`. A bare `<` is illegal XML, MiSTer rejected the file, and the
+result was: DIPs gone from the OSD, ROM never loaded, core up on an all-zero image, black screen.
+Every symptom pointed at the RTL; the only clue was an on-screen "XML parse" message.
+
+```bash
+python scripts/validate_mra.py "releases/*.mra" && <copy to device>
+```
+
+That script also flags stray element text, which is how a prematurely-closed comment shows up.
+MiSTer's parser is *more lenient* than a strict one (this file carried `--` inside comments and two
+leaking comment blocks for a long time), so "it loaded before" is not evidence of well-formedness.
+
+### Force a genuine reload when testing an `.mra` change
+
+Re-launching an already-loaded game reuses the cached ROM, so an `.mra` edit alone produces a
+byte-identical trace -- which nearly caused a correct fix to be discarded. Bounce through the menu:
 
 ```
 POST /api/launch {"path":"/media/fat/menu.rbf"}   # then wait
 POST /api/launch {"path":"/media/fat/_Arcade/.../Game.mra"}
 ```
 
-## Writing a .CFG by hand rewrites the DIP switches
+### Put the `.rbf` in the top-level cores directory
+
+`.mra` files reference it via a bare `<rbf>Arcade-Psikyo</rbf>` tag and MiSTer resolves it by
+prefix-matching filenames in `/media/fat/_Arcade/cores/` only, not a path relative to the `.mra`. A
+misplaced `.rbf` gives a silent flash-and-return-to-menu, before ROM loading begins.
+
+### Do not hand-write a `.CFG`
 
 `/media/fat/config/<setname>.CFG` is the whole 128-bit status word, little-endian (byte N holds
-`status[8N+7:8N]`). Writing 16 bytes with only a debug bit set zeroes every DIP switch, because
-the `.mra`'s `<switches>` bytes live in that same word. For this core that turned Service Mode on
-(bit 23, ids `On,Off`), which is not obvious from the screen.
+`status[8N+7:8N]`), and the `.mra`'s `<switches>` bytes live in that same word (byte0 ->
+`status[23:16]`, and so on upward). Writing 16 bytes with only a debug bit set zeroes every DIP,
+which here silently enabled Service Mode. Use a read-modify-write script; the hand-written mistake
+was made twice. Per-game defaults come from each `.mra`'s own `<switches default="...">` -- that
+attribute is the authority, not prose in a doc. A DIP value that looks harmless can hang a game:
+gunbird's boot polls `$C00004` bit 7 and spins until it clears, so a `0xFF` region byte never boots.
 
-The mapping, established by measurement and confirmed against `psikyo.cpp`:
+### Make the all-zero configuration the correct one
 
-* `<switches>` bytes start at `status[16]`: byte0 -> `status[23:16]`, byte1 -> `status[31:24]`,
-  byte2 -> `status[39:32]`.
-* (`Psikyo.sv` has since stopped reading DIPs from the status word at all — they arrive as an
-  ioctl-254 download into a `dip_sw` register, see `docs/mister_framework_notes.md` — but the
-  `.CFG`'s DIP bytes still matter empirically: zeroing them turned Service Mode on again on
-  2026-08-29, so the caution stands.)
-* Per-game default bytes 2-4 now live in `scripts/write_cfg.py`'s `DIP_DEFAULTS`, taken from
-  each `.mra`'s own `<switches default="...">` — the authority, NOT this doc's prose: samuraia
-  `FD,FF,FF`, gunbird `FD,FF,0F`, btlkroad `FD,FF,00` (the last byte is the region jumper; an
-  earlier version of this list wrongly gave gunbird `FF` there).
+A fresh or missing `.CFG` is all zeroes, so any OSD option whose enabled state is required for
+correct behaviour must be bit-inverted with its OSD order written to match (here `status[51]`,
+"Sound IRQ", listed `On,Off`). Otherwise every first-run user gets the degraded path.
 
-Use `scripts/write_cfg.py` (read-modify-write, `--repair-dips`, `--reset` with per-game
-defaults) rather than hand-writing the file — the hand-written mistake was made twice.
-Note that a value which merely looks harmless can hang a game: gunbird's boot polls `$C00004`
-bit 7 and spins until it clears, so a `0xFF` region byte never boots.
+## MiSTer integration: reset and ioctl download
 
-## A malformed .mra looks exactly like a core regression
+### Never hold the memory path in the core reset
 
-An edited comment block left a `-->` that had already closed the comment, so the new prose landed
-in the document as character data -- and it contained `<- u127`. A bare `<` is illegal XML, MiSTer
-rejected the file, and the result was: DIP switches gone from the OSD, ROM never loaded, core up on
-an all-zero image, `SP=PC=00000000`, black screen. Every symptom pointed at the RTL. The only clue
-that it was the `.mra` was the on-screen "XML parse" message.
+MiSTer holds core `RESET` asserted for the ENTIRE ROM download, so anything in the memory path that
+resets on `RESET` is dead for the whole transfer. Passing the core's composite reset into the SDRAM
+backend pinned `sdram_download`'s FSM in `D_IDLE`: `dl_req` never asserted, the arbiter never
+selected the download path, and not one `CMD_WRITE` reached the chip -- while the HPS delivered all
+`0xE00000` bytes and the FSM's accept condition looked perfect. SDRAM was never written; every read
+returned power-up contents.
 
-`scripts/validate_mra.py` now checks well-formedness AND flags stray element text (which is how a
-prematurely-closed comment shows up). Gate every deploy on it:
+Keep two reset domains: `core_reset = reset | ioctl_download` gates CPU and video only; the memory
+backend keeps the plain `reset`. Signature: a downstream FSM stuck in idle while its trigger input
+is visibly pulsing correctly.
 
-```bash
-python scripts/validate_mra.py "releases/*.mra" && <copy to device>
+### Measure at the pins, not at the intent
+
+The decisive measurement for the reset bug was counting real commands on
+`{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE}` (`CMD_WRITE = 3'b100`) -- top-level signals. Delivery counters
+and FSM accept-condition counters both looked perfect; only the pin count revealed zero writes.
+Measure the last observable stage, never an internal signal that merely implies it.
+
+## Memory transport: req/valid contracts, latency, byte order
+
+### Give a registered RAM its full read latency before consuming the data
+
+An FSM that registers a RAM address in one state and reads the data in the next state gets the
+PREVIOUS address's data: the RAM only samples the address at the end of the state that set it, so
+the result is not valid until one state later. This is the same stale-read class as the duplicate
+transaction below, and it is easy to write because the code reads as if the address were applied
+combinationally.
+
+The row-scroll table showed it: every scanline was scrolled by its PREDECESSOR's table entry,
+because `S_ROWSCROLL_WAIT` consumed `rowscroll_data` the cycle after latching `rowscroll_addr`. A
+smoothly varying table hides this completely -- it only becomes visible where consecutive entries
+differ sharply, so it can sit unnoticed in games whose scroll changes gradually. The port's own
+comment already documented "1-cycle synchronous read latency"; the FSM simply did not honour it.
+
+Two habits that catch it: state the latency in the port comment AND spend the wait state, and
+write the testbench RAM model as a registered read (`always_ff ... rdata <= mem[addr]`) so a
+behavioural model cannot mask it. A testbench that never exercises the feature is the other half
+of the problem -- the existing line-engine bench ran with row-scroll disabled throughout, so this
+path had no coverage at all.
+
+### Deassert a request combinationally on `valid`
+
+`tilemap_line_engine` cleared `gfxrom_req` one clock AFTER `gfxrom_valid` (registered clear in
+`S_GFXROM_WAIT`), while `sdram_phy.sv` returns to `S_IDLE` on the valid cycle itself and samples the
+still-high stale request -- launching a duplicate transaction for the address it just served. Every
+later response the engine consumed belonged to the previous request: position N rendered cell N-1's
+tile shape with N's own correctly latched colour, appearing as a one-cell offset plus a
+wrong-palette bug. Deterministic protocol bug, not a timing violation.
+
+```systemverilog
+assign gfxrom_req = gfxrom_req_r & ~gfxrom_valid;
 ```
 
-Note MiSTer's own parser is *more lenient* than a strict one: this file had `--` inside comments
-and two other comment blocks leaking text for a long time without complaint. Leniency varies by
-malformation, so do not treat "it loaded before" as evidence the file is well-formed.
+Proved by `tb_tilemap_screen_sdram.sv`, which reproduced the hardware screen pixel-for-pixel and
+whose transaction trace showed the phy serving the previous request's address from the second fetch
+of every line. Live JTAG ISSP pokes into VRAM with the CPU paused had already established the
+chained N/N+1 dependency in two games.
 
-## Verify ROM interleave against hardware, not against "it boots"
+### Hold every request until acknowledged
 
-Every `.mra` interleave map for this core that was *derived* by reasoning about byte order was
-wrong; the working maincpu map was found by copying the idiom from a shipped core
-(`Bucky O'Hare.mra`). "It boots" is weak evidence — a wrong map can still boot far enough to look
-plausible.
+A request/ack round-robin arbiter needs every port on a hold-until-acknowledged contract, not a
+one-shot pulse: a pulse arriving while the arbiter services another client is silently lost. Applies
+uniformly across `ddram_arbiter`, `sdram_arbiter5` and the HPS download path -- `ioctl_wr` from
+`hps_io` is a genuine one-shot and needs a wrapper (`sdram_download.sv`) converting it with
+`ioctl_wait` backpressure.
 
-`scripts/verify_rom_trace.py` closes this properly: it takes a decoded on-hardware trace of ROM
-reads and the original ROM zip, brute-forces the small space of plausible interleaves, and reports
-which one reproduces the observed data **exactly**. For maincpu it returned **128/128** for
-"even word ← `4-u127.bin`, big-endian within part", confirming the shipped map
+### Treat any direct, non-arbitrated connection to a req/valid transport as suspect
 
-```xml
-<interleave output="32">
-    <part name="4-u127.bin" map="0021"/>
-    <part name="5-u126.bin" map="2100"/>
-</interleave>
+`sdram_phy.sv` asserts `valid` and returns to `S_IDLE` on the same cycle. Arbitrated consumers get a
+cycle of margin because `c_valid` asserts one cycle before the arbiter's own state returns to idle;
+a single-client port wired straight to the phy ("no arbiter needed for one client") skips it. Sprite
+gfxrom's dedicated Port 1 did exactly that and silently returned the previous transaction's stale
+data under contention -- not a hang, just wrong data, read on hardware as sprite corruption. Fixed
+with a single-client pulse shim (`SP_IDLE`/`SP_ISSUE`/`SP_WAIT`) reproducing the arbiter's margin.
+Third occurrence of this defect class in one project.
+
+### Clear a request-tracking flag on the bus cycle ending, not on the data-valid pulse
+
+A `rom_pending`-style flag must clear when the CPU's bus cycle actually ends, if the CPU can hold it
+open longer than the fetch (real 68k cycles hold `as_n` low for several cycles after DTACK
+releases). Clearing early fires a spurious second request for data already latched; under
+multi-client contention another client can win that slot and overwrite a shared read-data register
+before the original cycle finishes. Symptom looked like SDRAM corruption; cause was the CPU
+wrapper's own request lifecycle. Check every request-tracking flag against the bus protocol's cycle
+length, not its own "data arrived" signal.
+
+### Capture read data on the valid pulse -- nothing in the path latches it
+
+The whole path from `sdram.sv`'s `dout` to the CPU data bus is combinational and valid is a
+one-cycle pulse: `dout0`/`dout1`/`dout2` come from one shared register (upstream does this too),
+`sdram_arbiter5` assigns `c*_data`/`c*_valid` combinationally, and `sdram_narrow_bridge` selects its
+word with no register anywhere. `maincpu.sv` got away with reading combinationally only because
+TG68K.C re-captures `DATA` on every clock edge while parked in a wait state, so the one-cycle window
+always landed -- an alignment that holds by exactly one cycle. **Any change to how often a consumer
+samples (a clock enable, another clock domain, an extra pipeline stage) requires latching both the
+data and the ready/DTACK level first.** Fixed with `rom_data_l`/`rom_ready` held until the CPU drops
+`as_n`; once captured, the word cannot be clobbered by another port.
+
+`dout0`/`dout1`/`dout2` being literally the same register makes this a correctness requirement, not
+a style point: sampling later than your own valid/ack cycle reads another port's in-flight data.
+Testbenches must obey the same discipline -- one that samples outside each port's ack-triggered
+branch shows 100% failures that look like an RTL bug.
+
+### DTACK/ready must be a held level, never a pulse, for any clock-enabled CPU
+
+A core stepping at 16 MHz inside an 85.909091 MHz fabric looks at DTACK about once every 5.4 cycles;
+a one-cycle assertion is missed on nearly every access and the bus cycle hangs forever. Check every
+ready/ack feeding a gated core before enabling the gate.
+
+### Fix byte order at the seam, with a dedicated adapter
+
+Endianness bugs live at the seam between two independently correct modules. `sdram.sv`'s burst
+capture packs bytes in ascending-address order; gfx-ROM consumers assumed MAME's MSB-first format;
+the maincpu program ROM needs big-endian while `sdram_narrow_bridge.sv`'s generic word path is
+little-endian (correct for genuinely little-endian regions like spritelut). Add a small adapter at
+each seam rather than changing a shared module's convention out from under its other, correct
+consumers. Any test using uniform or all-zero content is invariant under byte order and cannot catch
+this: use synthetic data for a cheap wiring smoke test, but budget a real-content integration test
+before trusting the result.
+
+### Choose SDRAM over DDRAM for hard real-time fetch budgets
+
+MiSTer's docs describe `DDRAM_*` as for "non-critical time purposes", with latency that can far
+exceed the typical ~20 cycles and an unbounded worst case. `tb_video_pipeline_ddram.sv` measured ~26
+combined cycles against a 16-cycle-per-tile budget under two-consumer contention. `SDRAM_*` gives
+three independent ports at bounded ~6-7 cycles. If a design starts on DDRAM for convenience, budget
+time to pivot rather than patching throughput afterwards.
+
+### Verify a burst extension against a command-decoding chip model, not a latency stub
+
+Adding burst-4 to a controller with no burst support needs a model that decodes
+`nRAS`/`nCAS`/`nWE`/`SDRAM_A`. That caught three bugs: the row/column address split needed swapping
+(a hardware burst auto-increments the *column*, so four consecutive word addresses must land in four
+consecutive columns of the same row -- the non-bursting upstream had it the other way, which only
+matters once bursting exists); the chip model silently ignoring the `DQML`/`DQMH` write mask; and an
+off-by-one in burst-read CAS timing (a dropped `+1` registration-delay margin).
+
+### Size a prefetch buffer for correlated consumers, not average bandwidth
+
+Two tilemap layers with identical scanline timing request in near-lockstep, so a 2-entry ping-pong
+buffer absorbs only one simultaneous loss and roughly one tile in five stalled. A parameterized
+N-entry ring buffer (interface unchanged) absorbed them. That is a fix for the tested contention
+pattern, not a guarantee; an independent fetch-ahead domain or pipelined controller remains the
+complete answer.
+
+## When simulation passes and hardware fails
+
+### Re-run the failing case with the production transport in place of behavioural models
+
+The `gfxrom_req` duplicate transaction fired in module-level simulation too, but the short-latency
+behavioural ROM model returned its response while the FSM was between states, so it was silently
+dropped. The real controller's ~12-cycle latency lands the duplicate in the next wait state, where
+it corrupts the result. That is why every module-level sim passed while hardware failed. The
+testbench that found it wired `psikyo_sdram_top` verbatim plus `sdram_chip_model_wide` into the
+screen path. When sim and hardware disagree and timing is clean, swap behavioural models for the
+real transport stack before blaming synthesis.
+
+### Ask of every stimulus whether it is the shape the real system produces
+
+`tb_maincpu.sv` pulsed `vblank` for one clock; hardware holds it for the whole 38-line blank
+(~205,000 clk_sys cycles). That hid a genuine `maincpu.sv` bug for the whole project: the IRQ logic
+was `if (vblank) set; else if (iack) clear;`, giving *set* priority, so an acknowledge arriving
+while vblank was still high -- always the case on hardware -- was discarded. `irq_pending` never
+cleared, `ipl` stayed at 4, and the CPU re-entered the ISR after every `RTE`. With a one-clock pulse
+the acknowledge always landed after vblank fell, so the test passed every time.
+
+Same blind spot, two siblings: a testbench drives its own reset and download sequencing, so it never
+reproduces MiSTer holding RESET across a transfer, and `ioctl_index` was hardcoded to 0 so an index
+mismatch could never surface.
+
+### Give a held interrupt line's acknowledge priority
+
+Match MAME's `irq4_line_hold`: assert on the rising edge of the source, hold until acknowledged, and
+give the acknowledge priority. Ask of every level-sensitive input whether it is still asserted when
+the consumer responds; if so, set-vs-clear priority is a real design decision.
+
+### Check static timing before pursuing any hardware-vs-simulation divergence
+
+The cheapest check, and it was skipped for days. See "Timing closure".
+
+## Testbench discipline
+
+- **Use `do @(posedge clk); while (signal);`, never `while (signal) @(posedge clk);`.** The latter
+  races an `always_ff` updating the same signal on the same edge and either deadlocks on a signal
+  that already cleared or returns before a transaction started. Recurred independently in
+  `ddram_phy_tb`, the `sdram_download` integration test and the `psikyo_sdram_top` integration test
+  before being recognised as systemic.
+- **Grep the log for `readmem` before touching RTL when a testbench fails wholesale.** `vsim`
+  launched from the wrong directory made `$readmemh` find nothing, the ROM stayed all zeroes, and
+  every check failed -- reading exactly like a catastrophic RTL regression. ModelSim reports it as
+  `** Warning: (vsim-7) Failed to open readmem file`, not an error. Failure in *every* check rather
+  than one is the signature.
+  The underlying cause is that `$readmemh` paths are relative to the simulator's CWD, not the
+  testbench file: `tb_maincpu.sv` must run from the repo root, `tb_psikyo_core.sv`/`tb_psikyo_top.sv`
+  from their own subdirectory plus `vmap work ../../work`.
+- **Write preloaded vectors and tables AFTER `$readmemh`, never before.** `tb_maincpu.sv` installed
+  the level-4 autovector at byte `0x70`, then `$readmemh`'d an image spanning that address whose
+  empty `0x70`-`0xFF` region zeroed it. The CPU took the interrupt correctly, fetched the correct
+  vector address, read zero, jumped to `0x00000000` and executed zeroes into an illegal instruction.
+  This was recorded for weeks in two documents as a TG68K.C exception microcode bug and used as the
+  standing reason interrupts "could not be trusted".
+- **Confirm which column is address and which is data before blaming a CPU.** The trigger for that
+  wrong conclusion was reading `0x00000000` in a bus trace as the fetch address; it was the *data*
+  read back from the correct address `0x70`. Suspect a zeroed vector table long before microcode.
+- **Do not assert on a sticky error output that has a benign first trigger.** `fetch_overrun` fires
+  unavoidably on the first active line after reset (no prior hblank to prefetch into) and once
+  latched is indistinguishable from a real later failure. Replicate the DUT's trigger condition with
+  a non-sticky per-cycle check instead.
+- **Re-run the regression on a clean stash before debugging your change.** A missing or stale
+  fixture looks identical to a real regression; `git stash` plus a re-run rules it out cheaply.
+- **Write a smoke test (elaborate, run N cycles, check for crash and X-propagation) before a
+  functional test** on any new top-level integration -- it catches port-width and wiring mistakes
+  cheaply.
+
+## Timing closure
+
+### Open the STA summary before believing any hardware-vs-simulation divergence
+
+Quartus reports "Fitter was successful" on a design that grossly fails timing; nothing in the
+default flow fails, warns loudly, or blocks the `.rbf`. This project shipped an `.rbf` whose main
+clock domain had -8.879 ns setup slack and -21,031 ns TNS -- thousands of failing endpoints, a worst
+path nearly twice the clock period -- while every log line said "successful" and "0 errors". It
+appears only in `output_files/<rev>.sta.summary` / `<rev>.sta.rpt`, which nothing forces you to open.
+
+### Read the Fmax Summary first
+
+`emu|pll|...divclk : 48.74 MHz` against an 85.909091 MHz clock is instantly diagnostic and needs no
+path analysis. It is the highest-value number in the report.
+
+### Treat "correct in sim, wrong on hardware, reproducible, insensitive to interface tuning" as a timing violation until proven otherwise
+
+The symptom set was: boots but reads back wrong data; roughly half of golden-ROM comparisons
+mismatch; reproducible across power cycles; unaffected by SDRAM_CLK phase; 100% correct in ModelSim
+with identical ROM data. All of those are also what a timing failure produces -- deterministic
+because placement is fixed per `.rbf`, phase-independent because the failing paths are internal
+fabric the memory clock never touches, invisible in RTL simulation because simulation has no
+propagation delay. Interface tuning (clock phase, drive strength, IOE registers) only moves
+*external* margins by a fraction of a clock period; if a change that size makes no difference at
+all, the problem is not at the interface.
+
+### Discard measurements taken while the design fails timing
+
+The "~51% of ROM words match" figure and the original SDRAM_CLK phase sweep were both taken while
+the entire clk_sys domain failed by 8.9 ns, and both were used to rule the memory interface *out*.
+Re-run any measurement that predates a timing fix.
+
+### Get the failing paths with a `quartus_sta` Tcl run
+
+The default `.sta.rpt` has only summaries, and the Timing Closure Recommendations panel is HTML-only
+so it is empty in the text export. See `scripts/sta_failing_paths.tcl`:
+
+```tcl
+project_open Psikyo -revision Psikyo
+create_timing_netlist
+set_operating_conditions 7_slow_1100mv_100c   ; # NOT -slow_model / -speed 7
+read_sdc
+update_timing_netlist
+report_timing -setup -npaths 50 -detail summary -from_clock $ck -to_clock $ck -file out.rpt
 ```
 
-and simultaneously proving the SDRAM read path returns byte-perfect data at those addresses. Use
-the same technique on the still-unverified gfx maps (`u14.bin`, `u34.bin`, `u35.bin`, all carrying
-a guessed `map="21"`) rather than reasoning about them again.
+`create_timing_netlist -speed 7 -slow_model` is rejected outright, and the useful error ("Values
+entered did not match any valid operating conditions") appears above the generic Tcl failure. Run
+`-detail summary` first: 50 summary rows immediately showed every failing path shared one module,
+which full-path detail would have buried.
 
-Note what it does **not** prove: the trace address is truncated, so it verifies *content*, not
-*address reach*. A path that aliases high address bits still scores 100%.
+### Never let a multicycle constraint touch a posedge-to-negedge path
 
-## Static timing analysis (check this FIRST on any hardware-vs-simulation divergence)
+A constraint matching `{*TG68K:*|*}` sweeps the wrapper's falling-edge registers into the collection
+and grants a HALF-cycle path (~5.8 ns at 85.909091 MHz) two or four FULL cycles -- up to ~46 ns. The
+Fitter routes it that slowly, the timing report stays clean, and the design fails only on silicon.
+Two registers caught this way were `waitm` (the DTACK sample) and `data_akt_e` (which gates the DATA
+tri-state), so relaxing them corrupts bus handshaking directly. If a multicycle is needed at all,
+scope it to a block verified single-edge and explicitly `remove_from_collection` every falling-edge
+register from BOTH ends.
 
-- **Quartus reports "Fitter was successful" on a design that grossly fails timing. Nothing in the
-  default build flow fails, warns loudly, or blocks the `.rbf`.** This project shipped an `.rbf`
-  whose main clock domain had **−8.879 ns setup slack and −21,031 ns TNS** — thousands of failing
-  endpoints, a worst path nearly twice the clock period — while every log line said "successful"
-  and "0 errors". The only place it shows up is `output_files/<rev>.sta.summary` /
-  `<rev>.sta.rpt`, which nothing forces you to open.
-- **The single highest-value number is the Fmax Summary.** `emu|pll|...divclk : 48.74 MHz` against
-  an 85.909091 MHz clock is instantly diagnostic and needs no path analysis to interpret. Read it
-  before doing *anything* else when hardware and simulation disagree.
-- **This failure mode looks exactly like a memory-corruption bug, and will send you chasing one.**
-  The symptom set was: boots but reads back wrong data; ~51% of golden-ROM comparisons mismatch;
-  perfectly reproducible across power cycles; completely unaffected by SDRAM_CLK phase shift; and
-  100% correct in ModelSim with identical ROM data. Every one of those is *also* what a timing
-  failure produces — deterministic because placement is fixed per-`.rbf`, phase-independent
-  because the failing paths are internal fabric logic that the external memory clock never
-  touches, and invisible in RTL simulation because simulation has no propagation delay. Days were
-  spent on SDRAM pin audits, PLL phase sweeps, and controller review, all of which came back
-  clean, before the timing report was opened.
-- **Rule of thumb: "correct in ModelSim, wrong on hardware, reproducible, and insensitive to
-  interface tuning" is a timing violation until proven otherwise.** Interface tuning (clock phase,
-  drive strength, IOE registers) only moves *external* margins by a fraction of a clock period. If
-  a change of that size makes no difference at all, the problem is almost certainly not at the
-  interface.
-- **Getting the actual failing paths requires a `quartus_sta` Tcl run** — the default `.sta.rpt`
-  contains only summaries, and the "Timing Closure Recommendations" panel is HTML-only and
-  therefore empty in the plain-text export. See `scripts/sta_failing_paths.tcl`:
+### Know that the stock MiSTer `.sdc` constrains nothing external
 
-  ```tcl
-  project_open Psikyo -revision Psikyo
-  create_timing_netlist
-  set_operating_conditions 7_slow_1100mv_100c   ; # NOT -slow_model / -speed 7, see below
-  read_sdc
-  update_timing_netlist
-  report_timing -setup -npaths 50 -detail summary   -from_clock $ck -to_clock $ck -file out.rpt
-  ```
+`derive_pll_clocks` + `derive_clock_uncertainty` is the entire stock file. It constrains internal
+register-to-register paths (which is how the CPU failure was caught) and leaves every external
+interface, including all of SDRAM, unanalyzed. Non-empty Unconstrained Paths and Unconstrained I/O
+panels are normal for MiSTer and not by themselves a bug -- but "timing passed" says nothing about
+the memory interface.
 
-  Two syntax traps cost several attempts: `create_timing_netlist -speed 7 -slow_model` is
-  rejected outright, and the error message ("Values entered did not match any valid operating
-  conditions") only appears if you read the lines *above* the generic Tcl failure. Use plain
-  `create_timing_netlist` followed by `set_operating_conditions` with one of the exact names the
-  error message lists. Also note the report is worth generating at `-detail summary` first — 50
-  summary rows immediately showed every failing path shared one module, which full-path detail
-  would have buried.
-- **`derive_pll_clocks` + `derive_clock_uncertainty` is the entire stock MiSTer `.sdc`.** That
-  constrains internal register-to-register paths (which is how the CPU failure was caught) but
-  leaves every external interface — including all of SDRAM — completely unanalyzed. Both the
-  Unconstrained Paths and Unconstrained I/O Ports panels will be non-empty on a stock core. This
-  is normal for MiSTer and is *not* by itself evidence of a bug, but it does mean "timing passed"
-  never says anything about the memory interface.
+## CPU cores (TG68K.C, T80)
 
-## TG68K.C (68020 CPU core)
+### Budget for the 68k core to be the Fmax-limiting block
 
-- **TG68K.C cannot run anywhere near a typical MiSTer system clock, and it has no clock-enable
-  input to protect you from that.** Measured Fmax on this project's real post-fit netlist, Cyclone
-  V speed grade 7: **48.74 MHz**. Every one of the 50 worst-slack paths in the entire design was
-  inside `TG68KdotC_Kernel` — the `altsyncram` register file and the `regfile_rtl_*_bypass`
-  network, driven from `use_direct_data` and `exec[*]`, needing ~19.6 ns. Nothing else in the
-  design (video pipeline, SDRAM controller, sound) failed timing at all. Budget for the CPU to be
-  the Fmax-limiting block in any design that includes it.
-- **`TG68K.vhd` is an async-68000-BUS ADAPTER, not the CPU. Do not rate-limit it — bypass it.**
-  `TG68K.vhd` wraps the real core
-  (`TG68KdotC_Kernel`) in a 68000 bus-protocol emulator that assumes `CLK` **is** the CPU clock:
-  it has `falling_edge` registers (`as_e`, `rw_e`, `uds_e`, `lds_e`, `clkena_e`, `data_akt_e`,
-  `cpuIPL`, `waitm`, `E`) precisely because it reproduces real 68000 bus phases. Slowing it down
-  means fighting its design.
-- **The kernel is what you clock-enable, and it is designed for exactly that.**
-  `TG68KdotC_Kernel` is **entirely rising-edge** (verified: zero `falling_edge` occurrences) and
-  exposes `clkena_in` for this purpose. Established cores instantiate the kernel DIRECTLY and own
-  the bus interface themselves. `mist-devel/plus_too`'s `tg68k.v` is the canonical example:
+Measured Fmax on the real post-fit netlist, Cyclone V speed grade 7: 48.74 MHz. All 50 worst-slack
+paths in the design were inside `TG68KdotC_Kernel` -- the `altsyncram` register file and the
+`regfile_rtl_*_bypass` network, driven from `use_direct_data` and `exec[*]`, needing ~19.6 ns.
+Nothing else (video, SDRAM, sound) failed timing at all. TG68K.C also has no clock-enable input of
+its own to protect you.
 
-  ```verilog
-  wire tg68_clkena = phi1 && (s_state == 7 || tg68_busstate == 2'b01);
-  ```
+### Instantiate `TG68KdotC_Kernel` directly and own the bus interface
 
-  Its own state machine handles DTACK and stalls the CPU purely by gating `clkena_in`; the bus
-  interface is `busstate`/`addr_out`/`data_in`/`nUDS`/`nLDS`/`nWr` (`busstate == 2'b01` means "no
-  memory access", so the CPU free-runs). There is no AS/DTACK adapter and nothing inside the core
-  is modified.
-- **What NOT to do (all of it was tried here, and all of it failed).** Adding `ext_clkena` to
-  `TG68K.vhd` and gating every clocked process appears to work — `tb_maincpu` passed both cases
-  and the real-ROM sim booted — but it drags in a chain of consequences: the two clock edges need
-  two separate enables (a rising-edge register samples the enable held during the PRECEDING
-  period, so one shared enable runs each emulated CPU cycle's halves in the wrong order), and then
-  the timing report needs a `set_multicycle_path` to accept the result, which is where it becomes
-  genuinely dangerous — see the half-cycle warning below. Four layers of scaffolding on a
-  battle-tested core, and it still did not boot on hardware.
-- **NEVER let a multicycle constraint touch a posedge->negedge path.** A constraint matching
-  `{*TG68K:*|*}` sweeps the wrapper's falling-edge registers into the collection and grants a
-  HALF-cycle path (~5.8 ns at 85.909091 MHz) two or four FULL cycles — up to ~46 ns. The Fitter
-  will happily route it that slowly, the timing report stays clean, and the design fails only on
-  silicon. Two of those registers are `waitm` (the DTACK sample) and `data_akt_e` (which gates the
-  DATA tri-state), so relaxing them corrupts bus handshaking directly. If a multicycle is needed
-  at all, scope it to a block you have verified is single-edge, and explicitly
-  `remove_from_collection` any falling-edge registers from BOTH ends.
-- **Derive an enable ratio exactly rather than rounding.** clk_sys here is the real 14.318181…MHz
-  screen XTAL x 6 = 945/11 MHz and the 68EC020 wants 176/11 MHz, so the enable rate is exactly
-  176/945 and a Bresenham accumulator hits it with zero error. The tempting integer divides are
-  both meaningfully wrong: /5 is 7.4% fast, /6 is 10.5% slow. (Alternatively drop clk_sys to
-  42.954545 MHz = 14.318181 x 3, which keeps the pixel divide exact at 6:1 and is under TG68K's
-  measured Fmax outright.)
-- **Uninitialized signals in arithmetic crash ModelSim.** `TG68K_ALU.vhd`/`TG68KdotC_Kernel.vhd`
-  have many `std_logic`/`std_logic_vector` signals with no default initializer; ModelSim's `'X'`
-  propagates through arithmetic from time 0 and can cascade into multi-GB allocation failures /
-  SIGSEGV once a real program (not a 4-instruction spike) exercises enough logic. This is a known
-  upstream issue (github.com/TobiFlex/TG68K.C/issues/21). Fix: explicit zero initializers on
-  every affected signal (123 total) — simulation-fidelity only, doesn't change real behavior.
-  Same class of fix as `sdram.sv`'s uninitialized `state`/`ack0..2` registers below.
-- **RESET/HALT are genuine open-collector nets, and Quartus does NOT resolve them like ModelSim
-  does.** TG68K.vhd drives `RESET <= '0' WHEN nResetOut='0' ELSE 'Z'` (and same for `HALT`) itself
-  — needed because the core can self-assert reset via its own RESET instruction — while the
-  wrapping SystemVerilog also needs to drive these lines, making them a real multi-driver
-  open-collector bus. SystemVerilog `tri1` models this correctly in simulation (resolves to weak-1
-  when undriven, proper wired-AND). **Confirmed via real Quartus synthesis + real hardware bring-up:
-  Quartus 17.0 converts this into a plain selector/MUX** (`Warning (13048): Converted tri-state
-  node "..." into a selector`), not genuine wired-AND resolution — and that selector's behavior for
-  the idle/both-released-to-Z steady state is broken on real silicon: the resolved value gets stuck
-  low (permanent reset), even though ModelSim simulates the same RTL correctly. This is a real
-  synthesis-tool divergence, not a simulation mismodel — confirmed by a live hardware debug tap
-  (VGA-color-coded builds, see "Real hardware bring-up" below) showing the kernel reset signal
-  stuck asserted on actual DE10-nano hardware while simulation showed it working.
-  - **Fix pattern that works**: do NOT make either side of the shared tri-state net non-tri-state
-    (see "Quartus multi-driver conflicts" below — this creates a hard synthesis error, not just an
-    ambiguity). Instead add a genuinely separate, single-driver signal and OR it into whichever
-    downstream computation actually needs the correct value: e.g. a new `ext_force_run` input port
-    on TG68K.vhd, with `cpu1reset <= (RESET OR HALT) OR ext_force_run;`. `1 OR anything = 1` lets a
-    clean external signal force the correct steady-state result without ever creating a second
-    driver on the original (still-tri-state, still nominally fragile) net.
-  - **Check every consumer of the broken signal, not just the first one found.** The wrapper's own
-    bus-cycle state machine (`S_state`, `as_s`/`rw_s`/`uds_s`/`lds_s`, and the falling-edge
-    `as_e`/`clkena_e`/etc. pair) used the same raw `RESET` directly as its async reset condition —
-    fixing only the kernel's `nReset` input left the CPU out of reset but bus-cycle generation
-    still stuck, producing zero bus cycles. Needed a second `effective_reset` signal (same
-    OR-with-`ext_force_run` pattern) substituted into that state machine's sensitivity list and both
-    async-reset conditions. A useful debugging signature for "fixed one consumer, missed another":
-    the CPU stops asserting reset but still never generates any bus activity.
-- **SystemVerilog hierarchical references into VHDL internals work in ModelSim but do NOT
-  elaborate for Quartus synthesis, at any depth.** Tried both a one-hop (`u_cpu.cpu1reset`) and a
-  two-hop (`u_cpu.cpu1.Reset`) reference for debug taps — both gave
-  `Error (10207): can't resolve reference to object`. The only working alternative: add a genuine
-  new output port directly to the vendored VHDL entity, exposing the internal signal as a real
-  port. Unconnected new ports at other instantiation sites are legal — no need to touch every
-  caller.
-- **68020-mode instruction coverage was real, not assumed** — Phase 0 spike specifically exercised
-  68020-only opcodes (MULU.L, DIVU.L, scaled-index addressing, BFEXTU) before committing further,
-  and two apparent "core bugs" during that spike turned out to be testbench mistakes (see
-  `rtl/cpu/tg68k/PROVENANCE.md`).
+`TG68K.vhd` is an async-68000-bus adapter, not the CPU: it wraps the core in a bus-protocol emulator
+that assumes `CLK` *is* the CPU clock, hence its `falling_edge` registers (`as_e`, `rw_e`, `uds_e`,
+`lds_e`, `clkena_e`, `data_akt_e`, `cpuIPL`, `waitm`, `E`). Slowing it down means fighting its
+design. The kernel is entirely rising-edge (verified: zero `falling_edge` occurrences) and exposes
+`clkena_in` for exactly this. `mist-devel/plus_too`'s `tg68k.v` is the canonical example:
+
+```verilog
+wire tg68_clkena = phi1 && (s_state == 7 || tg68_busstate == 2'b01);
+```
+
+Its own state machine handles DTACK and stalls the CPU purely by gating `clkena_in`; the interface
+is `busstate`/`addr_out`/`data_in`/`nUDS`/`nLDS`/`nWr` (`busstate == 2'b01` means no memory access,
+so the CPU free-runs). Nothing inside the core is modified.
+
+What was tried instead and failed: adding `ext_clkena` to `TG68K.vhd` and gating every clocked
+process. It appears to work (`tb_maincpu` passed, the real-ROM sim booted) but the two clock edges
+need two separate enables -- a rising-edge register samples the enable held during the *preceding*
+period, so one shared enable runs each emulated CPU cycle's halves in the wrong order -- and the
+timing report then needs a `set_multicycle_path` to accept the result, which is where it turns
+dangerous. Four layers of scaffolding on a battle-tested core, and it still did not boot.
+
+### Derive the clock-enable ratio exactly rather than rounding
+
+clk_sys here is the real 14.318181 MHz screen XTAL x 6 = 945/11 MHz and the 68EC020 wants 176/11
+MHz, so the enable rate is exactly 176/945 and a Bresenham accumulator hits it with zero error. The
+tempting integer divides are meaningfully wrong: /5 is 7.4% fast, /6 is 10.5% slow. (Alternatively
+drop clk_sys to 42.954545 MHz = 14.318181 x 3, keeping the pixel divide exact at 6:1 and landing
+under TG68K's measured Fmax outright.)
+
+### Do not rely on Quartus resolving an open-collector net the way ModelSim does
+
+`TG68K.vhd` drives `RESET <= '0' WHEN nResetOut='0' ELSE 'Z'` (same for `HALT`) because the core can
+self-assert reset, while the wrapping SystemVerilog also drives these lines -- a genuine
+open-collector bus, which `tri1` models correctly in simulation. Quartus 17.0 instead emits
+`Warning (13048): Converted tri-state node "..." into a selector`, and that selector's behaviour for
+the both-released-to-Z steady state is wrong on silicon: the resolved value sticks low, holding
+permanent reset. Confirmed by a live hardware debug tap (VGA-colour-coded build) showing the kernel
+reset stuck asserted on a DE10-nano while the same RTL simulated correctly.
+
+Fix pattern: do NOT make either side of the shared net non-tri-state. Add a separate, single-driver
+signal and OR it into the downstream computation that needs the correct value -- a new
+`ext_force_run` port with `cpu1reset <= (RESET OR HALT) OR ext_force_run;`. `1 OR anything = 1`
+forces the correct steady state without creating a second driver.
+
+Then check every consumer, not just the first found. The wrapper's own bus-cycle state machine used
+the same raw `RESET` as its async reset, so fixing only the kernel's `nReset` left the CPU out of
+reset with bus-cycle generation still stuck. Signature of "fixed one consumer, missed another": the
+CPU stops asserting reset but still generates no bus activity.
+
+### Expose a new port rather than a hierarchical reference for a debug tap
+
+SystemVerilog hierarchical references into VHDL internals work in ModelSim but do not elaborate for
+Quartus at any depth -- both `u_cpu.cpu1reset` and `u_cpu.cpu1.Reset` gave
+`Error (10207): can't resolve reference to object`. Add a real output port to the vendored entity;
+unconnected new ports at other instantiation sites are legal, so no other caller needs touching.
+
+### Add explicit zero initializers to vendored VHDL signals before simulating real programs
+
+`TG68K_ALU.vhd`/`TG68KdotC_Kernel.vhd` have many `std_logic`/`std_logic_vector` signals with no
+default. ModelSim's `'X'` propagates through arithmetic from time 0 and can cascade into multi-GB
+allocation failures or SIGSEGV once a real program (not a four-instruction spike) exercises enough
+logic. Known upstream issue (TobiFlex/TG68K.C#21); 123 signals initialized here. Simulation fidelity
+only -- same class of fix as `sdram.sv`'s uninitialized `state`/`ack0..2`.
+
+### Exercise the ISA extensions you depend on, deliberately
+
+The Phase 0 spike ran 68020-only opcodes (MULU.L, DIVU.L, scaled-index addressing, BFEXTU) before
+further work was committed. Two apparent "core bugs" during that spike turned out to be testbench
+mistakes.
+
+### Derive `WAIT_n` timing from the CPU's internal T-state behaviour, not external bus inference
+
+A T80 ROM-interface design based on top-level signal tracing alone hit a reproducible bug -- a
+multi-byte opcode whose own read M-cycle follows two operand fetches corrupted the destination
+register, with no visible access to the target address anywhere in the external trace -- and was
+reverted. Reading `T80.vhd`/`T80se.vhd` gave the facts that mattered: `TState` freezes while
+`WAIT_n` reads 0 (resampled every cycle, no edge logic), data is captured on the exact edge that
+condition first goes true, and `RD_n`/`MREQ_n` are registered outputs defaulting high every cycle,
+so there is always a one-cycle gap between M-cycles even within one instruction -- which a
+same-cycle edge-detector design cannot assume. The fix was a level-tracked `rom_pending` gated by a
+glitch-free combinational `is_rom_read` level, confirmed by re-running the failing scenario with
+hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes now".
 
 ## Quartus synthesis gotchas (not visible in ModelSim)
 
 - **Non-blocking assignments to block-local (`automatic`) variables are rejected**, even with the
-  `static` keyword, in a pattern that compiles fine under ModelSim —
+  `static` keyword, in a pattern that compiles fine under ModelSim:
   `Error (10959): illegal assignment - automatic variables can't have non-blocking assignments`.
-  Fix: move the affected variables (`sdram.sv`'s `rfs_cnt`/`rfs`/`rfs2`/`init_old`) to module-level
-  declarations, matching every other register in the file. Pure declaration-scope change, no
-  behavior change — always re-run the full ModelSim regression after this class of fix to confirm.
-- **Negative PLL phase shifts aren't legal for every PLL configuration.** `quartus_fit` rejected a
-  `-3000ps` phase shift outright; only `0ps` and positive values in fixed steps (~132.275ps here)
-  are legal. Fix: convert to the equivalent positive phase (`period - abs(shift)`, rounded to the
-  nearest legal step Quartus itself reports in the error message).
-- **A non-power-of-2 modulo synthesizes as a slow generic iterative divider and can dominate
-  timing closure.** `sprite_index <= sram_data % 16'd768;` produced Quartus's single worst timing
-  path in the whole design (`Mod0|auto_generated|divider`). Fix: replace with an explicit
-  N-stage conditional-subtraction chain (subtract decreasing power-of-2 multiples of the modulus
-  when they fit) — standard technique for modulo-by-compile-time-constant, same one-cycle
-  combinational timing, no interface change. Cut this design's worst-case setup slack by 81%.
-  Worth checking `report_timing`'s worst path directly rather than guessing which module is at
-  fault — the divider was buried inside `sprite_display_list_walker.sv`, not obviously the
-  suspect from a design read-through alone.
-- **Quartus multi-driver conflicts on a shared tri-state net are a hard, unsynthesizable error,
-  not just an ambiguity Quartus can resolve.** Making *either* side of an existing open-collector
-  net (e.g. TG68K's RESET/HALT) non-tri-state while the other side still drives it produces
-  `Error (13076): "..." has multiple drivers due to the non-tri-state driver "..."` — and this can
-  surface at a much deeper internal signal than the one you touched (e.g. fixing `cpu1reset`
-  surfaced a conflict on `TG68KdotC_Kernel:cpu1|syncReset[3]`, a signal several levels further into
-  the vendored core). See the TG68K RESET/HALT fix pattern above for the working alternative
-  (a separate single-driver signal OR'd in, never a second driver on the original net).
-- **`quartus_map` (Analysis & Synthesis only) is a fast pre-check** (~2-3 min vs. ~5-6 min for a
-  full `quartus_sh --flow compile`) for whether an RTL change even elaborates/synthesizes, worth
-  running before committing to a full place-and-route round trip. Quartus auto-parallelizes across
-  available CPU cores with no explicit configuration needed; ModelSim/vsim in this edition is
-  single-threaded, no equivalent lever there.
+  Move them to module-level declarations, then re-run the full ModelSim regression.
+- **Multi-driver conflicts on a shared tri-state net are a hard, unsynthesizable error**, not an
+  ambiguity Quartus resolves. Making either side non-tri-state while the other still drives gives
+  `Error (13076): "..." has multiple drivers due to the non-tri-state driver "..."`, and it can
+  surface at a much deeper signal than the one you touched (fixing `cpu1reset` surfaced a conflict on
+  `TG68KdotC_Kernel:cpu1|syncReset[3]`). Use the separate-signal OR pattern above.
+- **A non-power-of-2 modulo synthesizes as a slow generic iterative divider and can dominate timing
+  closure.** `sprite_index <= sram_data % 16'd768;` produced the worst timing path in the whole
+  design (`Mod0|auto_generated|divider`), buried inside `sprite_display_list_walker.sv` and not an
+  obvious suspect from a read-through. An explicit N-stage conditional-subtraction chain (subtract
+  decreasing power-of-2 multiples of the modulus when they fit) kept the same one-cycle
+  combinational timing and cut worst-case setup slack by 81%. Read `report_timing`'s worst path
+  rather than guessing which module is at fault.
+- **Negative PLL phase shifts are not legal for every PLL configuration.** `quartus_fit` rejected
+  `-3000ps` outright; only `0ps` and positive values in fixed steps (~132.275 ps here) are legal.
+  Convert to `period - abs(shift)`, rounded to the nearest legal step Quartus names in its own error.
+- **Driving a dual-port RAM's second read port can silently REPLICATE the whole array.** A block
+  RAM has one write port and one read port per physical port; asking for two independent read
+  addresses plus a write is a shape the M10K cannot provide, so Quartus duplicates the memory and
+  writes both copies. Symptom: a 128KB work RAM reporting 2,097,152 block memory bits, about 102
+  extra M10K, and a design that had fitted the day before failing with
+  `Error (170048): ... needs more than 553 to successfully fit`. The trigger looked harmless -- the
+  second port had been tied to a constant address and was therefore optimized away entirely, so
+  hooking a real address to it was read as "using a port that was already there". Give the new
+  consumer the EXISTING port instead when the two can never collide (here the consumer only touched
+  RAM with the CPU paused). Check `Block Memory Bits` per hierarchy node in the map report against
+  the array's arithmetic size before assuming an unused port is free.
+- **A design can be BRAM-bound while logic sits at 40%.** Budget features in M10K blocks, not ALMs.
+  Bit occupancy is the number that matters: no memory packs at 100%, so a design at ~95% of the
+  device's block memory bits cannot be made to fit by repacking, only by removing memory. Repacking
+  a 12-bit-wide array as 8+4 to land on native widths is a real technique, but it is worth nothing
+  if the true cause is an array that should not be there at all -- confirm where the bits went
+  before restructuring anything.
+- **`set_instance_assignment -name RAMSTYLE` is rejected by the .qsf parser in Quartus 17.0**
+  (`Error (125048): Error reading Quartus Prime Settings File ... line N`, which aborts the whole
+  project open). Use the HDL `(* ramstyle = "..." *)` attribute instead.
+- **`quartus_map` (Analysis & Synthesis only) is a fast pre-check** (~2-3 min vs ~5-6 min for a full
+  compile) for whether an RTL change even elaborates. Quartus auto-parallelizes across cores;
+  ModelSim in this edition is single-threaded.
 
-## SDRAM / DDRAM
+## Debug instrumentation: how not to fool yourself
 
-- **DDRAM (`DDRAM_*`) is documented as unsuitable for hard-real-time per-tile fetch budgets** —
-  MiSTer's own docs describe it as for "non-critical time purposes" with latency that "can be way
-  longer" than typical (~20 cycles), an unbounded worst case, not just a high average. Confirmed
-  directly: `tb_video_pipeline_ddram.sv` measured ~26 combined cycles against a 16-cycle-per-tile
-  budget under realistic two-consumer contention. `SDRAM_*` (Sorgelig's `sdram.sv`, vendored into
-  many MiSTer-devel arcade cores) gives 3 independent ports at fixed, bounded ~6-7 cycles — the
-  right backend for this traffic class. If a design starts on DDRAM for convenience, budget time to
-  pivot rather than trying to patch throughput after the fact.
-- **A reference SDRAM controller with no burst support needs real command-sequencing verification
-  when extended to burst-N, not just a black-box latency stub.** Adding burst-4 to `sdram.sv`
-  needed a chip model that actually decodes `nRAS`/`nCAS`/`nWE`/`SDRAM_A` — that's what caught: (1)
-  the row/column address split needing to swap (a hardware burst auto-increments the *column*, so
-  4 consecutive word addresses must land at 4 consecutive columns of the *same* row — the
-  non-bursting upstream reference had this split arbitrarily the other way, which only matters once
-  bursting is added), (2) the chip model silently ignoring the `DQML`/`DQMH` byte-lane write mask,
-  (3) an off-by-one in burst-read CAS timing (a dropped `+1` registration-delay margin).
-- **A shared read-data register across multiple logical "ports" is a real hazard even when the
-  address/data buses are otherwise independent.** `sdram.sv`'s `dout0`/`dout1`/`dout2` are
-  literally the same underlying register — a consumer must sample on its *own* valid/ack cycle,
-  never later, or it can read another port's in-flight data. A contention testbench that samples
-  outside each port's own ack-triggered branch will show 100% failures that look like an RTL bug
-  but are actually a testbench sampling-discipline bug — worth checking the test's sampling point
-  before concluding the RTL is broken.
-- **A `rom_pending`/similar request-tracking flag must clear on the actual bus cycle ending, not
-  on the ROM interface's one-cycle `valid` pulse**, if the CPU can hold the bus cycle open longer
-  than the fetch itself (real 68k bus cycles hold `as_n` low for several cycles after DTACK
-  releases). Clearing early lets a spurious second request fire for data already latched — harmless
-  in isolation, but under real multi-client contention another client can win that spurious slot's
-  arbitration and overwrite a shared read-data register before the original cycle finishes,
-  corrupting what the CPU samples. Symptom looked like SDRAM corruption; root cause was in the CPU
-  wrapper's own request lifecycle, not the SDRAM stack — worth checking every request-tracking flag
-  against the actual bus protocol's cycle length, not just its own "data arrived" signal.
-- **Nothing in the SDRAM read stack latches read data — the entire path from `sdram.sv`'s `dout`
-  to the CPU's data bus is combinational, and valid is a one-cycle pulse.** `sdram.sv` assigns
-  `dout0`/`dout1`/`dout2` from one shared `dout` register (upstream does this too);
-  `sdram_arbiter5` assigns `c*_data = phy_rdata` and `c*_valid` combinationally; and
-  `sdram_narrow_bridge` selects its word with `sel_word = g_data[16*word_sel +: 16]` with no
-  register anywhere. The consumer is therefore *required* to capture on the valid pulse.
-  `maincpu.sv` originally got away with reading it combinationally only because TG68K.C re-captured
-  `DATA` on every clock edge while parked in its wait state, so the one-cycle window always
-  landed — an alignment that holds by one cycle and breaks the moment the CPU stops stepping every
-  cycle. **Any change to how often a consumer samples the bus (a clock enable, a different clock
-  domain, an extra pipeline stage) requires latching both the data and the ready/DTACK level
-  first.** Fixed here with `rom_data_l`/`rom_ready` in `maincpu.sv`, held until the CPU drops
-  `as_n`; as a bonus this also closes the shared-`dout` overwrite exposure described in the
-  `rom_pending` note above, because once captured the word can no longer be clobbered.
-- **DTACK/ready must be a held level, never a pulse, for any CPU core driven by a clock enable.**
-  A core stepping at 16 MHz inside an 85.909091 MHz fabric looks at DTACK roughly once every 5.4
-  cycles; a one-cycle assertion is missed on nearly every access and the bus cycle hangs forever.
-  Check every ready/ack signal feeding a gated core against this before enabling the gate.
-- **A request/ack round-robin arbiter needs every request port on a hold-until-acknowledged
-  contract**, not a one-shot pulse — a one-shot request arriving while the arbiter is servicing
-  another client is silently lost. Applies uniformly across `ddram_arbiter`/`sdram_arbiter5` and
-  the HPS download path (`ioctl_wr` is a genuine one-shot from hps_io and needs a wrapper, e.g.
-  `sdram_download.sv`, translating it into hold-until-ack via `ioctl_wait` backpressure).
-- **A held req/valid consumer wired directly into a component that expects a one-shot req pulse
-  loses the extra cycle it needs, silently.** `sdram_phy.sv`'s `valid` and its return to
-  `S_IDLE` land on the same cycle — every arbitrated consumer gets a cycle of margin (`c_valid`
-  asserts one cycle before the arbiter's own state returns to idle), but a single-client port
-  wired straight to `sdram_phy` ("no arbiter needed for one client") skips that margin entirely.
-  Sprite gfxrom's dedicated Port 1 did exactly this and silently returned the *previous*
-  transaction's stale data under contention — not a hang, just wrong data, which read on
-  hardware as sprite corruption. Fixed with a small single-client pulse shim reproducing the
-  same margin a real arbiter gives (`SP_IDLE`/`SP_ISSUE`/`SP_WAIT` in
-  `rtl/memory/psikyo_sdram_top.sv`). Third occurrence of this exact defect class in this
-  project (see the `rom_pending` bullet above and the tilemap `gfxrom_req` fix in
-  `docs/TILEMAP_BUG.md`) — treat any *direct*, non-arbitrated connection to a req/valid
-  transport as a suspect by default, not just multi-client ones.
-- **Byte-order/endianness bugs live at the seam between two independently-correct modules, not
-  inside either one.** `sdram.sv`'s burst capture packs bytes in plain ascending-address order;
-  gfx-ROM consumers assumed MAME's MSB-first packed format; a maincpu program ROM needed
-  big-endian while `sdram_narrow_bridge.sv`'s generic word path was little-endian (correct for
-  other, genuinely little-endian regions like spritelut). Every prior test that used uniform/all-
-  zero ROM content couldn't have caught this — it's invariant under byte order. Fix each seam with
-  a small dedicated adapter (`gfxrom_byte_reorder.sv`, a maincpu-specific byte swap) rather than
-  changing the shared module's convention out from under its other, already-correct consumers.
-  General lesson: when a wiring bug surfaces, prefer a synthetic/uniform-data smoke test first to
-  catch crashes cheaply, but know that non-uniform, byte-order-sensitive content is required to
-  actually catch this class of bug — budget a real-content integration test before trusting a
-  uniform-data one.
-- **Two logically separate reset domains matter when one subsystem must stay live during another's
-  reset.** Wiring a single shared `reset` into both the core (CPU/video) and the SDRAM backend
-  meant that sequencing a "hold reset through the whole ROM download" test — the natural way to
-  write such a test — silently discarded every downloaded byte, because the SDRAM backend's own
-  req/valid wrappers were held in reset for the exact span they most need to be live. Fix:
-  `core_reset = reset | ioctl_download` gates only the core; the SDRAM backend keeps the plain
-  `reset`. Symptom was a state machine stuck at its idle state despite the write-strobe input
-  pulsing correctly — worth checking reset domain overlap whenever a downstream FSM looks like
-  it's simply not receiving its trigger despite the trigger firing.
-- **Contention/throughput problems from a shared single-pipeline resource (one physical SDRAM
-  chip, multiple logical consumers with correlated timing) may need a deeper buffer on the consumer
-  side, not just better arbitration.** Two tilemap layers with identical scanline timing request in
-  near-lockstep; a 2-entry ping-pong prefetch buffer only absorbs one simultaneous loss, so ~1-in-5
-  tiles stalled when both layers' requests collided. Widening to a parameterized N-entry ring
-  buffer (interface unchanged) absorbed the stalls. This is a real fix for the tested contention
-  pattern, not a formal guarantee against every pattern — a genuinely independent fetch-ahead
-  domain or a pipelined controller remains the architecturally complete fix if a deeper buffer ever
-  proves insufficient.
+- **Never reset a debug counter with the reset you are investigating.** Two measurements read
+  `0x000000` and were reported as findings before it was noticed the counters were cleared by
+  `reset`, which is asserted for the whole measured window. Declare debug counters with `= 0`
+  initialisers and no reset; Quartus powers registers to zero, so what they show is what genuinely
+  happened since configuration.
+- **Pair every "bad event" counter with a "total events" counter.** A zero can mean "did not happen"
+  or "was never allowed to count"; counting only dropped bytes cannot tell those apart.
+- **Sample registered signals, not combinational ones, and prove the probe on a known-good
+  configuration first.** A tap on combinational `cpu_data` sampled at `cpu_ce && !as_n && !dtack_n`
+  appeared to show the CPU latching byte-skewed data -- compelling and false. The same probe in a
+  simulation that demonstrably boots showed the same skew. If a new probe reports a fault on a
+  known-good setup, the probe is the fault.
+- **Never let a probe's step size share a factor with the period you are measuring.** A BRAM tracer
+  skipping `window * 256` events returned byte-identical captures for windows 0, 8 and 15 (skips of
+  0, 2048, 3840), equally consistent with a CPU resetting every 256 reads and a read path aliasing
+  every 256 words. The step is now `window * 8191` -- odd, so it cannot alias with a power-of-two
+  period. When a probe gives the same answer at every setting, suspect the step.
+- **Capture the full address.** Packing only `addr[7:0]` into a 24-bit pixel made a genuine linear
+  sweep through ROM look exactly like a read path dropping its high address bits, destroying the
+  distinction between "progressing" and "stuck". If address and data do not fit together, use two
+  buffers strobed by the same event so entry N of each describes the same bus cycle.
+- **VGA-colour-override builds answer yes/no hardware questions without a logic analyzer.**
+  Overriding `VGA_R/G/B` with a solid colour gated by an internal signal turns "is this condition
+  true on real hardware" into one unambiguous screenshot -- used to confirm the video datapath works
+  at all, then for a 3-way readout of CPU ROM-fetch activity via sticky latches and a 4-colour
+  readout adding live kernel-reset state. Remove all `dbg_*` ports and wiring once the bug is fixed.
+- **JTAG ISSP pokes test a hypothesis on live hardware without a rebuild.** With the CPU paused,
+  `scripts/write_vram1.tcl` wrote single VRAM words and the screen response was read directly; that
+  established the chained N/N+1 dependency behind the tilemap handshake bug, in two games, before
+  any RTL changed.
+- **Do not blind-enable an interrupt path you have no way to verify.** Enabling the YM2610 timer IRQ
+  to the Z80 took its ROM-fetch counter to zero immediately -- a complete lockup, not "runs but
+  silent", and a hang is a worse regression than the symptom it was meant to fix. Expose the CPU
+  state needed to read the outcome (`halt_n`, ideally PC) in the same build that enables the path.
+- **A sound CPU that programs the chip once and then goes quiet is an interrupt-path symptom.** 46
+  YM2610 register writes were measured immediately after launch and zero over a later 15-second
+  window: the init burst runs from boot code, and the chip's own timer interrupt -- how arcade
+  drivers sequence music -- was not reaching the CPU. (The eventual cause was transport bugs
+  elsewhere; the IRQ is required for music.)
 
-## T80 / Z80 sound CPU wrapper (req/valid ROM timing)
+## Hardware bring-up (MiSTer / DE10-nano)
 
-- **Deriving correct `WAIT_n` timing for a synchronous req/valid ROM against a real CPU core needs
-  the CPU's *internal* T-state/M-cycle behavior, not just external bus-signal inference.** A first
-  attempt based on top-level signal tracing alone hit a real, reproducible bug (a multi-byte opcode
-  whose own read M-cycle follows two operand-fetch M-cycles corrupted the destination register,
-  with no visible access to the target address anywhere in the external trace) and had to be
-  reverted. The fix required reading `T80.vhd`/`T80se.vhd`'s actual RTL: `TState` freezes at a
-  known value for as long as `WAIT_n` reads 0 (resampled every cycle, no separate edge logic), data
-  is captured on the exact edge that condition first goes true, and `RD_n`/`MREQ_n` are registered
-  outputs defaulting high every cycle — meaning there's always a real one-cycle gap between M-cycles
-  even within one multi-byte instruction, a fact a "same-cycle edge-detector" design can't safely
-  assume without the internal read. With that understanding, a level-tracked `rom_pending` flag
-  gated by a glitch-free combinational `is_rom_read` level (not an edge detector) is structurally
-  unable to miss a transition.
-- **Verify against internal CPU tracing, not just external pass/fail, when the first design attempt
-  already failed once for a subtle timing reason** — re-running the same failing scenario with
-  hierarchical access to the CPU core's own `MCycle`/`TState` signals (not reconstructed from
-  external bus signals) is what actually confirmed the fix, not just "the test passes now."
+- **The DE10-nano SDRAM pinout has an authoritative in-repo reference; do not go to the web.** The
+  `.qsf` does `source sys/sys.tcl`, which is the vendor template's own SDRAM pin block; cross-check
+  against `output_files/<rev>.pin`, which records where every signal actually landed post-fit (all
+  38 matched across all three). The `.qsf` also *restates* every location assignment after the
+  `source` line, because the IDE re-saved the project -- identical values today, but a future
+  `sys.tcl` update would be silently overridden.
+- **Audit an inherited `.srf`: it suppresses messages worth seeing.** This one came from another
+  core, hides 15705 ("Ignored locations or region assignments") which could mask a dropped pin
+  assignment, and still references a file that does not exist here.
+- **Fitter warnings 176250/176251 ("Ignoring invalid fast I/O register assignments") are almost
+  always benign, and the Ignored Assignments panel names exactly which** -- here pins already
+  occupied by a DDIO primitive, tied to constants, or driven by a raw PLL output. Do not read them
+  as evidence about the SDRAM *data* path: confirm instead by counting register-packing entries,
+  which showed 16/16 fast input, output and output-enable registers packed on `SDRAM_DQ`.
+- **The SDRAM_CLK phase shift is legitimate but a poor first suspect.** `-3 ns` is the standard
+  MiSTer convention, expressed here as the equivalent positive `"8598 ps"` because this `altera_pll`
+  rejects negative values. Sweeping it to `0 ps` gave byte-identical results, which was the clue the
+  fault was not at the memory interface at all. Revert diagnostic PLL values immediately.
+- **`/dev/fb0` is the ARM-side OSD overlay surface, not the FPGA's composited game video.** Do not
+  use it as evidence about the core's video pipeline; use the screenshot API, which captures
+  scaler-composited output.
+- **MiSTer Remote API** (wizzomafizzo/mrext, port 8182) is documented, and its Go source is worth
+  reading rather than guessing. `POST /api/launch {"path": "<abs path>"}` writes `load_core <path>`
+  to MiSTer's own command-interface device file, the same primitive the menu uses.
+  `POST /api/screenshots` returns an effectively empty body regardless of success: poll for a new
+  file under `/media/fat/screenshots/<core-shortname>/` instead, often several seconds late.
+- **An automated deploy-then-launch script needs an explicit settle gap** that manual multi-step
+  testing gets for free. Back-to-back deploy then launch hit a real race (the new `.rbf` not
+  reliably flushed) that never appeared when the same steps ran as separate manual calls seconds
+  apart; add `sync` after deploy plus a short sleep. Generally, when a race is suspected in an
+  automated tool, re-run the exact previously working manual sequence before assuming the deployed
+  binary is stale.
+- **`plink.exe`/`pscp.exe` are the practical non-interactive SSH/SCP path on Windows** (OpenSSH has
+  no clean non-interactive password auth, `sshpass` is usually absent):
+  `echo y | plink.exe -ssh -pw <password> user@host "command"`, where `echo y` auto-accepts an unseen
+  host-key prompt.
+- **MSYS/Git-Bash silently mangles POSIX-looking arguments** such as `/media/fat/...` into Windows
+  paths when passed to a non-MSYS program, which made an automated deploy launch a garbage path with
+  no error. Prefix invocations with `MSYS_NO_PATHCONV=1`.
 
-## Testbench pitfalls (recurring pattern, multiple modules)
+## Tooling and workflow (Quartus, ModelSim, and the shell around them)
 
-- **`while (signal) @(posedge clk);` races against an `always_ff` updating that same signal on the
-  same edge.** Checking a busy/wait signal in the same active-region delta cycle as the RTL's own
-  non-blocking update can read the stale value and either deadlock (waiting forever on a signal
-  that already cleared) or return too early (missing a transaction that hasn't started yet).
-  Recurred independently in at least three testbenches (`ddram_phy_tb`, `sdram_download`
-  integration, `psikyo_sdram_top` integration) before the pattern was recognized as systemic.
-  Fix: `do @(posedge clk); while (signal);` — guarantees at least one full edge (and NBA settle)
-  before the first check. Worth using this form by default for any wait-loop on RTL-driven status
-  signals, not just after hitting the bug once.
-- **A sticky "error latched" output can produce an unavoidable false alarm at cold start**, and once
-  latched is permanently indistinguishable from a real later failure. `fetch_overrun` in
-  `tilemap_line_engine` triggers unavoidably on the very first active line after reset (no prior
-  hblank to prefetch into) — no amount of reset-timing adjustment changes this, because the
-  triggering condition is genuinely true at that moment. If a sticky DUT output can have an expected
-  benign trigger, don't check the sticky output directly in a test that needs to detect *later*
-  problems — independently replicate the DUT's own trigger condition via a non-sticky per-cycle
-  check instead.
-- **Drive stimulus with its REAL waveform shape, not a convenient pulse — a level driven as a
-  one-clock pulse hides whole classes of bug.** `tb_maincpu.sv` pulsed `vblank` high for exactly
-  one clock. Real hardware holds it for the entire 38-line vertical blank — ~2.4 ms, ~205,000
-  clk_sys cycles. That single difference hid a genuine `maincpu.sv` bug for the whole project:
-  the IRQ logic was `if (vblank) set; else if (iack) clear;`, giving *set* priority, so an
-  acknowledge arriving while vblank was still high (which is what always happens on hardware,
-  since the CPU responds in microseconds) was silently discarded. `irq_pending` then never
-  cleared, `ipl` stayed at level 4, and the CPU re-entered the ISR after every `RTE` — the main
-  program could never advance past its first vblank. With a one-clock pulse the acknowledge always
-  landed after vblank had fallen, so the test passed every time.
-- **A held interrupt line must let the acknowledge win.** Match MAME's `irq4_line_hold` exactly:
-  assert on the **rising edge** of the source, hold until acknowledged, and give the acknowledge
-  priority in the priority chain. Ask of every level-sensitive input: *is this signal still
-  asserted when the consumer responds?* If yes, set-vs-clear priority is a real design decision,
-  not a formality.
-- **Write preloaded vectors/tables AFTER `$readmemh`, never before — an assembled image silently
-  overwrites them with its own zero-filled gaps.** `tb_maincpu.sv` installed the level-4
-  autovector entry at `rom[0x38]`/`rom[0x39]` (byte `0x70`) and then `$readmemh`'d a program image
-  contiguous from byte `0x8` past an ISR at `org $100`. That image spans byte `0x70`, so its empty
-  `0x70`-`0xFF` region zeroed the entry that had just been written. The CPU then took the
-  interrupt correctly, fetched the correct vector address, read zero, jumped to `0x00000000`,
-  executed zeroes until it hit an illegal instruction, and vanished into vector 4.
-- **This cost a genuinely expensive misdiagnosis: it was recorded for weeks as a TG68K.C exception
-  microcode bug**, in both `PROVENANCE.md` and `ROADMAP.md`, and used as the standing reason
-  interrupt-driven integration "couldn't be trusted yet". The trigger for the wrong conclusion was
-  misreading a bus trace — `0x00000000` was the *data* read back from the vector table, not the
-  address the CPU fetched from, which was correctly `0x70` all along. **When a trace shows an
-  exception jumping somewhere implausible, confirm which column is address and which is data
-  before blaming the CPU**, and suspect a zeroed vector table long before exception microcode.
-- **`$readmemh` failing silently turns a whole testbench into a false regression report.** When
-  `sim/maincpu_tb/tb_maincpu.sv` was run with `vsim` launched from its own directory rather than
-  the repo root, its `$readmemh("sim/maincpu_tb/test_maincpu.hex", ...)` found nothing, the ROM
-  stayed all-zeroes, and every single check failed — reading exactly like a catastrophic RTL
-  regression ("bus wedged", all regions `0000`) and prompting a wrong diagnosis (scaling
-  timeouts) before the one-line `** Warning: (vsim-7) Failed to open readmem file` was noticed.
-  ModelSim reports this as a *warning*, not an error, and it scrolls past in the elaboration
-  noise. **When a testbench fails wholesale rather than in one specific check, grep the log for
-  `readmem` before touching any RTL.**
-- **`$readmemh` paths are relative to the simulator's working directory, not the testbench file's
-  location** — recurred across `tb_maincpu.sv` (needs running from repo root), and
-  `tb_psikyo_core.sv`/`tb_psikyo_top.sv` (needs running from their own subdirectory, plus
-  `vmap work ../../work` to share the compiled library). A "first run fails with 0 matches / all-X
-  data" on a new testbench is worth checking against CWD before assuming an RTL bug.
-- **When a regression appears to fail after a change, check whether it fails on a clean stash of
-  the change too** before debugging the change itself — a missing/stale test-fixture file (not a
-  regression at all) can look identical to a real regression. `git stash` + re-run is a cheap way
-  to rule this out before spending time on the wrong hypothesis.
-- **Smoke tests (elaborate + run N cycles, check for crash/X-propagation only) are worth writing
-  before a full functional test** on any new top-level integration — cheap, and catches basic
-  wiring mistakes (e.g. a port-width mismatch) before investing in the harder job of writing a real
-  functional check.
-
-## Real hardware bring-up (MiSTer / DE10-nano)
-
-- **The `.rbf` must live in the top-level cores directory** (`/media/fat/_Arcade/cores/`), not a
-  subdirectory relative to the `.mra` files. `.mra` files reference the `.rbf` via a bare
-  `<rbf>Arcade-Psikyo</rbf>` tag (no date suffix) and MiSTer resolves it by prefix-matching
-  filenames in that one directory. A misplaced `.rbf` produces a silent "flash and return to menu"
-  with no error, before ROM loading even begins — easy to misdiagnose as a core/ROM-loading bug
-  when it's purely a file-placement issue.
-- **MiSTer Remote API** (wizzomafizzo/mrext, port 8182) is a real, documented HTTP API — fetched the
-  actual Go source (`cmd/remote/main.go`, `cmd/remote/games/launchers.go`) rather than guessing.
-  `POST /api/launch {"path": "<abs path>"}` writes `load_core <path>\n` to MiSTer's own
-  command-interface device file, the same low-level primitive the menu itself uses — no caching
-  layer to worry about. `POST /api/screenshots` triggers a screenshot save but its JSON response is
-  unreliable/effectively empty regardless of success — the real signal is a new file appearing
-  under `/media/fat/screenshots/<core-shortname>/`, often with several-seconds-plus lag; poll for
-  the new file rather than trusting the response. `GET /api/games/playing` reports the currently
-  loaded core/game. The Remote API also supports input injection for future automated gameplay
-  testing (not yet used here) — worth revisiting once boot-level bring-up is stable.
-- **MSYS/Git-Bash silently mangles absolute-POSIX-looking command-line arguments** (e.g.
-  `/media/fat/...`) into Windows paths (e.g. `C:/Program Files/Git/media/fat/...`) when passed to a
-  non-MSYS program. Caused a real, silent bug (an automated deploy script launched a garbage,
-  mangled path with no error) before being diagnosed. Fix: prefix invocations with
-  `MSYS_NO_PATHCONV=1`.
-- **A fully-automated deploy-then-launch script needs an explicit settle gap that manual multi-step
-  testing gets "for free."** Doing `deploy_rbf()` immediately followed by `launch_mra()` with zero
-  gap hit a real race (the new `.rbf` wasn't reliably visible/flushed yet) that never showed up
-  when the same two steps were run manually as separate tool calls (which naturally had multi-second
-  gaps between them). Fix: `sync` at the end of deploy, plus an explicit short sleep before launch
-  in the automated path.
-- **PuTTY's `plink.exe`/`pscp.exe` are the practical way to do non-interactive SSH/SCP with password
-  auth on Windows** (OpenSSH doesn't support clean non-interactive password auth, and `sshpass`
-  usually isn't installed): `echo y | plink.exe -ssh -pw <password> user@host "command"` — the
-  `echo y` auto-accepts an unseen host-key prompt.
-- **VGA-color-override debug builds are an effective bisection technique for real-hardware
-  yes/no questions when there's no logic analyzer or JTAG access yet.** Overriding `VGA_R/G/B`
-  directly (bypassing the normal compositor path) with a solid color gated by an internal signal of
-  interest turns "is this internal condition true on real hardware" into a single, unambiguous
-  screenshot — used successfully for: confirming the video datapath itself works at all (solid
-  red), a 3-way readout of CPU ROM-fetch activity via sticky latches (red/blue/green), and a 4-color
-  readout adding live kernel-reset state (cyan). Always fully remove this instrumentation (all
-  `dbg_*` ports and their wiring) once the real bug is found and fixed — it should never persist
-  into a "real" build.
-- **MiSTer's `/dev/fb0` framebuffer is the ARM-side OSD/menu overlay surface, not the FPGA's
-  composited game video output.** Don't use it as evidence about what the core's own video pipeline
-  is doing — use the screenshot API instead, which does capture real scaler-composited output.
-- **When a race/latency bug is suspected in an automated tool, verify against the exact previously-
-  working manual sequence before assuming the deployed binary is stale or wrong** — comparing a
-  failing automated run against a known-good manual run isolated the bug to the automation's own
-  timing rather than the build, in this project's case.
-- **The DE10-nano SDRAM pinout has an authoritative reference already inside the repo — don't go
-  to the web for it.** `Psikyo.qsf` does `source sys/sys.tcl`, and `sys/sys.tcl` (lines ~51–98)
-  *is* the vendor MiSTer template's own SDRAM pin block. Cross-check against a third artifact,
-  `output_files/<rev>.pin`, which records where every signal actually landed post-fit. All 38
-  SDRAM signals were verified identical across all three. Note `Psikyo.qsf` also *restates* every
-  one of those location assignments after the `source` line (the Quartus IDE re-saved the project
-  despite the file's own warning not to open it there) — identical values today, so harmless, but
-  a real maintenance hazard: a future `sys.tcl` update would be silently overridden.
-- **Fitter warning 176250 "Ignoring invalid fast I/O register assignments" is almost always
-  benign, and the Ignored Assignments panel names exactly which one.** Here it was `HDMI_TX_CLK`,
-  which is driven by an `altddio_out` clock-forwarding primitive — the DDIO already occupies the
-  IOE output register, so there is no core register left to migrate and the assignment is
-  correctly dropped. The companion 176251 covers `SDRAM_nCS`/`SDRAM_CKE` (tied to constants) and
-  `SDRAM_CLK` (a raw PLL output) matching the `-to SDRAM_*` wildcard — also nothing to pack. Do
-  not read either warning as evidence about the SDRAM *data* path: confirm by counting the
-  register-packing entries, which showed 16/16 fast input, 16/16 fast output and 16/16 output-
-  enable registers packed on `SDRAM_DQ`.
-- **`Psikyo.srf` (the message-suppression file) is inherited from another core and suppresses
-  messages worth seeing** — notably 15705 ("Ignored locations or region assignments") which could
-  in principle hide a dropped pin assignment. It still contains entries referencing `de10_top.v`,
-  a file that does not exist in this repo. Verify against `output_files/<rev>.pin` rather than
-  trusting that no suppressed message mattered.
-- **The SDRAM_CLK phase shift is a legitimate parameter but a poor first suspect.** `-3 ns` is the
-  standard MiSTer/DE10-nano convention; this project expresses it as the equivalent positive
-  `"8598 ps"` because this `altera_pll` configuration rejects negative values outright (a real
-  `quartus_fit` error, not a style preference) and quantizes to ~132.275 ps steps. Sweeping it to
-  `0 ps` produced byte-identical results to `8598 ps` — which was the clue that the fault was not
-  at the memory interface at all. Revert diagnostic PLL probe values immediately once measured;
-  leaving `phase_shift1` at a scratch value is an easy trap for a later build.
-
-## Tooling / workflow (Quartus, ModelSim, and the shell around them)
-
-- **Working directory does not reliably persist into backgrounded shell commands.** A `cd` done in
-  a previous call, or inside a `&&` chain, may or may not still apply. Every Quartus/ModelSim
-  invocation must either be launched as `cd <project dir> && <tool>` in one command line, or be
-  made cwd-independent. The most robust fix for Tcl-driven tools is to put the `cd` *inside the
-  Tcl script* (`cd D:/Mister-Psikyo` as the first line of `sta_failing_paths.tcl`) so the launch
-  command's cwd stops mattering at all. Symptom when this bites: `Error (23018): Tcl Script File
-  ... not found`, or `Error (12007): Top-level design entity "Psikyo" is undefined`.
-- **`quartus_sta`/`quartus_map`/`quartus_sh` are not on `PATH`** in this environment; invoke by
-  full path (`/c/intelFPGA_lite/17.0/quartus/bin64/quartus_sta.exe`). Note there are two Quartus
-  installs on this machine — `intelFPGA_lite/17.0` and `altera_lite/24.1std`. The project was
-  built with 17.0.2; use it, or the post-fit database will not match.
+- **Working directory does not reliably persist into backgrounded shell commands.** Launch every
+  Quartus/ModelSim invocation as `cd <project dir> && <tool>` in one command line, or make it
+  cwd-independent; for Tcl-driven tools put the `cd` inside the Tcl script. Symptoms:
+  `Error (23018): Tcl Script File ... not found`, or
+  `Error (12007): Top-level design entity "Psikyo" is undefined`.
+- **`quartus_sta`/`quartus_map`/`quartus_sh` are not on `PATH`**; invoke by full path. Two Quartus
+  installs exist on this machine; the project was built with 17.0.2, and using the other means the
+  post-fit database will not match.
+- **Never run Quartus wrapped in `nohup ... &`.** It detaches, the tool call reports "completed"
+  immediately, and the real process runs untracked. Launch the tool directly and let the harness
+  background it.
+- **Never switch git branches while a Quartus process is reading the source tree.** It silently kills
+  the run, leaving a truncated log that looks like a tool crash.
 - **Never leave duplicate tool instances running against the same project.** Overlapping
-  `quartus_map` runs corrupt the shared log; two `vsim` instances launched against the same
-  testbench both write the same output file and killing one can take the other down with it
-  (`Fatal: vish lost connection to vsim process` / `Kernel lost connection to front end`). Check
-  `tasklist | grep -i <tool>` before every launch.
-- **Killed ModelSim runs leave orphaned `vsimk.exe` kernels that keep spinning at 100% CPU
-  indefinitely — across sessions, across days.** Six of them were found still running from the
-  previous day, having burned ~90,000 CPU-seconds between them (one alone had 32,367 s / 9 hours).
-  They are easy to dismiss because their working set drops to ~42–50 MB, versus ~180 MB for an
-  active kernel — size is *not* a liveness signal here, and neither is `tasklist`, which shows no
-  CPU column. **Always check CPU time, not memory:**
+  `quartus_map` runs corrupt the shared log; two `vsim` instances on the same testbench write the
+  same output file, and killing one can take the other down (`Fatal: vish lost connection to vsim
+  process`). Check before every launch.
+- **Sweep for orphaned `vsimk.exe` kernels at the start of any session that runs simulations.**
+  Killed ModelSim runs leave kernels spinning at 100% CPU indefinitely, across days -- six were once
+  found from the previous day having burned ~90,000 CPU-seconds. Their working set drops to ~42-50 MB
+  versus ~180 MB for an active kernel, so size is not a liveness signal, and `tasklist` has no CPU
+  column:
 
   ```powershell
   Get-Process vsim,vsimk | Select-Object Id,ProcessName,CPU,WorkingSet64,StartTime
   ```
 
-  `taskkill //PID <n> //F` fails against these ("could not be terminated"); PowerShell
-  `Stop-Process -Force` succeeds. Left alone they starve every subsequent simulation of CPU, which
-  then looks like the *new* run being pathologically slow — a false lead that directly wastes the
-  monitoring discipline these runs are supposed to have. Sweep for them at the start of any
-  session that runs simulations.
-- **Never run Quartus wrapped in `nohup ... &`.** It detaches, the tool call reports "completed"
-  immediately, and the real process runs untracked. Launch the tool directly as the command and
-  let the harness background it.
-- **Never switch git branches while a Quartus process is reading the source tree** — it silently
-  kills the run, leaving a truncated log that looks like a tool crash.
-- **The ModelSim `work` library lives at the repo root** (`/d/Mister-Psikyo/work`), mapped by each
-  testbench directory's own `modelsim.ini` via `work = ../../work`. Run `vsim` from the testbench
-  directory so that `modelsim.ini` is picked up. To re-test after an RTL change, recompile only
-  the changed files into the existing library (`vcom <file>.vhd`, `vlog -sv <file>.sv`) rather
-  than rebuilding everything.
-
-## Read both halves of a mechanism before changing it
-
-Sprite-vs-sprite depth ordering was inverted on the strength of MAME's draw loop
-alone -- `while (sprite_ptr != m_spritelist.get()) { sprite_ptr--; ... }` reads as
-"draws the list backward, so entry 0 lands on top". Two things were never checked:
-`sprite_frame_buffer`'s `write_en` is unconditional, so later writes win; and the
-*append* side of `get_sprites()` was never read, which is what decides the net
-order. On hardware the change inverted ordering and slowed the game, and it was
-reverted. Half a mechanism is enough to build a confident wrong change.
-
-## Check the framework's source before inventing its behaviour
-
-DIP switches were assumed to arrive through the status word. Two fixes were built
-on that assumption -- a `.CFG` generator, and a `base="16"` attribute added to
-`<switches>` -- and both were invented. One fetch of `Main_MiSTer`'s
-`mra_loader.cpp` showed DIPs arrive as an ioctl download with index 254, are saved
-to `config/dips/<mra name>` rather than the `.CFG`, and that `<switches>` has no
-`base` attribute at all because `hexstr_to_char()` is always hex. The hand-written
-`.CFG` files appeared to work only because they fed the wrong path the core
-happened to read, which masked the real bug for hours.
-
-## A swap is not a copy
-
-`spriteram_dbuf` ping-ponged two banks and its own header argued this was
-"behaviorally identical to MAME's copy-based model as long as the CPU never
-touches the render-role bank". That condition held and the claim was still wrong:
-under ping-pong the CPU's view alternates between two memories, so any entry it
-does not rewrite every frame reads back what was written two frames ago --
-including the display list's end-of-list marker. A frame that ran long and missed
-the marker inherited a stale one further down the list, so the engine rendered far
-more sprites, and the failure compounded under load. Fixing it to a real copy
-removed the ghosting, the stale sprites, and Gun Bird's per-scene sprite freeze.
-
-## Don't guess a sign twice from the same reasoning
-
-A one-tile X offset on both tilemap layers (visible as a one-tile vertical
-error once rotated) was patched with a -16 (one tile) subtraction on
-base_x_scroll, derived from `tilemap_x(screen_col) = base_x_scroll +
-screen_col*16`: increasing base_x_scroll samples further right in tilemap
-space for a given screen column, panning the image left, so correcting the
-image rightward should mean decreasing the scroll value. That derivation
-was measured wrong on hardware -- it moved the tilemaps the wrong way.
-
-Removed rather than flipped. The reasoning that produced -16 was internally
-consistent and still wrong, so flipping to +16 on the strength of the same
-reasoning would just be a second guess wearing the first guess's confidence.
-
-The root cause is still open. Checked and ruled out: a MAME-side
-scrolldx/scrolldy (none exists -- video_start() applies no per-layer
-offset), and an off-by-one in tilemap_coord.sv/tilemap_addrgen.sv's
-col/row -> vram_index math (symmetric, no added constant, previously
-exhaustively verified by sim). Also established: tile_number and color
-are decoded from ONE vram_cell at ONE address in tile_cell_decode, so this
-engine's addressing cannot by itself explain a tile that renders with the
-right shape and the wrong palette (a separate, still-open symptom) -- that
-would have to be in compositor.sv's palette addressing instead.
-
-**Resolved 2026-08-29** — this was the same displacement as the wrong-palette bug tracked
-in `docs/TILEMAP_BUG.md`: a `gfxrom_req`/`gfxrom_valid` handshake bug in
-`tilemap_line_engine.sv` (the request deassert was one clock late, gated combinationally
-to fix it — commit `f54e69b`), not an addressing sign at all. Neither guess above was on
-the right track; the bug wasn't in `tilemap_coord.sv`/`tilemap_addrgen.sv`'s math, and it
-wasn't a scroll constant either.
-
-## Sound: root cause of silence pinned down -- 2026-08-29 overnight
-
-Working through the sound-ISR-completion probe (issp_probe instance "A",
-dbg_latch_ack_event in sound_cpu.sv):
-
-* The Z80 is alive and the 68020->Z80 command path works: address decode for
-  the sound latch (0xC00013) matches MAME's gunbird_map/sngkace_map exactly,
-  and a real sound-latch write was measured during actual gameplay.
-* The Z80's own boot sequence DOES program the YM2610 -- 46 register writes
-  measured immediately after a fresh launch, before any command from the
-  68020. Then it goes silent: zero further YM writes over a later 15s
-  window with no new command.
-* `snd_irq_en` (OSD "Sound IRQ", default OFF) gates `ym_irq_n`. With it OFF,
-  the Z80 runs continuously (saturated ROM-fetch counter) but the YM2610's
-  own timer interrupt -- the standard mechanism arcade sound drivers use to
-  sequence music after the initial "start track" command -- never reaches
-  it, which plausibly explains "one init burst, then permanent silence."
-* Turning it ON was tested directly (device, no user present, CFG bit
-  only): Z80 ROM fetches went to ZERO immediately -- a complete, permanent
-  lockup, not "runs but silent". Reverted; confirmed the Z80 resumes.
-
-Traced further: MAME's machine config (`ymsnd.irq_handler().set_inputline
-("audiocpu", 0)`) confirms the YM2610 IRQ really does go to the Z80's INT
-line -- our wiring is architecturally right. MAME's own note that "no
-explicit interrupt mode is set... defaults to IM 0" is about the hardware
-reset state; the game's own boot code almost certainly executes `IM 1`
-early (standard practice), so by the time a real interrupt fires the CPU
-is likely in IM1, not IM0. sound_cpu.sv's own WAIT_n generation was
-checked and is NOT obviously the cause: `wait_n` correctly defaults to
-ready (1'b1) for any bus cycle that isn't a recognized ROM/mem/IO access,
-which includes the M1_n+IORQ_n interrupt-acknowledge signature.
-
-So the lockup is NOT explained by anything checked so far by inspection.
-T80 is a widely-vendored, proven core (used in dozens of MiSTer arcade
-cores), so a broken interrupt mode is a low-probability explanation:
-something specific to THIS wiring is more likely. No CPU-internal
-visibility (PC, HALT state) exists yet to go further without another
-build-and-instrument cycle.
-
-**Do not re-enable Sound IRQ by default, and do not attempt a blind fix to
-this path without a way to verify it worked** -- a hang is a worse
-regression than silence. Suggested next probe: expose T80's `halt_n`, and
-ideally its PC, over ISSP, then re-enable Sound IRQ and read them at the
-moment ROM fetches stop, to distinguish "stuck in HALT" from "stuck inside
-T80's own interrupt-acceptance FSM" from "jumped to a bad address and is
-executing garbage".
-
-**Update, later the same session:** the latch-decode, Z80 clock-enable, spurious
-ROM-re-request, and arbiter round-robin bugs (all separate from the Sound-IRQ question
-above) were found and fixed -- see `docs/ROADMAP.md`'s "Fix sound" item. Audio is no
-longer silent. **The Sound IRQ caution above is now RESOLVED:** with those transport
-fixes in place, enabling the IRQ no longer locks the Z80 -- and it is REQUIRED (the
-YM2610 timer IRQ sequences music; with it off, samuraia plays no music at all, verified
-by ear on hardware). It now defaults ON: `status[51]` is inverted so a fresh/all-zero
-`.CFG` gets music, OSD order "On,Off" (commit `8dbcb51`), and `scripts/write_cfg.py`
-seeds it ON. The original lesson stands as history: do not blind-enable an IRQ path with
-no way to verify the result. ADPCM-A playback was a separate problem, since fixed -- see
-the same ROADMAP item.
-
-## The mod byte must precede the ROM it gates
-
-The `.mra`'s `<rom index="1">` mod byte is sent in file order, and `mod_board`
-powers up 0 on every FPGA reprogram. With the mod byte listed after
-`<rom index="0">`, any download-time consumer of it — `needs_adpcma_swap`
-gating the samuraia/sngkace ADPCM-A bit 6/7 swap — sees 0 for the whole ROM
-download and silently does nothing. `board_gunbird` never exposed this because
-it is only read at runtime, long after the latch. The swap logic, transform,
-and address window were all verified correct while the feature did nothing at
-all: the gate opened after the data had passed. Every `.mra` now lists
-`<rom index="1">` first, and any future download-time use of `mod_board` must
-keep it that way. (2026-08-29, confirmed by ear on hardware: samuraia ADPCM
-wrong with the mod byte last, correct with it first, same bitstream.)
+  `taskkill //PID <n> //F` fails against these; `Stop-Process -Force` succeeds. Left alone they
+  starve every later simulation, which then looks like the new run being pathologically slow.
+- **The ModelSim `work` library lives at the repo root**, mapped by each testbench directory's
+  `modelsim.ini` via `work = ../../work`. Run `vsim` from the testbench directory so it is picked up.
+  After an RTL change recompile only the changed files (`vcom`, `vlog -sv`) rather than rebuilding.

@@ -35,7 +35,7 @@ import xml.etree.ElementTree as ET
 # Elements whose text content is meaningful and must not be flagged.
 TEXT_OK = {'part', 'name', 'setname', 'year', 'manufacturer', 'category',
            'rbf', 'rotation', 'players', 'joystick', 'region', 'about',
-           'mratimestamp', 'catver', 'mameversion', 'status'}
+           'mratimestamp', 'catver', 'mameversion', 'status', 'nvram'}
 
 
 def check(path):

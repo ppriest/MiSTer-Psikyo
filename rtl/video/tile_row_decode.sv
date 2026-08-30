@@ -23,26 +23,26 @@
 // flip_x mirrors the whole 16-pixel row (sprite/tile horizontal flip).
 
 module tile_row_decode (
-    input  logic [7:0] row_bytes [0:7],  // row_bytes[0] = leftmost byte (pixels 0,1)
-    input  logic        flip_x,
-    output logic [3:0]  pixel [0:15]     // pixel[0] = leftmost displayed pixel
+	input  logic [7:0] row_bytes [0:7],  // row_bytes[0] = leftmost byte (pixels 0,1)
+	input  logic        flip_x,
+	output logic [3:0]  pixel [0:15]     // pixel[0] = leftmost displayed pixel
 );
 
-    logic [3:0] natural [0:15];
+	logic [3:0] natural [0:15];
 
-    genvar gx;
-    generate
-        for (gx = 0; gx < 16; gx++) begin : g_natural
-            // even x -> high nibble of byte[x/2], odd x -> low nibble
-            assign natural[gx] = gx[0] ? row_bytes[gx/2][3:0] : row_bytes[gx/2][7:4];
-        end
-    endgenerate
+	genvar gx;
+	generate
+		for (gx = 0; gx < 16; gx++) begin : g_natural
+			// even x -> high nibble of byte[x/2], odd x -> low nibble
+			assign natural[gx] = gx[0] ? row_bytes[gx/2][3:0] : row_bytes[gx/2][7:4];
+		end
+	endgenerate
 
-    genvar gy;
-    generate
-        for (gy = 0; gy < 16; gy++) begin : g_out
-            assign pixel[gy] = flip_x ? natural[15 - gy] : natural[gy];
-        end
-    endgenerate
+	genvar gy;
+	generate
+		for (gy = 0; gy < 16; gy++) begin : g_out
+			assign pixel[gy] = flip_x ? natural[15 - gy] : natural[gy];
+		end
+	endgenerate
 
 endmodule

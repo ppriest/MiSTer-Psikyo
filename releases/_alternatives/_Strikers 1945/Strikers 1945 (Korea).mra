@@ -1,7 +1,8 @@
 <misterromdescription>
-	<about author="Mister-Psikyo project" webpage="" source="MAME psikyo.cpp"/>
+	<about author="Paul Priest" webpage="" source="MAME psikyo.cpp"/>
 	<name>Strikers 1945 (Korea)</name>
 	<setname>s1945k</setname>
+	<mameversion>0298</mameversion>
 	<year>1995</year>
 	<manufacturer>Psikyo</manufacturer>
 	<category>Shoot 'Em Up</category>
@@ -12,7 +13,7 @@
 	<region>Korea</region>
 
 	<rom index="1"><part>0D 00 00 00 00 00 64 AE 00 00 26 2C 00 00 2C DA 00 00 2C BC 00 00 2C 9E 00 00 2F 0E 00 00 31 10 00 00 C5 1E 00 00 32 90 00 00 AC 5C 00 00 2B C0</part></rom>
-	<rom index="0" zip="s1945k.zip|s1945.zip" md5="none">
+	<rom index="0" zip="s1945k.zip|s1945.zip" md5="none" address="0x30000000">
 		<interleave output="32">
 			<part name="10.u40" crc="5a32af36" map="0012"/>
 			<part name="9.u41" crc="29cc6d7d" map="1200"/>
@@ -45,6 +46,15 @@
 		<part name="u1.bin" crc="dee22654"/>
 	</rom>
 
+	<rom index="3">
+		<part>
+		00 00 00 00 3F FF 00 02 00 02 00 01 00 0F 10 00
+		00 FE 2A F8 78 2D F8 00
+		</part>
+	</rom>
+
+	<nvram index="4" size="120"/>
+
 	<buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause" default="Y,B,A,Start,Select,R" count="3"/>
 
 	<switches default="FD,FF,0F">
@@ -61,5 +71,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On,Off"/>
 	</switches>
 
-	<mratimestamp>20260830000000</mratimestamp>
+	<mratimestamp>20260830113651</mratimestamp>
 </misterromdescription>
