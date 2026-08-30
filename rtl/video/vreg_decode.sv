@@ -85,6 +85,13 @@ module vreg_decode (
     // and btlkroad take each layer's tile bank from layer-control bit 10,
     // sngkace/samuraia have it fixed at 0 (layer 0) and 1 (layer 1).
     input  logic         ka302c_banking,
+    // SH404 banking (s1945/tengai, wins over ka302c_banking): the security
+    // MCU's bctrl register drives both banks, full 2-bit -- layer 0 from
+    // bctrl[5:4], layer 1 from bctrl[7:6] (psikyo.cpp s1945_mcu_bctrl_w:
+    // switch_bgbanks(1, data>>6&3); switch_bgbanks(0, data>>4&3)). Tengai's
+    // 4MB tile ROM is why the banks are 2 bits.
+    input  logic         sh404_banking,
+    input  logic [7:0]  mcu_bctrl,
 
     input  logic         dbg_dump_en,
     input  logic [12:0] dbg_dump_addr,
@@ -144,7 +151,8 @@ module vreg_decode (
     assign layer0_mode              = l0_ctrl[7:6];
     assign layer0_rowscroll_enable  = l0_ctrl[8];
     assign layer0_rowscroll_pertile = l0_ctrl[9];
-    assign layer0_bank              = ka302c_banking ? {1'b0, l0_ctrl[10]} : 2'd0; // see KA302C_BANKING
+    assign layer0_bank              = sh404_banking  ? mcu_bctrl[5:4]
+                                     : ka302c_banking ? {1'b0, l0_ctrl[10]} : 2'd0; // see banking comments above
 
     assign layer1_enable            = ~l1_ctrl[0];   // active low, see layer0_enable
     assign layer1_opaque            = l1_ctrl[1];
@@ -152,7 +160,8 @@ module vreg_decode (
     assign layer1_mode              = l1_ctrl[7:6];
     assign layer1_rowscroll_enable  = l1_ctrl[8];
     assign layer1_rowscroll_pertile = l1_ctrl[9];
-    assign layer1_bank              = ka302c_banking ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia -- see KA302C_BANKING
+    assign layer1_bank              = sh404_banking  ? mcu_bctrl[7:6]
+                                     : ka302c_banking ? {1'b0, l1_ctrl[10]} : 2'd1; // fixed bank 1 on sngkace/samuraia
 
     logic [15:0] l0_ram_b_rdata;
     dpram #(.ADDR_WIDTH(13), .DATA_WIDTH(16)) u_ram_l0 (

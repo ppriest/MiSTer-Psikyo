@@ -29,6 +29,15 @@ module tb_vreg_decode;
     logic         layer0_rowscroll_enable, layer1_rowscroll_enable;
     logic         layer0_rowscroll_pertile, layer1_rowscroll_pertile;
 
+    logic sh404_banking = 1'b0;
+    logic [7:0] mcu_bctrl = 8'd0;
+    // These predate this fix too: the TB had not been recompiled since the
+    // banking/debug-dump ports were added to vreg_decode.
+    logic ka302c_banking = 1'b0;
+    logic dbg_dump_en = 1'b0;
+    logic [12:0] dbg_dump_addr = '0;
+    wire  [15:0] dbg_dump_data;
+
     vreg_decode dut (.*);
 
     int errors = 0;
@@ -68,12 +77,14 @@ module tb_vreg_decode;
         cpu_write(13'h0203, 16'h0022); // layer0 X scroll base
         cpu_write(13'h0205, 16'h0033); // layer1 Y scroll
         cpu_write(13'h0207, 16'h0044); // layer1 X scroll base
-        // layer0 ctrl: enable=1, opaque=1, transpen_sel=1, mode=2 (bits7-6=10),
-        // rowscroll_enable=1, rowscroll_pertile=0
-        cpu_write(13'h0209, 16'b0000_0001_1000_1011);
-        // layer1 ctrl: enable=1, mode=3 (11), rowscroll_enable=1,
+        // layer0 ctrl: bit0=0 -> ENABLED (enable is ACTIVE LOW, see
+        // vreg_decode's layer0_enable comment -- this TB predated that fix
+        // and wrote bit0=1 expecting enable=1), opaque=1, transpen_sel=1,
+        // mode=2 (bits7-6=10), rowscroll_enable=1, rowscroll_pertile=0
+        cpu_write(13'h0209, 16'b0000_0001_1000_1010);
+        // layer1 ctrl: bit0=0 -> enabled, mode=3 (11), rowscroll_enable=1,
         // rowscroll_pertile=1
-        cpu_write(13'h020B, 16'b0000_0011_1100_0001);
+        cpu_write(13'h020B, 16'b0000_0011_1100_0000);
 
         // Case 4: plain scratch RAM elsewhere in the region, unrelated to
         // any of the fixed fields above -- must round-trip via the CPU
@@ -107,6 +118,15 @@ module tb_vreg_decode;
         if (layer1_mode !== 2'b11)               begin errors++; $display("FAIL l1 mode=%b expected=11", layer1_mode); end
         if (layer1_rowscroll_enable !== 1'b1)   begin errors++; $display("FAIL l1 rowscroll_enable"); end
         if (layer1_rowscroll_pertile !== 1'b1)  begin errors++; $display("FAIL l1 rowscroll_pertile"); end
+
+        // SH404 banking: bctrl[5:4] -> layer0, bctrl[7:6] -> layer1, and it
+        // wins over ka302c_banking (docs/phase2_sh404.md).
+        sh404_banking = 1'b1; mcu_bctrl = 8'hB0;   // 10_11_0000
+        #1;
+        if (layer0_bank !== 2'd3) begin errors++; $display("FAIL sh404 l0 bank=%0d expected=3", layer0_bank); end
+        if (layer1_bank !== 2'd2) begin errors++; $display("FAIL sh404 l1 bank=%0d expected=2", layer1_bank); end
+        sh404_banking = 1'b0; mcu_bctrl = 8'd0;
+        #1;
 
         // Verify plain scratch RAM round-trip via CPU port.
         @(posedge clk);

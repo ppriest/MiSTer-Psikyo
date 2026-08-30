@@ -24,8 +24,8 @@ module tb_psikyo_sdram_top;
     localparam logic [24:0] AUDIOCPU_BASE  = 25'h0200000;
     localparam logic [24:0] SPRITES_BASE   = 25'h0240000;
     localparam logic [24:0] TILES_BASE      = 25'h0A40000;
-    localparam logic [24:0] ADPCMA_BASE     = 25'h0C40000;
-    localparam logic [24:0] SPRITELUT_BASE = 25'h0DC0000;
+    localparam logic [24:0] ADPCMA_BASE     = 25'h0E40000;
+    localparam logic [24:0] SPRITELUT_BASE = 25'h1240000;
 
     logic         ioctl_download;
     logic [15:0] ioctl_index;
@@ -61,7 +61,7 @@ module tb_psikyo_sdram_top;
     logic         adpcma_rom_valid;
     logic [7:0]  adpcma_rom_data;
     logic         adpcmb_rom_req;
-    logic [19:0] adpcmb_rom_addr;
+    logic [20:0] adpcmb_rom_addr;
     logic         adpcmb_rom_valid;
     logic [7:0]  adpcmb_rom_data;
     logic         needs_adpcma_swap;
@@ -106,6 +106,12 @@ module tb_psikyo_sdram_top;
     );
 
     int errors = 0;
+
+    // Captures the c0 (ADPCM-B) client address actually presented to the
+    // arbiter -- see the delta-T ROM select test for why a hierarchical
+    // probe is needed there instead of a data readback.
+    logic [24:0] last_c0_addr;
+    always @(posedge clk) if (dut.c0_req) last_c0_addr <= dut.c0_addr;
 
     // Pulse ioctl_wr for one cycle, then wait for ioctl_wait to drop --
     // matches sim/ddram_download_tb/tb_ddram_download.sv's already-proven
@@ -325,12 +331,37 @@ module tb_psikyo_sdram_top;
 
         needs_adpcma_swap = 1;
         dl_write_byte(ADPCMA_BASE + 25'd24, 8'h40);
-        adpcmb_rom_addr = 20'd24; adpcmb_rom_req = 1;
+        adpcmb_rom_addr = 21'd24; adpcmb_rom_req = 1;
         @(posedge clk);
         while (!adpcmb_rom_valid) @(posedge clk);
         check8(adpcmb_rom_data, 8'h80, "adpcmb_rom_data (swap on)");
         adpcmb_rom_req = 0;
         needs_adpcma_swap = 0;
+
+        // Delta-T ROM select (adpcmb_rom_addr bit 20 -> +0x100000, the slot
+        // gunbird/btlkroad's separate u64 image occupies). The chip model's
+        // row folding makes +0 and +0x100000 alias to the SAME modeled
+        // storage (see the per-region comment above), so a data readback
+        // cannot see this bit at all -- assert on the DUT's own c0 client
+        // address instead, which is exactly the arithmetic this bit feeds.
+        // Also prove the samuraia bit 6/7 swap does NOT touch the delta-T
+        // slot: its window is the first 1MB only, so 0x40 written at
+        // +0x100000 with the swap enabled must come back unswapped (the
+        // swap happens on the download path, before the model, so aliasing
+        // does not blind THIS check).
+        needs_adpcma_swap = 1;
+        dl_write_byte(ADPCMA_BASE + 25'h100000 + 25'd40, 8'h40);
+        needs_adpcma_swap = 0;
+        adpcmb_rom_addr = {1'b1, 20'd40}; adpcmb_rom_req = 1;
+        @(posedge clk);
+        while (!adpcmb_rom_valid) @(posedge clk);
+        check8(adpcmb_rom_data, 8'h40, "adpcmb_rom_data (delta-T ROM slot, swap-window exempt)");
+        if (last_c0_addr !== (ADPCMA_BASE + 25'h100000 + 25'd40)) begin
+            errors++;
+            $display("FAIL adpcmb c0_addr: got=%h expected=%h",
+                     last_c0_addr, ADPCMA_BASE + 25'h100000 + 25'd40);
+        end
+        adpcmb_rom_req = 0;
 
         ioctl_download = 0;
 

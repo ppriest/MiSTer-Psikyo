@@ -30,9 +30,11 @@
 		<part name="u34.bin" crc="e6a75bd8"/>
 		<part name="u35.bin" crc="c4ca0164"/>
 
+		<part repeat="0x200000">FF</part>
+
 		<part name="u68.bin" crc="9a7f6c34"/>
 
-		<part repeat="0x80000">FF</part>
+		<part repeat="0x300000">FF</part>
 
 		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
@@ -53,5 +55,5 @@
 		<dip name="2 Coins Start, 1 Coin Continue" bits="15" ids="On (Free Play),Off"/>
 	</switches>
 
-	<mratimestamp>20260825000000</mratimestamp>
+	<mratimestamp>20260830000000</mratimestamp>
 </misterromdescription>

@@ -70,6 +70,7 @@ module tb_tilemap_screen_sdram;
     logic         l0_rs_pertile, l1_rs_pertile;
 
     vreg_decode u_vregs (
+        .sh404_banking(1'b0), .mcu_bctrl(8'd0),
         .clk(clk), .reset(reset),
         .cpu_addr(vregs_cpu_addr), .cpu_wel(vregs_cpu_wel), .cpu_weh(vregs_cpu_weh),
         .cpu_wdata(vregs_cpu_wdata), .cpu_rdata(vregs_cpu_rdata),

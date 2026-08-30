@@ -61,6 +61,9 @@ module tb_psikyo_top_sound;
     logic         SDRAM_nCS, SDRAM_nWE, SDRAM_nRAS, SDRAM_nCAS, SDRAM_CLK, SDRAM_CKE;
 
     psikyo_top #(.BOARD_GUNBIRD(1'b0)) dut (
+        // SH404 ports tied off (docs/phase2_sh404.md); this TB predates them
+        .board_sh404(1'b0), .snd_latch_c00011(1'b0), .mcu_table_absent(1'b0),
+        .mcu_table_we(1'b0), .mcu_table_waddr(8'd0), .mcu_table_wdata(8'd0),
         .clk(clk), .ce_pix(ce_pix), .reset(reset), .init(1'b0),
         .SDRAM_A(SDRAM_A), .SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
         .SDRAM_BA(SDRAM_BA), .SDRAM_nCS(SDRAM_nCS), .SDRAM_nWE(SDRAM_nWE),

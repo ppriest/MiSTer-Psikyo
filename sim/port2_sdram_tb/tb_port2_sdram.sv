@@ -50,7 +50,7 @@ module tb_port2_sdram;
     localparam logic [24:0] MAINCPU_BASE   = 25'h0000000;
     localparam logic [24:0] AUDIOCPU_BASE  = 25'h0200000;
     localparam logic [24:0] SPRITES_BASE   = 25'h0240000;
-    localparam logic [24:0] SPRITELUT_BASE = 25'h0DC0000;
+    localparam logic [24:0] SPRITELUT_BASE = 25'h1240000;
 
     // ---- sdram_arbiter5 physical port + sdram + chip model ----
     logic         phy_req, phy_we, phy_busy, phy_valid;

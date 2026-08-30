@@ -117,6 +117,14 @@ module sound_cpu (
     // RUNTIME input, not a compile-time parameter: one .rbf serves all
     // three games.
     input logic board_gunbird,
+    // SH403/SH404 (s1945/tengai): same program map and bank register as
+    // gunbird (board_gunbird is also set on these boards), but the I/O map
+    // moves: sound chip window 0x08-0x0D, latch read 0x10, latch ack 0x18
+    // (psikyo.cpp s1945_sound_io_map). The real chip is a YMF278B; jt10
+    // stands in for now (docs/phase2_sh404.md "Sound IO map"), so only
+    // 0x08-0x0B reach it and the wave ports 0x0C-0x0D read back 0x00
+    // ("ready" -- 0xFF would read as busy-forever to a polling loop).
+    input logic board_sh404,
 
     // external program ROM (128KB physical, 17-bit addr), req/valid --
     // rom_req pulses once per access (while !rom_pending, see below);
@@ -201,12 +209,17 @@ module sound_cpu (
     always_ff @(posedge clk) ram_rd_data <= ram[ram_addr];
 
     // ---- I/O decode ----
-    logic io_ym, io_bank, io_latch_rd, io_latch_ack;
-    assign io_ym        = board_gunbird ? ((a[7:0] >= 8'h04) && (a[7:0] <= 8'h07))
+    logic io_ym, io_bank, io_latch_rd, io_latch_ack, io_wave;
+    assign io_ym        = board_sh404   ? ((a[7:0] >= 8'h08) && (a[7:0] <= 8'h0B))
+                        : board_gunbird ? ((a[7:0] >= 8'h04) && (a[7:0] <= 8'h07))
                                         : (a[7:0] <= 8'h03);
-    assign io_bank      = board_gunbird ? (a[7:0] == 8'h00) : (a[7:0] == 8'h04);
-    assign io_latch_rd  = (a[7:0] == 8'h08);
-    assign io_latch_ack = (a[7:0] == 8'h0C);
+    // SH404's OPL4 wave ports; unimplemented, reads return "ready".
+    // Writes there (and to 0x02/0x03, nop'd in MAME) fall through
+    // undecoded and are ignored.
+    assign io_wave      = board_sh404 && ((a[7:0] == 8'h0C) || (a[7:0] == 8'h0D));
+    assign io_bank      = (board_gunbird | board_sh404) ? (a[7:0] == 8'h00) : (a[7:0] == 8'h04);
+    assign io_latch_rd  = board_sh404 ? (a[7:0] == 8'h10) : (a[7:0] == 8'h08);
+    assign io_latch_ack = board_sh404 ? (a[7:0] == 8'h18) : (a[7:0] == 8'h0C);
 
     logic io_active_rd, io_active_wr;
     assign io_active_rd = (iorq_n == 1'b0) && (rd_n == 1'b0);
@@ -248,6 +261,7 @@ module sound_cpu (
             else                    di = rom_data_hold;   // fixed or banked ROM (held, see rom_done)
         end else if (io_active_rd) begin
             if (io_ym)               di = ym_din;
+            else if (io_wave)       di = 8'h00;       // OPL4 wave port stub: "ready"
             else if (io_latch_rd)  di = latch_reg;
             else                     di = 8'hFF;       // unmapped I/O read
         end else begin

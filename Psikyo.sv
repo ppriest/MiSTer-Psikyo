@@ -276,10 +276,19 @@ wire signed [15:0] snd_left, snd_right;
 // sngkace/samuraia. Latched, never reset by `reset`, because MiSTer holds the
 // core in reset for the whole download -- the same trap that silently
 // discarded every SDRAM write earlier in this project.
+// The index-1 payload is now multi-byte (docs/phase2_sh404.md "Mod byte"):
+// byte 0 = board flags, bytes 4..47 = the SH404 security MCU's answer
+// table (s1945 sets only; forwarded raw to rtl/cpu/s1945_mcu.sv's table
+// RAM). The flags latch is gated on ioctl_addr == 0 -- without that gate
+// it would re-latch on EVERY payload byte and end up holding the last
+// table byte instead of the flags.
 reg [7:0] mod_board = 8'd0;
 always @(posedge clk_sys) begin
-	if (ioctl_wr && ioctl_index == 16'd1) mod_board <= ioctl_dout;
+	if (ioctl_wr && ioctl_index == 16'd1 && ioctl_addr == 25'd0) mod_board <= ioctl_dout;
 end
+wire mcu_table_we = ioctl_wr && (ioctl_index == 16'd1)
+                  && (ioctl_addr >= 25'd4) && (ioctl_addr < 25'd260);
+wire [7:0] mcu_table_waddr = 8'(ioctl_addr - 25'd4);
 wire board_gunbird = mod_board[0];
 // bit 1: samuraia/samuraiak/sngkace/sngkacea's ADPCM-A ROM needs MAME's
 // init_sngkace() bit 6/7 swap applied at download time -- gunbird/btlkroad
@@ -288,6 +297,13 @@ wire board_gunbird = mod_board[0];
 // grouped with samuraia/sngkace despite being neither literally). See
 // rtl/memory/psikyo_sdram_top.sv's needs_adpcma_swap port comment.
 wire needs_adpcma_swap = mod_board[1];
+// bit 2: sound latch at 0xC00011 instead of 0xC00013 (s1945n and all
+// SH404 sets). bit 3: SH404 board (security MCU, bctrl tile banking,
+// s1945 sound I/O map). bit 4: the MCU has no answer table (tengai) --
+// distinct from an all-zero table, see rtl/cpu/s1945_mcu.sv.
+wire snd_latch_c00011 = mod_board[2];
+wire board_sh404      = mod_board[3];
+wire mcu_table_absent = mod_board[4];
 
 wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 
@@ -513,6 +529,12 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0), .DEBUG_TRACER(DEBUG_TRACER_EN)) psikyo_top
 	.dsw_in(dsw_in),
 	.coin_in(coin_in),
 	.board_gunbird(board_gunbird),
+	.board_sh404(board_sh404),
+	.snd_latch_c00011(snd_latch_c00011),
+	.mcu_table_absent(mcu_table_absent),
+	.mcu_table_we(mcu_table_we),
+	.mcu_table_waddr(mcu_table_waddr),
+	.mcu_table_wdata(ioctl_dout),
 	.needs_adpcma_swap(needs_adpcma_swap),
 	.snd_left(snd_left), .snd_right(snd_right),
 

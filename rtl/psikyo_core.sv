@@ -25,13 +25,11 @@
 //      sprite_render_engine.frame_start, gated by sprites_disable. Starting
 //      earlier would render from a half-copied snapshot. If sprites are
 //      disabled the engine is never kicked, which is "no sprites drawn".
-// sprite_frame_buffer.frame_swap is driven from frame_start (suppressed
-// while rendering is still busy), NOT from sprite_render_engine.frame_done.
-// Swapping on frame_done toggles the display bank at whatever point in the
-// frame rendering happens to end, which is usually mid-scanout -- the
-// compositor then reads the top of the picture from one bank and the bottom
-// from the other. Swapping at the frame boundary keeps a finished bank
-// visible for a whole frame. See the sequencing block further down.
+// sprite_frame_buffer.frame_swap is driven from sprite_render_engine's
+// frame_done in the DEFAULT swap policy (runtime bit selects the
+// alternative frame-boundary policy, which was tried and stopped the core
+// booting on hardware -- see the "sprite output-buffer swap policy"
+// block further down and docs/sprite_buffering.md for that history).
 module psikyo_core #(
     parameter bit BOARD_GUNBIRD = 1'b0,
     parameter bit DEBUG_TRACER  = 1'b1
@@ -73,6 +71,15 @@ module psikyo_core #(
 
     // Board variant, runtime (from the .mra mod byte) -- see maincpu.sv.
     input  logic         board_gunbird,
+    // SH403/SH404 (s1945/tengai): security MCU + bctrl tile banking +
+    // relocated sound latch -- docs/phase2_sh404.md. snd_latch_c00011 is
+    // separate because s1945n moves only the latch.
+    input  logic         board_sh404,
+    input  logic         snd_latch_c00011,
+    input  logic         mcu_table_absent,
+    input  logic         mcu_table_we,
+    input  logic [7:0]  mcu_table_waddr,
+    input  logic [7:0]  mcu_table_wdata,
 
     // Sound latch handshake -- to a sound CPU wrapper, not instantiated here.
     output logic [7:0]  latch_data,
@@ -122,17 +129,10 @@ module psikyo_core #(
         .clk(clk), .ce_pix(ce_pix), .reset(reset),
         .hcnt(hcnt), .vcnt(vcnt), .vcnt_active(vcnt_active),
         .h_active(h_active), .v_active(v_active),
-        .hblank(hblank_timing), .vblank(vblank),
+        .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync),
         .line_start(line_start), .frame_start(frame_start)
     );
-
-    // Gunbird-family: shrink the visible area by ONE pixel on the right
-    // (hcnt 319 blanked) to hide a small right-edge artifact -- display
-    // window only; the render/fetch pipelines still see the full 320 via
-    // the internal h_active, so nothing upstream changes.
-    logic hblank_timing;
-    assign hblank = hblank_timing | (board_gunbird && hcnt == 9'd319);
 
     // ---- CPU-facing BRAM region ports (maincpu.sv's own port shapes) ----
     logic [11:0] spr_cpu_addr;
@@ -159,6 +159,10 @@ module psikyo_core #(
     logic         workram_cpu_wel, workram_cpu_weh;
     logic [15:0] workram_cpu_wdata, workram_cpu_rdata;
 
+    // SH404 MCU bctrl register (lives in maincpu's s1945_mcu instance);
+    // vreg_decode takes its tile banks from bits 7:4.
+    logic [7:0] mcu_bctrl;
+
     maincpu u_cpu (
         .clk(clk), .reset(reset),
         .rom_req(cpu_rom_req), .rom_addr(cpu_rom_addr), .rom_valid(cpu_rom_valid), .rom_data(cpu_rom_data),
@@ -175,6 +179,10 @@ module psikyo_core #(
         .workram_addr(workram_cpu_addr), .workram_wel(workram_cpu_wel), .workram_weh(workram_cpu_weh),
         .workram_wdata(workram_cpu_wdata), .workram_rdata(workram_cpu_rdata),
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird), .pause(effective_pause),
+        .board_sh404(board_sh404), .snd_latch_c00011(snd_latch_c00011),
+        .mcu_table_absent(mcu_table_absent), .mcu_table_we(mcu_table_we),
+        .mcu_table_waddr(mcu_table_waddr), .mcu_table_wdata(mcu_table_wdata),
+        .mcu_bctrl(mcu_bctrl),
         .latch_data(latch_data), .latch_write(latch_write),
         .vblank(vblank)
     );
@@ -545,7 +553,8 @@ module psikyo_core #(
         .layer1_bank(l1_bank), .layer1_enable(l1_enable), .layer1_opaque(l1_opaque),
         .layer1_transpen_sel(l1_transpen_sel),
         .layer1_rowscroll_enable(l1_rs_en), .layer1_rowscroll_pertile(l1_rs_pertile),
-        .ka302c_banking(board_gunbird), .dbg_dump_en(vregs_dump_active), .dbg_dump_addr(vregs_dump_addr),
+        .ka302c_banking(board_gunbird), .sh404_banking(board_sh404), .mcu_bctrl(mcu_bctrl),
+        .dbg_dump_en(vregs_dump_active), .dbg_dump_addr(vregs_dump_addr),
         .dbg_dump_data(vregs_dump_data)
     );
 
@@ -912,8 +921,19 @@ module psikyo_core #(
     // for sprites) are read in parallel; their outputs arrive one cycle
     // after the compositor chose a winner, so the select is registered to
     // match -- the same alignment a single address-side mux would have.
+    //
+    // Edge masking: the outermost display column on each side carries a
+    // scroll-seam artifact on real content, so both are forced to black.
+    // This is a COLOR mask, deliberately not a display-window change:
+    // narrowing hblank to 318 active pixels broke the framework's HDMI
+    // path (diagonal shear, hardware-confirmed 2026-08-30), so the
+    // geometry stays a full 320 wide and only the pixels are blanked.
+    // hcnt is current for the whole 12-clock ce_pix period this pixel's
+    // palette read completes in, so the combinational mask is aligned
+    // with the data it masks.
     always_ff @(posedge clk) comp_sprite_sel_d <= comp_sprite_sel;
-    assign rgb = comp_sprite_sel_d ? pal_s_data[14:0] : pal_data[14:0];
+    assign rgb = (hcnt == 9'd0 || hcnt == 9'd319) ? 15'd0
+               : comp_sprite_sel_d ? pal_s_data[14:0] : pal_data[14:0];
 
 
     // ---- debug tracer (two buffers, no source selection) ------------------

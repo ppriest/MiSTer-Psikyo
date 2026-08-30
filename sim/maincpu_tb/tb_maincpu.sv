@@ -77,6 +77,11 @@ module tb_maincpu;
     // .mra mod byte (this TB predates that); .* binds it to this signal.
     logic board_gunbird;
     assign board_gunbird = 1'b0;
+    // SH404 ports (docs/phase2_sh404.md), tied off: this TB tests the
+    // sngkace board paths.
+    logic board_sh404 = 1'b0, snd_latch_c00011 = 1'b0, mcu_table_absent = 1'b0, mcu_table_we = 1'b0;
+    logic [7:0] mcu_table_waddr = 8'd0, mcu_table_wdata = 8'd0;
+    wire  [7:0] mcu_bctrl;
     // pause: also added after this TB was written; never asserted here.
     logic pause;
     assign pause = 1'b0;

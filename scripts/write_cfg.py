@@ -77,6 +77,18 @@ DIP_DEFAULTS = {
     "samuraia": (0xFD, 0xFF, 0xFF),
     "gunbird":  (0xFD, 0xFF, 0x0F),
     "btlkroad": (0xFD, 0xFF, 0x00),
+    # SH404 family (docs/phase2_sh404.md): byte2 upper nibble MUST stay 0
+    # (bits 7:4 are bctrl readback / the vblank-spin bit on s1945n), low
+    # nibble F = World on s1945/tengai/s1945n, Japan on s1945a/tengaij,
+    # unused on s1945j/s1945k/s1945nj.
+    "s1945":    (0xFD, 0xFF, 0x0F),
+    "s1945a":   (0xFD, 0xFF, 0x0F),
+    "s1945j":   (0xFD, 0xFF, 0x0F),
+    "s1945k":   (0xFD, 0xFF, 0x0F),
+    "s1945n":   (0xFD, 0xFF, 0x0F),
+    "s1945nj":  (0xFD, 0xFF, 0x0F),
+    "tengai":   (0xFD, 0xFF, 0x0F),
+    "tengaij":  (0xFD, 0xFF, 0x0F),
 }
 
 CFG_LEN = 16

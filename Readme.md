@@ -4,68 +4,35 @@ MiSTer FPGA core for the original Psikyo shooter arcade hardware, built with Qua
 17.0.2 Lite for the DE10-nano.
 
 Phase 1 covers the SH201B/KA302C boards: Samurai Aces / Sengoku Ace, Gun Bird and
-Battle K-Road. Strikers 1945 and Tengai (SH403/SH404) are a later phase — they need a
-PIC protection FSM and a YMF278B, neither of which exists yet.
+Battle K-Road. 
+Phase 2 adds Strikers 1945 and Tengai (SH403/SH404): the PIC16C57 protection device is
+simulated the same way MAME simulates it, with the per-set answer table delivered by each
+`.mra`, and tile banking driven from the security device's bctrl register -- see
+`docs/phase2_sh404.md` for the full analysis.
 
 ## Status
 
-All three Phase 1 games boot and run on real hardware. Known defects remain in audio and
-in game speed under sprite load; see below. Builds are published in `releases/`.
+The Phase 1 games (Samurai Aces / Sengoku Ace, Gunbird, Battle K-Road) are in good shape,
+with minor graphical and audio issues. Strikers 1945 and Tengai are newly wired and under
+bring-up. Builds are published in `releases/`.
 
-Working, confirmed on hardware:
+Details:
 
 * 68EC020 (TG68K kernel at 16 MHz)
-* ROM loading from `.mra` for all three games
+* ROM loading from `.mra` for all supported games
+* SH403/SH404 security-device simulation (`rtl/cpu/s1945_mcu.sv`) and bctrl tile banking
 * Both tilemap layers, sprites, palette, DIP switches, inputs
-* Runtime board-variant selection, so one `.rbf` serves all three games
-* Scandoubler / gamma / scanline effects via `sys/arcade_video.v`
 * Rotation and 180° flip over HDMI via the HPS framebuffer
-* CPU pause, and the debug overlay used for bring-up
-* DIP switches, delivered via ioctl index 254 as MiSTer actually sends them
-* Sprite RAM buffered as a true copy at vblank, matching buffered_spriteram32_device --
-  this fixed sprite ghosting, stale sprites, and Gun Bird's per-scene sprite freeze
-* Sprite-vs-tilemap priority. The `primask` table (`{0, 0xFC, 0xFE, 0xFF}`, entry 2
-  corrected from MAME's published `0xFF` by the author of MAME's Psikyo renderer) is
-  applied BIT-INDEXED by the destination priority value -- MAME's pdrawgfx convention.
-  An earlier value-AND implementation let priority-1 sprites beat tilemap 1
-  unconditionally (samuraia's cloud sprites over the foreground layer); root-caused by
-  dumping the live paused scene through the JTAG spriteram probe (instance `"S"`,
-  `scripts/read_spriteram.tcl`).
-* Scene transitions. Sprites display pixels rendered one frame earlier, so they read a
-  512-entry snapshot of their palette half, copied at `frame_start`
-  (`rtl/psikyo_core.sv`), so sprite pixels and colors change scene together; tilemaps
-  render live and keep the live palette. This fixed BOTH transition symptoms: the
-  miscolour flash AND the briefly-visible stale sprites (stale pixels recolored by the
-  new scene's palette had read as wrongly-present sprites).
+* CPU pause
+* Some improvements to priorities and background clear over MAME (which has regressed over the years)
 
-Not working, or built but unconfirmed:
-
-* **The game slows down under sprite load.** Still open; a first attempted fix measured
-  worse, not better, on real hardware. The memory backend is Sorgelig's `sdram.sv`
-  (vendored, extended to burst-4 reads — see `rtl/memory/sdram/PROVENANCE.md`) behind a
-  3-physical-port arbiter — current partition: both tilemap layers share one port,
-  sprite gfx has a dedicated port, and a 6-way arbitrated port serves
-  spritelut/CPU fetches/ADPCM samples/HPS download (`docs/phase1_sdram_map.md`). A
-  granule cache in `sdram_narrow_bridge.sv` cut narrow-consumer (CPU/Z80/spritelut)
-  traffic on the shared port. The re-partition itself (sprite gfx dedicated, tilemap
-  layers merged) measured 29% *worse* worst-case sprite render time on hardware, not
-  better; not yet root-caused. See `docs/ROADMAP.md`'s "Fix the slowdown" item.
-* **Audio has residual distortion/crackle; cause identified and fix implemented,
-  listening verification pending.** Music and sound effects play: a sound-latch decode
-  bug, a Z80 running 21x too fast, a spurious ROM re-request, and an SDRAM arbiter
-  deadlock are all fixed. Samurai Aces / Sengoku Ace's ADPCM-A bit 6/7 swap
-  (`needs_adpcma_swap` in `rtl/memory/psikyo_sdram_top.sv`) is fixed AND verified by
-  ear -- the missing piece was `.mra` ordering: the mod byte gating the swap must
-  precede the ROM it gates, so all nine `.mra` files were reordered. Samurai Aces'
-  missing music is fixed too: the YM2610 timer IRQ must reach the Z80, so Sound IRQ now
-  defaults ON (`status[51]` is inverted; OSD order "On,Off"). A listening test on the
-  fully-constrained build (20260876) confirms the remaining distortion/crackle is NOT a
-  timing artifact. Identified cause: jt10's ADPCM-B (delta-T) data input was hardwired
-  to zero (`.adpcmb_data(8'd0)`, `rtl/psikyo_top.sv`), so any track using the delta-T
-  channel decoded constant zeros and mixed garbage into the output -- on these boards
-  ADPCM-B shares the ADPCM-A sample region (MAME's YM2610 default when no separate
-  delta-T ROM exists). The channel is now wired to that SDRAM region (testbench
-  regression passing); verification by ear on hardware is pending.
+* **Audio may have residual distortion/crackle.** One confirmed cause was fixed
+  2026-08-30: the YM2610 delta-T sample client was never wired through to SDRAM, so the
+  channel decoded zeros (buzz) on every earlier build.
+* **SH404 audio (Strikers 1945 protected sets, Tengai) is wrong/silent for now.** The
+  real sound chip is a YMF278B (OPL4); no FPGA core for it exists, so the YM2610 stands
+  in at the same I/O window until one does. The unprotected `s1945n`/`s1945nj` sets use
+  a real YM2610 sound program and get correct audio today.
 * **Timing on `clk_sys` is close to, but not at, full closure.** Four audited
   multicycle constraint families -- TG68K kernel, T80 sound CPU, video pixel-path into
   the palette lookups, and jt12 slot-scan into the phase generator plus its audited
@@ -79,6 +46,34 @@ Not working, or built but unconfirmed:
   noise in the vendored `sys/` scandoubler (which the framework's own `sys_top.sdc`
   does not constrain, and which is inactive on this project's HDMI-framebuffer output
   path) and trivial `jt12_mmr` stragglers.
+
+## Todo
+
+* Hardware verification of S1945/Tengai (MCU handshake, banking, byte order)
+* YMF278B (OPL4) core for SH404 audio
+* Add hiscore.v, CRT Offset, fast rom loading
+
+## Acknowledgements
+
+- **Sorgelig** and the **MiSTer-devel team** for the
+  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework this
+  project is seeded from, the SDRAM controller (`sdram.sv`, vendored via
+  [Arcade-Jackal_MiSTer](https://github.com/MiSTer-devel/Arcade-Jackal_MiSTer) and
+  extended here to burst-4 reads — see `rtl/memory/sdram/PROVENANCE.md`), and the
+  screen-rotation module (`screen_rotate_two.sv`, taken from
+  [Arcade-SKNS_MiSTer](https://github.com/MiSTer-devel/Arcade-SKNS_MiSTer)).
+- **Tobias Gubener** ([TobiFlex](https://github.com/TobiFlex)) for
+  [TG68K.C](https://github.com/TobiFlex/TG68K.C), the 68EC020 main CPU core.
+- **Daniel Wallner** for the **T80** Z80 CPU core, vendored via
+  [MiSTer-devel/T80](https://github.com/MiSTer-devel/T80) (maintained since by MikeJ and
+  the MiSTer-devel community); used as the sound CPU on the SH201B/KA302C boards.
+- **Jose Tejada** ([@jotego](https://github.com/jotego)) for
+  [jt10](https://github.com/jotego/jt12) (YM2610) and
+  [jt49](https://github.com/jotego/jt49) (its embedded AY-3-8910-compatible SSG channel),
+  from the JTFRAME family of sound cores.
+- The **MAMEdev team** (especially Olivier Galibert, R. Belmont and Luca Elia as well as my own work) for [MAME](https://github.com/mamedev/mame)'s `psikyo.cpp`/
+  `psikyo_v.cpp` driver — the reference this core's memory maps, video timing, and
+  sprite/tilemap semantics are verified against.
 
 ## ROMs
 
@@ -141,27 +136,3 @@ the right tool for anything temporal (game speed under load, one-frame flashes, 
 where the one-shot API screenshots cannot help. Use capture for temporal questions and API
 screenshots for pixel-exact ones, since HDMI output is scaled.
 
-## Acknowledgements
-
-- **Sorgelig** and the **MiSTer-devel team** for the
-  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework this
-  project is seeded from, the SDRAM controller (`sdram.sv`, vendored via
-  [Arcade-Jackal_MiSTer](https://github.com/MiSTer-devel/Arcade-Jackal_MiSTer) and
-  extended here to burst-4 reads — see `rtl/memory/sdram/PROVENANCE.md`), and the
-  screen-rotation module (`screen_rotate_two.sv`, taken from
-  [Arcade-SKNS_MiSTer](https://github.com/MiSTer-devel/Arcade-SKNS_MiSTer)).
-- **Tobias Gubener** ([TobiFlex](https://github.com/TobiFlex)) for
-  [TG68K.C](https://github.com/TobiFlex/TG68K.C), the 68EC020 main CPU core.
-- **Daniel Wallner** for the **T80** Z80 CPU core, vendored via
-  [MiSTer-devel/T80](https://github.com/MiSTer-devel/T80) (maintained since by MikeJ and
-  the MiSTer-devel community); used as the sound CPU on the SH201B/KA302C boards.
-- **Jose Tejada** ([@jotego](https://github.com/jotego)) for
-  [jt10](https://github.com/jotego/jt12) (YM2610) and
-  [jt49](https://github.com/jotego/jt49) (its embedded AY-3-8910-compatible SSG channel),
-  from the JTFRAME family of sound cores.
-- **rmonic79** for [Arcade-Raiden_MiSTer](https://github.com/rmonic79/Arcade-Raiden_MiSTer),
-  cross-checked for arcade-specific `sys/` wiring conventions (joystick/button index
-  mapping).
-- The **MAMEdev team** for [MAME](https://github.com/mamedev/mame)'s `psikyo.cpp`/
-  `psikyo_v.cpp` driver — the reference this core's memory maps, video timing, and
-  sprite/tilemap semantics are verified against.

@@ -1,7 +1,9 @@
-// The complete Phase 1 SDRAM backend: one real SDRAM chip
+// The complete SDRAM backend: one real SDRAM chip
 // (rtl/memory/sdram/sdram.sv), its 3 physical ports wrapped in req/valid
-// (rtl/memory/sdram_phy.sv), Port 2 fanned out to 5 logical consumers
-// (rtl/memory/sdram_arbiter5.sv) with narrow clients bridged through
+// (rtl/memory/sdram_phy.sv), Port 0 shared by both tilemap layers, Port 1
+// dedicated to sprite gfxrom, and Port 2 fanned out to 5 logical clients
+// plus the ROM download (rtl/memory/sdram_arbiter6.sv) with narrow clients
+// bridged through
 // rtl/memory/sdram_narrow_bridge.sv, gfx-ROM-row consumers corrected for
 // byte order (rtl/memory/gfxrom_byte_reorder.sv), and HPS ROM download
 // bridged in (rtl/memory/sdram_download.sv) -- see
@@ -103,31 +105,39 @@ module psikyo_sdram_top (
     output logic [7:0]  adpcma_rom_data,
 
     // YM2610 ADPCM-B (delta-T) samples -- Port 2, arbiter client c0 (freed
-    // by the sprite Port-1 re-partition). SAME 1MB region as ADPCM-A: these
-    // boards have no separate delta-T ROM, and MAME's YM2610 serves the
-    // deltat channel from the adpcma region in that case -- so the
-    // samuraia/sngkace bit 6/7 download swap covers B automatically. Its
-    // own bridge instance (own granule cache): A and B are independent
-    // concurrent streams from jt10.
+    // by the sprite Port-1 re-partition). 2MB window from ADPCMA_BASE:
+    // bit 20 is the caller's ROM select. SH201B (samuraia/sngkace) has no
+    // separate delta-T ROM -- MAME's YM2610 serves the deltat channel from
+    // the adpcma image, so the caller keeps bit 20 low and the
+    // samuraia/sngkace bit 6/7 download swap covers B automatically.
+    // KA302C (gunbird/btlkroad, later s1945n) has its own delta-T ROM
+    // (u64), which the .mra places at ADPCMA_BASE+0x100000 -- the caller
+    // sets bit 20. Its own bridge instance (own granule cache): A and B
+    // are independent concurrent streams from jt10.
     input  logic         adpcmb_rom_req,
-    input  logic [19:0] adpcmb_rom_addr,
+    input  logic [20:0] adpcmb_rom_addr,
     output logic         adpcmb_rom_valid,
     output logic [7:0]  adpcmb_rom_data
 );
 
     // docs/phase1_sdram_map.md's "Address map" table -- byte offsets into
-    // the 32MB SDRAM chip.
+    // the 32MB SDRAM chip. Every region is sized for the LARGEST set that
+    // ships in it (docs/phase2_sh404.md "SDRAM re-layout"): sprites 8MB
+    // (s1945), tiles 4MB (tengai), samples 4MB (SH404's OPL4 wave ROMs;
+    // the YM2610 boards use the first 2MB as ADPCM-A + delta-T below).
+    // The .mra files pad each region to these bases -- they and this table
+    // must change together.
     localparam logic [24:0] MAINCPU_BASE   = 25'h0000000;
     localparam logic [24:0] AUDIOCPU_BASE  = 25'h0200000;
     localparam logic [24:0] SPRITES_BASE   = 25'h0240000;
     localparam logic [24:0] TILES_BASE      = 25'h0A40000;
-    localparam logic [24:0] SPRITELUT_BASE = 25'h0DC0000;
-    // ADPCM-A samples sit between the tile ROMs and the sprite LUT. Derived
-    // from the .mra's own load order and confirmed against MAME's samuraia
-    // ROM_START: tiles are u34+u35 = 2MB from 0x0A40000, so ymsnd:adpcma
-    // (u68.bin, 1MB) lands at 0x0C40000, then 0x80000 of padding puts
-    // spritelut (u11.bin) exactly at SPRITELUT_BASE.
-    localparam logic [24:0] ADPCMA_BASE     = 25'h0C40000;
+    localparam logic [24:0] SPRITELUT_BASE = 25'h1240000;
+    // Sample-ROM region. YM2610 boards: ADPCM-A image at +0 (1MB max);
+    // boards with a SEPARATE delta-T ROM (gunbird/btlkroad/s1945n's u64)
+    // place it at +0x100000, while SH201B (samuraia/sngkace) has no such
+    // ROM and delta-T shares the ADPCM-A image at +0 -- the caller selects
+    // via adpcmb_rom_addr[20] (see that port's comment).
+    localparam logic [24:0] ADPCMA_BASE     = 25'h0E40000;
 
     // ---- raw SDRAM chip, 3 physical ports ----
     logic [24:1] p0_addr, p1_addr, p2_addr;
@@ -291,7 +301,7 @@ module psikyo_sdram_top (
     // gfxrom moved to its dedicated Port 1.)
     sdram_narrow_bridge #(.WORD_BYTES(1)) u_adpcmb_bridge (
         .clk(clk), .reset(reset), .inval(ioctl_download),
-        .req(adpcmb_rom_req), .addr(ADPCMA_BASE + {5'd0, adpcmb_rom_addr}),
+        .req(adpcmb_rom_req), .addr(ADPCMA_BASE + {4'd0, adpcmb_rom_addr}),
         .valid(adpcmb_rom_valid), .data(adpcmb_rom_data),
         .g_req(c0_req), .g_addr(c0_addr), .g_valid(c0_valid), .g_data(c0_data)
     );

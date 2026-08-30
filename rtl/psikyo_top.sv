@@ -72,6 +72,13 @@ module psikyo_top #(
     input  logic [31:0] dsw_in,
     input  logic [31:0] coin_in,
     input  logic         board_gunbird,
+    // SH403/SH404 flags + MCU table download -- docs/phase2_sh404.md.
+    input  logic         board_sh404,
+    input  logic         snd_latch_c00011,
+    input  logic         mcu_table_absent,
+    input  logic         mcu_table_we,
+    input  logic [7:0]  mcu_table_waddr,
+    input  logic [7:0]  mcu_table_wdata,
     input  logic         needs_adpcma_swap,   // see psikyo_sdram_top.sv's port comment
 
     // Mirrors MAME's psikyo_state::z80_nmi_r() -- see
@@ -195,6 +202,9 @@ module psikyo_top #(
         .sp_lut_req(sp_lut_req), .sp_lut_addr(sp_lut_addr),
         .sp_lut_valid(sp_lut_valid), .sp_lut_data(sp_lut_data),
         .p1p2_in(p1p2_in), .dsw_in(dsw_in), .coin_in(coin_in), .board_gunbird(board_gunbird),
+        .board_sh404(board_sh404), .snd_latch_c00011(snd_latch_c00011),
+        .mcu_table_absent(mcu_table_absent), .mcu_table_we(mcu_table_we),
+        .mcu_table_waddr(mcu_table_waddr), .mcu_table_wdata(mcu_table_wdata),
         .latch_data(latch_data), .latch_write(latch_write),
         .hcnt(hcnt), .vcnt(vcnt), .hblank(hblank), .vblank(vblank),
         .hsync(hsync), .vsync(vsync), .rgb(rgb),
@@ -234,7 +244,7 @@ module psikyo_top #(
     assign z80_cen = (z80_cen_acc >= 10'd945 - 10'd44);
 
     sound_cpu u_sound (
-        .clk(clk), .reset(core_reset), .board_gunbird(board_gunbird),
+        .clk(clk), .reset(core_reset), .board_gunbird(board_gunbird), .board_sh404(board_sh404),
         .cen_4m(z80_cen),
         .rom_req(audiocpu_rom_req_raw), .rom_addr(audiocpu_rom_addr_raw),
         .rom_valid(audiocpu_rom_valid), .rom_data(audiocpu_rom_data),
@@ -260,10 +270,6 @@ module psikyo_top #(
     end
     assign ym_cen = (ym_cen_acc >= 10'd945 - 10'd88);
 
-    // ADPCM-A/B sample ROMs are NOT connected yet: they need their own SDRAM
-    // read ports and the arbiter currently has none free. FM and SSG work
-    // without them; ADPCM channels stay silent. Tying the data inputs to zero
-    // is what an unpopulated sample ROM would read as.
     // ---- YM2610 ADPCM-A sample fetch ----
     // jt10 pulls adpcma_roe_n low when it wants the byte at adpcma_addr. The
     // engine is 6 channels at ~18.5 kHz, about one byte every 1.5 us
@@ -298,13 +304,15 @@ module psikyo_top #(
     end
 
     // ADPCM-B (delta-T): same roe_n-edge -> req -> latch glue as ADPCM-A
-    // above. Reads the SAME 1MB sample region (no separate delta-T ROM on
-    // these boards; MAME's YM2610 serves deltat from the adpcma region).
-    // This input was tied to 8'd0 until 2026-08-29 -- any track using the
-    // delta-T channel decoded constant zeros and mixed the result into the
-    // output, which is what the persistent crackle was.
+    // above. Address bit 20 selects the delta-T ROM: KA302C boards
+    // (gunbird/btlkroad/s1945n) have their OWN delta-T image (u64) at
+    // +0x100000 in the sample region, while SH201B (samuraia/sngkace) has
+    // none and MAME's YM2610 serves deltat from the adpcma image at +0 --
+    // see psikyo_sdram_top.sv's adpcmb_rom_addr port comment.
     logic        adpcmb_rom_req, adpcmb_rom_valid, adpcmb_roe_n_d;
     logic [7:0]  adpcmb_rom_data, adpcmb_data_r;
+    logic [20:0] adpcmb_sdram_addr;
+    assign adpcmb_sdram_addr = {board_gunbird, adpcmb_addr[19:0]};
 
     always_ff @(posedge clk) begin
         if (core_reset) begin
@@ -456,7 +464,13 @@ module psikyo_top #(
         .audiocpu_rom_req(audiocpu_rom_req), .audiocpu_rom_addr(audiocpu_rom_addr),
         .audiocpu_rom_valid(audiocpu_rom_valid), .audiocpu_rom_data(audiocpu_rom_data),
         .adpcma_rom_req(adpcma_rom_req), .adpcma_rom_addr(adpcma_addr),
-        .adpcma_rom_valid(adpcma_rom_valid), .adpcma_rom_data(adpcma_rom_data)
+        .adpcma_rom_valid(adpcma_rom_valid), .adpcma_rom_data(adpcma_rom_data),
+        // These four were MISSING until 2026-08-30: the delta-T glue above
+        // existed but never reached the SDRAM backend, so adpcmb_rom_valid
+        // was undriven, the request stuck high, and the channel decoded
+        // constant zeros -- the persistent audio crackle.
+        .adpcmb_rom_req(adpcmb_rom_req), .adpcmb_rom_addr(adpcmb_sdram_addr),
+        .adpcmb_rom_valid(adpcmb_rom_valid), .adpcmb_rom_data(adpcmb_rom_data)
     );
 
 

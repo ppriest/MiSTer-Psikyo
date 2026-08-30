@@ -43,6 +43,9 @@ module tb_psikyo_core;
     logic [14:0] rgb;
 
     psikyo_core dut (
+        // SH404 ports tied off (docs/phase2_sh404.md); this TB predates them
+        .board_sh404(1'b0), .snd_latch_c00011(1'b0), .mcu_table_absent(1'b0),
+        .mcu_table_we(1'b0), .mcu_table_waddr(8'd0), .mcu_table_wdata(8'd0),
         .clk(clk), .ce_pix(ce_pix), .reset(reset),
         .cpu_rom_req(cpu_rom_req), .cpu_rom_addr(cpu_rom_addr),
         .cpu_rom_valid(cpu_rom_valid), .cpu_rom_data(cpu_rom_data),

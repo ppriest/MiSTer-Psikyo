@@ -177,6 +177,19 @@ module maincpu (
     // P1_P2 port's low byte instead and have nothing at 0xC00008.
     input  logic         board_gunbird,
 
+    // SH403/SH404 (s1945/tengai): security MCU at 0xC00006-0xC0000B, sound
+    // latch at 0xC00011, MCU status toggle in P1_P2 bit 2, MCU data/bctrl
+    // readback replacing DSW bits 15:4 -- docs/phase2_sh404.md. The two
+    // flags are separate because s1945n (unprotected) moves ONLY the sound
+    // latch, on otherwise-gunbird hardware.
+    input  logic         board_sh404,
+    input  logic         snd_latch_c00011,
+    input  logic         mcu_table_absent,
+    input  logic         mcu_table_we,
+    input  logic [7:0]  mcu_table_waddr,
+    input  logic [7:0]  mcu_table_wdata,
+    output logic [7:0]  mcu_bctrl,      // SH404 tile banks live here (bits 7:4)
+
     // Freeze the CPU (debug). Gates the 16 MHz clock enable, so the 68020
     // simply stops stepping; video timing and the debug overlay keep running,
     // which is what makes a frame comparable against a MAME dump.
@@ -318,7 +331,10 @@ module maincpu (
     // measured on hardware 2026-08-29 as "sound latch writes: 0" across
     // boot, attract, AND real gameplay, while the Z80 dutifully serviced
     // timer IRQs -- total silence beyond the Z80's own boot jingle.
-    assign is_soundlatch = (addr24[23:1] == 23'h600009);   // word 0xC00012
+    // s1945n/s1945/tengai moved the latch to byte 0xC00011 (word 0xC00010);
+    // the lane strobe below (!nLDS) picks the odd byte either way.
+    assign is_soundlatch = snd_latch_c00011 ? (addr24[23:1] == 23'h600008)    // word 0xC00010
+                                             : (addr24[23:1] == 23'h600009);   // word 0xC00012
 
     // word-address translation (drop bit 0 -- every region is word-granular)
     assign rom_addr       = a32[19:1];
@@ -372,7 +388,37 @@ module maincpu (
     logic rom_req_sent;
     assign rom_req = mem_needed && !is_write && is_rom && !acc_ready && !rom_req_sent;
 
+    // ---- SH403/SH404 security MCU (rtl/cpu/s1945_mcu.sv) ----
+    // Bus-facing glue only; the protocol lives in the module. All strobes
+    // are gated on board_sh404 so the other boards see no behavior change.
+    logic [7:0] mcu_data_byte, mcu_control_byte;
+    logic        mcu_status;
+    logic        mcu_rd_consume, mcu_rd_status_toggle;
+    logic        mcu_wr_data, mcu_wr_bctrl, mcu_wr_control, mcu_wr_direction, mcu_wr_command;
+
+    s1945_mcu u_mcu (
+        .clk(clk), .reset(reset),
+        .wr_data(mcu_wr_data), .wr_bctrl(mcu_wr_bctrl),
+        .wr_control(mcu_wr_control), .wr_direction(mcu_wr_direction),
+        .wr_command(mcu_wr_command),
+        .wdata_h(cpu_dout[15:8]), .wdata_l(cpu_dout[7:0]),
+        .data_byte(mcu_data_byte), .control_byte(mcu_control_byte),
+        .bctrl(mcu_bctrl), .mcu_status(mcu_status),
+        .rd_consume(mcu_rd_consume), .rd_status_toggle(mcu_rd_status_toggle),
+        .table_absent(mcu_table_absent),
+        .table_we(mcu_table_we), .table_waddr(mcu_table_waddr), .table_wdata(mcu_table_wdata)
+    );
+
     // ---- read mux (BRAM + input ports; ROM comes via rom_data) ----
+    // SH404 overrides (each replaces only the bits MAME's s1945 handlers
+    // own -- docs/phase2_sh404.md "Bit polarity" for why every bit here is
+    // deliberate):
+    //  - P1_P2 low word bit 2: the ACTIVE_HIGH mcu_status toggle, injected
+    //    RAW -- it must NOT pass through the active-low joystick inversion.
+    //  - DSW low word: {MCU data byte, bctrl[7:4], region nibble}. The
+    //    gunbird boards' vblank bit at DSW bit 7 does NOT exist here --
+    //    bits 7:4 are bctrl readback.
+    //  - COIN word 0xC00008 high byte: mcu control read (latching | 0x08).
     logic [15:0] read_mux;
     always_comb begin
         if      (is_spriteram) read_mux = spriteram_rdata;
@@ -381,11 +427,27 @@ module maincpu (
         else if (is_vram1)     read_mux = vram1_rdata;
         else if (is_vregs)     read_mux = vregs_rdata;
         else if (is_workram)   read_mux = workram_rdata;
-        else if (is_p1p2)      read_mux = a32[1] ? p1p2_in[15:0] : p1p2_in[31:16];
-        else if (is_dsw)       read_mux = a32[1] ? dsw_in[15:0]  : dsw_in[31:16];
-        else if (is_coin)      read_mux = a32[1] ? coin_in[15:0] : coin_in[31:16];
+        else if (is_p1p2)      read_mux = a32[1]
+            ? (board_sh404 ? {p1p2_in[15:3], mcu_status, p1p2_in[1:0]} : p1p2_in[15:0])
+            : p1p2_in[31:16];
+        else if (is_dsw)       read_mux = a32[1]
+            ? (board_sh404 ? {mcu_data_byte, mcu_bctrl[7:4], dsw_in[3:0]} : dsw_in[15:0])
+            : dsw_in[31:16];
+        else if (is_coin)      read_mux = a32[1]
+            ? coin_in[15:0]
+            : (board_sh404 ? {mcu_control_byte, coin_in[23:16]} : coin_in[31:16]);
         else                   read_mux = 16'hFFFF;   // unmapped read, open bus
     end
+
+    // Read side effects: exactly one pulse per bus access, on the same
+    // cycle the data is captured (acc_ph == 2). A 68020 long read splits
+    // into two word cycles on this 16-bit bus, so the consume fires only
+    // on the word that actually carries the MCU byte (0xC00006) -- firing
+    // on the 0xC00004 half would invalidate the latch before the second
+    // half returned it (docs/phase2_sh404.md "Read side effects").
+    wire rd_now = mem_needed && !is_write && !is_rom && !acc_ready && (acc_ph == 2'd2);
+    assign mcu_rd_consume        = board_sh404 && rd_now && is_dsw  && a32[1];
+    assign mcu_rd_status_toggle  = board_sh404 && rd_now && is_p1p2 && a32[1];
 
     always_ff @(posedge clk or posedge reset) begin
         if (reset) begin
@@ -457,6 +519,15 @@ module maincpu (
     // three cases.
     assign latch_write = wr_now && is_soundlatch && !nLDS;
     assign latch_data  = cpu_dout[7:0];
+
+    // SH404 MCU register writes, byte-lane addressed exactly like MAME's
+    // byte handlers: a word write to 0xC00006 hits data (UDS) and bctrl
+    // (LDS) in the same cycle, each from its own lane.
+    assign mcu_wr_data      = board_sh404 && wr_now && is_dsw  &&  a32[1] && !nUDS; // 0xC00006
+    assign mcu_wr_bctrl     = board_sh404 && wr_now && is_dsw  &&  a32[1] && !nLDS; // 0xC00007
+    assign mcu_wr_control   = board_sh404 && wr_now && is_coin && !a32[1] && !nUDS; // 0xC00008
+    assign mcu_wr_direction = board_sh404 && wr_now && is_coin && !a32[1] && !nLDS; // 0xC00009
+    assign mcu_wr_command   = board_sh404 && wr_now && is_coin &&  a32[1] && !nLDS; // 0xC0000B
 
     // ---- vblank IRQ: level 4, held until the CPU acknowledges ----
     // vblank is a LEVEL held for the full 38-line vertical blank (~2.4 ms).

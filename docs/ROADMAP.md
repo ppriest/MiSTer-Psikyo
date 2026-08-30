@@ -230,14 +230,11 @@ by default — the build is exactly HEAD. Default revision is the instrumented `
   distinct from, the dormant `ddram_arbiter`/`ddram_phy` DDR3 path being stood up for sprite gfxrom
   (see "Fix the slowdown" above) — worth doing together if that work goes ahead, since both need
   the same DDR3 plumbing live. Added 2026-08-29, not yet scoped.
-- **Game-driven sprites-disable freezes, not blanks, the sprite display bank.** The spriteram
-  control word (`0xFFF`) bit 0 is latched at `frame_start` into `ctrl_active`
-  (`spriteram_dbuf.sv`) and gates `want_frame` (no new render pass starts) — but it does NOT
-  gate the compositor's `sp_present`, so the double-buffered display bank holds the last
-  rendered sprites indefinitely where MAME blanks them the frame the bit is honored.
-  Identified 2026-08-29 by inspection; not yet observed as a symptom. Planned fix: latch the
-  disable at the swap boundary and gate `sp_present` with the display-aligned copy, mirroring
-  the `dbg_render_dis[0]` compositor-input gate. See `docs/sprite_buffering.md` defect 5.
+- ~~**Game-driven sprites-disable freezes, not blanks, the sprite display bank.**~~ FIXED
+  2026-08-29: per the MAME renderer's author the enable is deliberately LIVE —
+  `spriteram_dbuf.sv` now exports the last CPU-written `ctrl_shadow[0]` and it gates the
+  compositor's `sp_present` directly, so sprites blank the moment the game writes the bit.
+  See `docs/sprite_buffering.md` defect 5.
 - **Sprite frame-renderer throughput is unbudgeted at the whole-frame/whole-game level.** One real
   single-sprite data point exists (`sim/port2_sdram_tb/`: 514 cycles alone, 736 under sustained
   contention) but extrapolating across a worst-case display list (1023 entries × up to 64

@@ -30,9 +30,11 @@
 		<part name="u34.bin" crc="e6a75bd8"/>
 		<part name="u35.bin" crc="c4ca0164"/>
 
+		<part repeat="0x200000">FF</part>
+
 		<part name="u68.bin" crc="9a7f6c34"/>
 
-		<part repeat="0x80000">FF</part>
+		<part repeat="0x300000">FF</part>
 
 		<part name="u11.bin" crc="11a04d91"/>
 	</rom>
@@ -55,5 +57,5 @@
 		<dip name="Region" bits="16,17,18,19,20,21,22,23" ids="Taiwan,Hong Kong,Korea,USA and Canada,World" values="0x7f,0xbf,0xdf,0xef,0xff"/>
 	</switches>
 
-	<mratimestamp>20260825000000</mratimestamp>
+	<mratimestamp>20260830000000</mratimestamp>
 </misterromdescription>

@@ -131,13 +131,15 @@ way), reinterpreted as byte offsets into the 32MB SDRAM chip instead of the 256M
 | `maincpu` | `0x000000` | `0x200000` (2MB) |
 | `audiocpu` | `0x200000` | `0x040000` (256KB) |
 | `sprites` | `0x240000` | `0x800000` (8MB) |
-| `tiles` | `0xA40000` | `0x200000` (2MB) |
-| `ymsnd:adpcma` | `0xC40000` | `0x100000` (1MB) |
-| `ymsnd:adpcmb` | `0xD40000` | `0x080000` (512KB) |
-| `spritelut` | `0xDC0000` | `0x040000` (256KB) |
+| `tiles` | `0xA40000` | `0x400000` (4MB, tengai) |
+| samples (`ymsnd:adpcma` / OPL4 wave) | `0xE40000` | `0x400000` (4MB) |
+| `ymsnd:adpcmb` (inside samples) | `0xF40000` | `0x080000` (512KB) |
+| `spritelut` | `0x1240000` | `0x040000` (256KB) |
 
-Total `0xE00000` (14MB) of the SDRAM chip's 32MB — comfortably inside, no map change needed from
-the DDRAM-era numbers, just a different (smaller, fixed-latency) backing store underneath. The
+Total `0x1280000` (18.5MB) of the SDRAM chip's 32MB — comfortably inside. Regions are sized for
+the largest set that ships in them (docs/phase2_sh404.md "SDRAM re-layout"; re-laid out
+2026-08-30 for tengai's 4MB tile ROM — the `.mra` padding and these bases must change
+together). The
 nine `.mra` files in `releases/` don't need to change at all for this pivot — they describe the
 download blob layout, which is backend-agnostic.
 

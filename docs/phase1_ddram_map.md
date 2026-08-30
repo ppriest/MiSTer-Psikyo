@@ -95,12 +95,13 @@ a new clone set turns out to be slightly bigger:
 | `maincpu` (68020 program ROM) | `0x000000` | `0x200000` (2MB) | `0x100000` (samuraiak/gunbirdk) |
 | `audiocpu` (Z80/LZ8420M program ROM) | `0x200000` | `0x040000` (256KB) | `0x020000` (all sets) |
 | `sprites` (zoom sprite tile gfx) | `0x240000` | `0x800000` (8MB) | `0x700000` (gunbird family) |
-| `tiles` (tilemap layer 0+1 gfx) | `0xA40000` | `0x200000` (2MB) | `0x200000` (all sets, exact) |
-| `ymsnd:adpcma` (YM2610 ADPCM-A) | `0xC40000` | `0x100000` (1MB) | `0x100000` (all sets, exact) |
-| `ymsnd:adpcmb` (YM2610 ADPCM-B, gunbird family only) | `0xD40000` | `0x080000` (512KB) | `0x080000` (gunbird family, exact) |
-| `spritelut` (sprite code lookup table) | `0xDC0000` | `0x040000` (256KB) | `0x040000` (all sets, exact) |
+| `tiles` (tilemap layer 0+1 gfx) | `0xA40000` | `0x400000` (4MB) | `0x400000` (tengai, exact) |
+| samples (`ymsnd:adpcma` / OPL4 wave) | `0xE40000` | `0x400000` (4MB) | `0x400000` (SH404, exact) |
+| `ymsnd:adpcmb` (gunbird family only, inside samples) | `0xF40000` | `0x080000` (512KB) | `0x080000` (gunbird family, exact) |
+| `spritelut` (sprite code lookup table) | `0x1240000` | `0x040000` (256KB) | `0x040000` (all sets, exact) |
 
-Total reserved: `0xE00000` (14MB) of the 256MB window — everything else is unused headroom.
+Total reserved: `0x1280000` (18.5MB) — everything else is unused headroom. (Bases re-laid out
+2026-08-30 for SH404 support, superseding the original 14MB map — see docs/phase2_sh404.md.)
 
 Each region is a flat byte-addressed span; per-set content shorter than the region (e.g.
 `btlkroad`'s 3-ROM/`0x600000` `sprites` vs. the `0x800000` reservation sized for gunbird's 4

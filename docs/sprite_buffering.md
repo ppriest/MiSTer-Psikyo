@@ -115,18 +115,22 @@ That was a separate, new artifact introduced by the pipeline itself, and the
 pipeline was reverted the same day; the palette-snapshot fix above stands as
 verified (build 20260874).
 
-## Defect 5: game-driven sprites-disable freezes, not blanks -- OPEN
+## Defect 5: game-driven sprites-disable freezes, not blanks -- FIXED (2026-08-29)
 
 The spriteram control word (word 0xFFF) bit 0 is the game's own
-sprites-disable. It is correctly latched at frame_start into ctrl_active
-(spriteram_dbuf.sv) and gates want_frame in psikyo_core.sv, so no new render
-pass starts -- but it does NOT gate the compositor's sp_present, so with the
-output double-buffered the display bank holds the last rendered sprites
+sprites-disable. It was latched at frame_start into ctrl_active
+(spriteram_dbuf.sv) and gated want_frame in psikyo_core.sv, so no new render
+pass started -- but it did NOT gate the compositor's sp_present, so with the
+output double-buffered the display bank held the last rendered sprites
 indefinitely instead of blanking (MAME blanks sprites the frame the bit is
-honored). Identified 2026-08-29 by inspection; not yet observed as a symptom
-on hardware, but a candidate contributor to any future
-stale-sprite-at-transition report. Planned fix: latch the disable at the
-swap boundary too and gate sp_present with that display-aligned copy --
-mirroring the fix already applied for the OSD's dbg_render_dis[0], which
-gates the compositor input directly for exactly this freeze-vs-blank reason
-(see psikyo_core.sv's compositor instantiation comment).
+honored). Identified 2026-08-29 by inspection.
+
+Fixed the same day, with a stronger contract than the planned display-aligned
+latch: per the author of MAME's renderer, the global sprite ENABLE is
+deliberately **live** -- spriteram_dbuf.sv now exports
+`sprites_disable = ctrl_shadow[0]` (the last CPU-written value, not the
+frame-latched copy) and psikyo_core.sv gates the compositor's sp_present
+with it directly, exactly like the OSD's dbg_render_dis[0] gate. Sprites
+blank the moment the game writes the bit. The transparent-pen selects stay
+frame-latched (they parameterize the render pass already in flight). See
+spriteram_dbuf.sv's closing comment.

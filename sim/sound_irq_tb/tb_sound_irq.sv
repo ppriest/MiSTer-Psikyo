@@ -57,7 +57,7 @@ module tb_sound_irq;
     logic         ym_irq_n;
 
     sound_cpu u_sound (
-        .clk(clk), .reset(reset), .board_gunbird(1'b1),
+        .clk(clk), .reset(reset), .board_gunbird(1'b1), .board_sh404(1'b0),
         .cen_4m(z80_cen),
         .rom_req(rom_req), .rom_addr(rom_addr),
         .rom_valid(rom_valid), .rom_data(rom_data),

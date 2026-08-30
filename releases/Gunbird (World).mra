@@ -40,9 +40,13 @@
 			<part name="u33.bin" crc="54494e6b" map="12"/>
 		</interleave>
 
+		<part repeat="0x200000">FF</part>
+
 		<part name="u56.bin" crc="9e07104d"/>
 
 		<part name="u64.bin" crc="e187ed4f"/>
+
+		<part repeat="0x280000">FF</part>
 
 		<part name="u3.bin" crc="0905aeb2"/>
 	</rom>
@@ -65,5 +69,5 @@
 		<dip name="Region" bits="16,17,18,19" ids="Taiwan,Hong Kong,Korea,USA,World" values="0x7,0xb,0xd,0xe,0xf"/>
 	</switches>
 
-	<mratimestamp>20260825000000</mratimestamp>
+	<mratimestamp>20260830000000</mratimestamp>
 </misterromdescription>
