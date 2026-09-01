@@ -16,24 +16,17 @@
 //
 // ---- Sprite pipeline per-frame sequencing (the one genuinely new piece
 // of control logic this module adds, not just wiring) ----
-// video_timing's frame_start pulse drives THREE things, deliberately in
-// two stages one cycle apart:
-//   1. Same cycle: sprite_render_engine.frame_start, gated by sprites_disable
-//      -- the render pass reads the sprite-RAM snapshot AS IT STANDS. If
-//      sprites are disabled the engine is never kicked, which is "no sprites
-//      drawn".
-//   2. When that pass finishes: spriteram_dbuf.copy_start refreshes the
-//      snapshot from the live sprite RAM for the NEXT frame, and latches the
-//      control bits alongside it. Copying first and rendering the fresh data
-//      (the previous arrangement) dropped a frame of sprite latency relative
-//      to psikyo_v.cpp, which builds its display list from the buffer before
-//      refreshing it -- on screen that showed as sprites leading the
-//      live-VRAM tilemaps.
-// sprite_frame_buffer.frame_swap is driven from sprite_render_engine's
-// frame_done in the DEFAULT swap policy (runtime bit selects the
-// alternative frame-boundary policy, which was tried and stopped the core
-// booting on hardware -- see the "sprite output-buffer swap policy"
-// block further down and docs/sprite_buffering.md for that history).
+// Per-scanline sprites, sequenced to psikyo_v.cpp's screen_vblank(): at
+// frame_start, sprite_line_list rebuilds its compact table FROM the
+// spriteram snapshot (get_sprites), then spriteram_dbuf.copy_start
+// refreshes that snapshot from the live RAM (m_spriteram->copy) -- the
+// capture is at the frame boundary and the table a frame renders from is
+// one buffer-generation old, both exactly the reference. Each visible
+// line is then rendered one line ahead of scanout into a double 320-pixel
+// line buffer; line_start hard-resyncs an overrunning render (clipping at
+// worst that one line's tail sprites, counted on the debug overlay). The
+// whole-frame renderer + 1.7 Mbit frame buffer this replaced, and its
+// history, are recorded in docs/sprite_buffering.md.
 module psikyo_core #(
 	parameter bit BOARD_GUNBIRD = 1'b0,
 	parameter bit DEBUG_TRACER  = 1'b1
@@ -135,7 +128,6 @@ module psikyo_core #(
 	input  logic         dbg_autopause_wr_en,
 	input  logic         dbg_autopause_frame_en,
 `endif
-	input  logic         dbg_sprite_vsync_swap,
 	input  logic [1:0]  dbg_src,      // which signal group to record
 	// YM2610 ADPCM fetch handshakes, for the starvation counters below.
 	// They live in psikyo_top; only the counters and the overlay are here.
@@ -149,12 +141,14 @@ module psikyo_core #(
 	// ---- video timing ----
 	logic [7:0] vcnt_active;
 	logic [7:0] vcnt_next_active;
+	logic [7:0] vcnt_next2_active;
 	logic         h_active, v_active;
 	logic         line_start, frame_start;
 
 	video_timing u_timing (
 		.clk(clk), .ce_pix(ce_pix), .reset(video_reset),
 		.hcnt(hcnt), .vcnt(vcnt), .vcnt_active(vcnt_active), .vcnt_next_active(vcnt_next_active),
+		.vcnt_next2_active(vcnt_next2_active),
 		.h_active(h_active), .v_active(v_active),
 		.hblank(hblank), .vblank(vblank),
 		.hsync(hsync), .vsync(vsync),
@@ -271,54 +265,31 @@ module psikyo_core #(
 								&& (vcnt >= 9'd48) && (vcnt < 9'd64);
 	wire [11:0] pal_dump_addr   = {vcnt[3:0], hcnt[7:0]};
 
-	// ---- sprite palette snapshot ----
-	// Sprites display pixels rendered one frame earlier (spriteram snapshot
-	// -> render -> display), but palette lookups happen at scanout -- so a
-	// scene change that rewrites the palette recolors the PREVIOUS scene's
-	// still-displayed sprites for a frame. Sprites therefore read a
-	// snapshot of their palette half (entries 0x000-0x1FF, the only range
-	// sp_pal_offset can address), copied from the live palette during
-	// vblank at frame_start -- the same boundary the sprite frame buffer
-	// swaps on -- so sprite pixels and sprite colors change scene together.
-	// Tilemaps render live and keep the live palette. The copy borrows the
-	// live palette's read port for 513 cycles of vblank, long before
-	// active display (or the overlay's dump rows) needs it.
-	logic [9:0]  pal_copy_addr;
-	logic         pal_copy_busy;
-	logic [8:0]  pal_snap_waddr;
-	logic         pal_snap_we;
-	always_ff @(posedge clk or posedge reset) begin
-		if (reset) begin
-			pal_copy_busy <= 1'b0;
-			pal_copy_addr <= '0;
-			pal_snap_we   <= 1'b0;
-		end else if (frame_start) begin
-			pal_copy_busy <= 1'b1;
-			pal_copy_addr <= '0;
-			pal_snap_we   <= 1'b0;
-		end else if (pal_copy_busy) begin
-			// the write trails the read by one cycle (BRAM read latency)
-			pal_snap_we    <= (pal_copy_addr < 10'd512);
-			pal_snap_waddr <= pal_copy_addr[8:0];
-			if (pal_copy_addr == 10'd512) pal_copy_busy <= 1'b0;
-			else                            pal_copy_addr <= pal_copy_addr + 10'd1;
-		end else begin
-			pal_snap_we <= 1'b0;
-		end
-	end
-
+	// ---- sprite palette mirror ----
+	// The compositor looks up tilemap/backdrop and sprite palette entries in
+	// PARALLEL every pixel, which needs a second physical read port for the
+	// sprite half (entries 0x000-0x1FF, the only range sp_pal_offset can
+	// address). With the per-scanline sprite path, sprites are composed one
+	// LINE after they render, so they must see the LIVE palette -- the same
+	// generation the tilemaps use, and what the PCB's scanout does. The
+	// second port is therefore a write-through MIRROR of the sprite half:
+	// every CPU write to entries 0x000-0x1FF lands here too, byte enables
+	// preserved. (The frame-buffered sprite path this replaces displayed
+	// pixels a frame late and needed a vblank SNAPSHOT here instead -- see
+	// docs/sprite_buffering.md, defect 4.)
 	logic [8:0]  pal_s_addr;
 	logic [15:0] pal_s_data;
 	logic         comp_sprite_sel, comp_sprite_sel_d;
+	wire pal_mirror_hit = (pal_cpu_addr[11:9] == 3'd0);
 	dpram #(.ADDR_WIDTH(9), .DATA_WIDTH(16)) u_palette_snap (
 		.clk(clk),
-		.a_addr(pal_snap_waddr), .a_wel(pal_snap_we), .a_weh(pal_snap_we),
-		.a_wdata(pal_b_rdata), .a_rdata(),
+		.a_addr(pal_cpu_addr[8:0]),
+		.a_wel(pal_cpu_wel & pal_mirror_hit), .a_weh(pal_cpu_weh & pal_mirror_hit),
+		.a_wdata(pal_cpu_wdata), .a_rdata(),
 		.b_addr(pal_s_addr), .b_rdata(pal_s_data)
 	);
 
-	assign pal_b_addr = pal_copy_busy   ? {3'd0, pal_copy_addr[8:0]} :
-						 pal_dump_active ? pal_dump_addr : pal_addr;
+	assign pal_b_addr = pal_dump_active ? pal_dump_addr : pal_addr;
 	assign pal_data    = pal_b_rdata;
 
 	// ---- tilemap VRAM: CPU write, per-layer tilemap engine read ----
@@ -832,47 +803,19 @@ module psikyo_core #(
 	);
 
 
-	// NOTE: the frame-buffer swap sequencing experiment has been REVERTED.
+	// ---- sprite pipeline sequencing ----
+	// MAME's screen_vblank() (psikyo_v.cpp) runs get_sprites() and THEN
+	// m_spriteram->copy(). Here: at frame_start, sprite_line_list rebuilds
+	// the compact per-line table FROM the snapshot (the get_sprites step),
+	// and build_done triggers the snapshot refresh (the copy step) -- the
+	// capture lands at the frame boundary, MAME's instant, and the table a
+	// frame renders from is one buffer-generation old, exactly the reference
+	// ordering. Build (~9.5K cycles) plus copy (~4.1K) finish early in
+	// vblank's 207,936.
 	//
-	// It moved frame_swap from sp_frame_done to the frame boundary and gated
-	// the render start on swap_done, to stop the display bank toggling
-	// mid-scanout. sprite_frame_buffer's header does ask for exactly that. But
-	// on hardware it stopped the game booting: the CPU ended up parked on the
-	// `bra.s *` at 0xB5E (the boot's deliberate die-here stub), with the video
-	// registers never programmed. Runtime A/B via the OSD render-disable bits
-	// ruled out the tilemap enable and the debug port borrowing as causes, and
-	// the pipelining fix (which took slack from -1.889 ns to -0.338 ns) did not
-	// help either -- so it is this sequencing change, most likely because
-	// holding the render start across frames leaves the engine rendering
-	// back-to-back and saturating the SDRAM arbiter that the CPU fetches
-	// through.
-	//
-	// Reverting to the known-good behaviour rather than leaving a
-	// non-booting core in the tree. The mid-scanout tear is real and still
-	// wants fixing, but it has to be done without starving the CPU -- likely
-	// by gating the engine's SDRAM requests rather than its start signal.
-	logic sprite_frame_start;
-	logic sp_swap_busy, sp_swap_done;
-	logic sp_frame_busy, sp_frame_done;
-
-	// ---- sprite output-buffer swap policy, runtime selectable ----
-	// 0 (default): frame_swap on sp_frame_done, so the display bank toggles
-	//   wherever rendering finishes -- measured at ~61.5% down the VISIBLE
-	//   frame, which tears the picture there every frame.
-	// 1: swap at the frame boundary and hold the render start until the
-	//   buffer's clear completes, as sprite_frame_buffer's header asks.
-	// Budget supports either: render 881632 cycles, clear 71680, frame
-	// 1433729. A switch rather than an outright change because this was tried
-	// once and stopped the core booting for reasons never established; it
-	// makes the comparison an A/B on one bitstream. See docs/sprite_buffering.md.
-	// The snapshot refresh (spr_copy_start below) is policy-dependent -- see
-	// the comment at its assignment. Every path is guarded on copy_busy so a
-	// render pass can never read a half-copied snapshot.
-	// The snapshot must be PRIMED before the first render: nothing has filled
-	// it at power-on, and rendering from uninitialised contents draws a
-	// screenful of garbage sprites for the first frames. So the first
-	// frame_start after reset performs a copy instead of a render, and
-	// rendering only begins once a copy has completed.
+	// Priming: nothing has filled the snapshot at power-on, so the first
+	// frame_start after reset performs a copy instead of a build, and
+	// building begins once a copy has completed.
 	logic snap_valid;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) spr_copy_busy_d <= 1'b0;
@@ -883,69 +826,89 @@ module psikyo_core #(
 		else if (spr_copy_busy_d & ~spr_copy_busy) snap_valid <= 1'b1;
 	end
 
-	wire want_frame = frame_start & snap_valid & ~sprites_disable
-	                 & ~dbg_render_dis[0] & ~spr_copy_busy;
-	// WHEN the snapshot refreshes is the sprite pipeline's capture instant, and
-	// it must match MAME's: psikyo_v.cpp copies the buffer at screen_vblank(),
-	// so the game has until the END of the visible frame to finish writing
-	// spriteram. Triggering the copy at sp_frame_done instead -- which the
-	// FrameStart swap policy used to do -- captures at ~46% of the VISIBLE
-	// frame, half a frame early. A game still building its sprite list at that
-	// point (exactly what happens on busy frames) gets a half-updated table
-	// frozen into the snapshot: sprites wobble and glitch only under load.
-	// So under the FrameStart policy the copy runs at the frame boundary,
-	// guarded on ~sp_frame_busy so an overrunning pass is never re-sourced
-	// mid-read (the capture skips that frame and self-corrects at the next
-	// boundary, the same way the swap itself does). Generation count is
-	// unchanged -- frame N still shows the capture MAME would show -- because
-	// the render pass that consumes a boundary capture displays one frame
-	// later, exactly like get_sprites() consuming the previous vblank's copy.
-	// The EndOfRender policy keeps the sp_frame_done trigger: its render pass
-	// starts at frame_start immediately, and a copy there would tear the
-	// snapshot under the reading engine.
-	// Before the first pass exists, copy straight from the frame boundary to
-	// prime the snapshot.
-	assign spr_copy_start = ~snap_valid            ? frame_start :
-	                         dbg_sprite_vsync_swap ? (frame_start & ~sp_frame_busy) :
-	                                                  sp_frame_done;
+	logic build_busy, build_done;
+	wire  build_start = frame_start & snap_valid;
+	assign spr_copy_start = snap_valid ? build_done : frame_start;
 
-	logic bank_ready, start_pending;
+	logic [9:0]  sl_scan_addr, sl_rec_addr;
+	logic [17:0] sl_scan_ytest;
+	logic [63:0] sl_rec_data;
+	logic [10:0] sl_count;
+
+	sprite_line_list u_sprite_list (
+		.clk(clk), .reset(reset),
+		.build_start(build_start), .build_busy(build_busy), .build_done(build_done),
+		.dl_addr(dl_addr), .dl_data(dl_data), .at_addr(at_addr), .at_data(at_data),
+		.scan_addr(sl_scan_addr), .scan_ytest(sl_scan_ytest),
+		.rec_addr(sl_rec_addr), .rec_data(sl_rec_data),
+		.count(sl_count)
+	);
+
+	// ---- per-scanline sprite render + double-buffered line buffer ----
+	// The engine renders the NEXT visible line (vcnt_next_active, the same
+	// next-line convention the tilemap engines prefetch with) while the line
+	// buffer's other bank scans out the current one. line_start doubles as
+	// the hard resync: an engine still busy at the boundary aborts (writes
+	// stop that cycle), drains any in-flight SDRAM handshake during the
+	// buffer's 320-cycle clear, and the clipped line is counted. The render
+	// start fires when the clear completes, provided the next line is
+	// visible and neither the table build nor the snapshot copy is running.
+	logic le_busy, le_ovr_ev, lb_ready, lb_ready_d;
 	always_ff @(posedge clk or posedge reset) begin
-		if (reset) begin
-			bank_ready    <= 1'b1;   // both banks power up cleared
-			start_pending <= 1'b0;
-		end else begin
-			if (sp_swap_done)       bank_ready    <= 1'b1;
-			if (want_frame)         start_pending <= 1'b1;
-			if (sprite_frame_start) begin
-				start_pending <= 1'b0;
-				bank_ready    <= 1'b0;
-			end
-		end
+		if (reset) lb_ready_d <= 1'b0;
+		else        lb_ready_d <= lb_ready;
 	end
 
-	// ~spr_copy_busy: the boundary copy (4,098 cycles) always finishes inside
-	// the buffer clear (71,680), but gate on it structurally rather than by
-	// arithmetic accident.
-	assign sprite_frame_start = dbg_sprite_vsync_swap
-		? (start_pending & bank_ready & ~sp_frame_busy & ~sp_swap_busy & ~spr_copy_busy)
-		: want_frame;
+	// Gates on the line the engine is ABOUT TO RENDER, which is vcnt+2 (see
+	// video_timing's vcnt_next2_active). vcnt 0..221 -> rows 2..223; vcnt 260
+	// and 261 wrap to rows 0 and 1. Everything between renders a row that is
+	// not displayed, so it is skipped.
+	wire next_line_visible = (vcnt < 9'd222) || (vcnt >= 9'd260);
+	wire le_start = lb_ready & ~lb_ready_d & next_line_visible
+	              & ~build_busy & ~spr_copy_busy;
 
-	wire sprite_swap_now = dbg_sprite_vsync_swap ? (frame_start & ~sp_frame_busy)
-												  : sp_frame_done;
+	logic         le_fb_we;
+	logic [8:0]  le_fb_x;
+	logic [3:0]  le_fb_pixel;
+	logic [4:0]  le_fb_color;
+	logic [1:0]  le_fb_priority;
 
-	// ---- sprite render budget instrumentation ----
-	// Does a render pass finish inside one frame? Both sprite artefacts follow
-	// if it does not: spriteram_dbuf swaps the engine's SOURCE records at
-	// frame_start, and the frame buffer's clear then overlaps the next pass
-	// (it ignores writes while swap_busy). sp_overran is sticky since
-	// configuration, so it also catches boot transients.
-	// Rates, not flags. The three sticky bits above saturate within seconds of
-	// boot, so they answer "has this ever happened" when the question is "does
-	// this happen under load" -- measured 2026-08-30, where early (14s) and
-	// late (70s) captures were byte-identical and told us nothing. These count
-	// events instead, alongside a frame count so two captures a known time
-	// apart give a per-frame rate.
+	sprite_line_engine u_sprite_line (
+		.clk(clk), .reset(reset),
+		.line_tick(line_start), .line_start(le_start),
+		.render_line(vcnt_next2_active),
+		.busy(le_busy), .ovr_ev(le_ovr_ev),
+		.trans_pen0(trans_pen0), .trans_pen15(trans_pen15),
+		.scan_addr(sl_scan_addr), .scan_ytest(sl_scan_ytest),
+		.rec_addr(sl_rec_addr), .rec_data(sl_rec_data), .count(sl_count),
+		.lut_req(sp_lut_req), .lut_addr(sp_lut_addr), .lut_valid(sp_lut_valid), .lut_data(sp_lut_data),
+		.gfxrom_req(sp_gfxrom_req), .gfxrom_addr(sp_gfxrom_addr),
+		.gfxrom_valid(sp_gfxrom_valid), .gfxrom_data(sp_gfxrom_data),
+		.fb_we(le_fb_we), .fb_x(le_fb_x),
+		.fb_pixel(le_fb_pixel), .fb_color(le_fb_color), .fb_priority(le_fb_priority)
+	);
+
+	logic         sp_present;
+	logic [3:0]  sp_pixel;
+	logic [4:0]  sp_color;
+	logic [1:0]  sp_priority;
+
+	sprite_line_buffer u_sprite_linebuf (
+		.clk(clk), .reset(reset),
+		.line_start(line_start), .ready(lb_ready),
+		.we(le_fb_we), .wx(le_fb_x),
+		.wpixel(le_fb_pixel), .wcolor(le_fb_color), .wpriority(le_fb_priority),
+		.rx(hcnt),
+		.rd_present(sp_present), .rd_pixel(sp_pixel),
+		.rd_color(sp_color), .rd_priority(sp_priority)
+	);
+
+	// ---- instrumentation ----
+	// Rates, not flags: sticky bits saturate within seconds of boot and only
+	// answer "has this ever happened" when the question is "does this happen
+	// under load". sp_ovr_cnt counts LINES the hard resync clipped;
+	// sp_render_max is the worst per-line render time in clk cycles (budget:
+	// 5,472 minus the 320-cycle clear). Read against ovr_frames (row 220).
 	logic [19:0] l0_ovr_cnt = '0, l1_ovr_cnt = '0, sp_ovr_cnt = '0, ovr_frames = '0;
 
 	// ADPCM fetch starvation. Sound goes scratchy in Gunbird when the screen is
@@ -976,61 +939,22 @@ module psikyo_core #(
 		end
 	end
 	always_ff @(posedge clk) begin
-		if (l0_overrun_ev)                l0_ovr_cnt <= l0_ovr_cnt + 1'b1;
-		if (l1_overrun_ev)                l1_ovr_cnt <= l1_ovr_cnt + 1'b1;
-		if (frame_start && sp_frame_busy) sp_ovr_cnt <= sp_ovr_cnt + 1'b1;
-		if (frame_start)                  ovr_frames <= ovr_frames + 1'b1;
+		if (l0_overrun_ev) l0_ovr_cnt <= l0_ovr_cnt + 1'b1;
+		if (l1_overrun_ev) l1_ovr_cnt <= l1_ovr_cnt + 1'b1;
+		if (le_ovr_ev)      sp_ovr_cnt <= sp_ovr_cnt + 1'b1;
+		if (frame_start)    ovr_frames <= ovr_frames + 1'b1;
 	end
 
-	logic sp_overran = 1'b0;
-	logic [19:0] sp_render_cycles = '0;
-	logic [19:0] sp_render_max    = '0;
+	logic sp_overran = 1'b0;   // sticky: any line ever clipped by the resync
+	logic [19:0] sp_line_cycles = '0;
+	logic [19:0] sp_render_max  = '0;
 	always_ff @(posedge clk) begin
-		if (frame_start && sp_frame_busy) sp_overran <= 1'b1;
-		if (sprite_frame_start)      sp_render_cycles <= '0;
-		else if (sp_frame_busy)      sp_render_cycles <= sp_render_cycles + 1'b1;
-		if (sp_frame_done && (sp_render_cycles > sp_render_max))
-			sp_render_max <= sp_render_cycles;
+		if (le_ovr_ev) sp_overran <= 1'b1;
+		if (line_start)    sp_line_cycles <= '0;
+		else if (le_busy) sp_line_cycles <= sp_line_cycles + 1'b1;
+		if (line_start && (sp_line_cycles > sp_render_max))
+			sp_render_max <= sp_line_cycles;
 	end
-
-
-
-	// fb_y is still needed: the frame buffer is 2D.
-	logic [7:0]  fb_y;
-
-	// ---- sprite render + double-buffered frame buffer ----
-	sprite_render_engine u_sprite_render (
-		.clk(clk), .reset(reset),
-		.frame_start(sprite_frame_start), .frame_busy(sp_frame_busy), .frame_done(sp_frame_done),
-		.trans_pen0(trans_pen0), .trans_pen15(trans_pen15),
-		.dl_addr(dl_addr), .dl_data(dl_data),
-		.at_addr(at_addr), .at_data(at_data),
-		.lut_req(sp_lut_req), .lut_addr(sp_lut_addr), .lut_valid(sp_lut_valid), .lut_data(sp_lut_data),
-		.gfxrom_req(sp_gfxrom_req), .gfxrom_addr(sp_gfxrom_addr),
-		.gfxrom_valid(sp_gfxrom_valid), .gfxrom_data(sp_gfxrom_data),
-		.fb_we(fe_fb_we), .fb_x(fe_fb_x), .fb_y(fb_y),
-		.fb_pixel(fe_fb_pixel), .fb_color(fe_fb_color), .fb_priority(fe_fb_priority)
-	);
-
-	logic         fe_fb_we;
-	logic [8:0]  fe_fb_x;
-	logic [3:0]  fe_fb_pixel;
-	logic [4:0]  fe_fb_color;
-	logic [1:0]  fe_fb_priority;
-
-	logic         sp_present;
-	logic [3:0]  sp_pixel;
-	logic [4:0]  sp_color;
-	logic [1:0]  sp_priority;
-
-	sprite_frame_buffer u_sprite_fb (
-		.clk(clk), .reset(reset),
-		.frame_swap(sprite_swap_now), .swap_busy(sp_swap_busy), .swap_done(sp_swap_done),
-		.fb_we(fe_fb_we), .fb_x(fe_fb_x), .fb_y(fb_y),
-		.fb_pixel(fe_fb_pixel), .fb_color(fe_fb_color), .fb_priority(fe_fb_priority),
-		.rd_x(hcnt), .rd_y(vcnt_active),
-		.rd_present(sp_present), .rd_pixel(sp_pixel), .rd_color(sp_color), .rd_priority(sp_priority)
-	);
 
 	// ---- compositor ----
 	compositor u_compositor (
@@ -1038,19 +962,12 @@ module psikyo_core #(
 		.l0_ctrl_enable(l0_enable & ~dbg_render_dis[1]), .l0_ctrl_opaque(l0_opaque), .l0_ctrl_transpen_sel(l0_transpen_sel),
 		.l1_valid(l1_pixel_valid), .l1_pixel(l1_pixel_index), .l1_color(l1_pixel_color),
 		.l1_ctrl_enable(l1_enable & ~dbg_render_dis[2]), .l1_ctrl_opaque(l1_opaque), .l1_ctrl_transpen_sel(l1_transpen_sel),
-		// dbg_render_dis[0] already stops sprite_frame_buffer from starting a
-		// NEW render pass (want_frame, above) -- but with the frame double-
-		// buffered, that alone just freezes the display bank at whatever it
-		// last rendered instead of blanking it: nothing ever un-swaps it.
-		// Tilemaps don't have this problem (l0/l1_ctrl_enable gate the
-		// compositor's LIVE per-pixel input directly, taking effect
-		// instantly), which is why "disable sprites" looked like it did
-		// nothing while "disable tilemap" worked. Gate the compositor input
-		// the same way tilemaps do, so the OSD toggle blanks sprites
-		// immediately regardless of what's sitting in the display bank.
-		// sprites_disable is LIVE (see spriteram_dbuf.sv): the game's global
-		// sprite enable blanks the display immediately, same as the OSD
-		// debug toggle next to it -- not at the next frame boundary.
+		// Both sprite disables gate the compositor's LIVE per-pixel input,
+		// the same way the tilemap enables do: the OSD debug toggle and the
+		// game's own control-word bit (sprites_disable is deliberately live,
+		// see spriteram_dbuf.sv) blank sprites the moment they change. The
+		// render path itself keeps running -- matching the tilemaps, whose
+		// engines also render regardless and are gated only at composition.
 		.sp_present(sp_present & ~dbg_render_dis[0] & ~sprites_disable), .sp_pixel(sp_pixel), .sp_color(sp_color), .sp_priority(sp_priority),
 		.pal_addr(pal_addr), .pal_s_addr(pal_s_addr), .sprite_sel(comp_sprite_sel)
 	);

@@ -1,7 +1,8 @@
 # jt10 (YM2610) provenance
 
-Vendored from https://github.com/jotego/jt12, commit `1aff35dc6611b2f842666ddacce40734896cb1a4`
-(2026-08-17), for use as the YM2610 sound chip on the SH201B/KA302C boards (sngkace/gunbird/
+Vendored from https://github.com/jotego/jt12, commit `dc9be7c` (2026-09-01; originally
+`1aff35dc6611b2f842666ddacce40734896cb1a4`, 2026-08-17 -- see "Update 2026-09-01" below),
+for use as the YM2610 sound chip on the SH201B/KA302C boards (sngkace/gunbird/
 btlkroad). Only the `hdl/` directory (and `LICENSE`) was pulled -- not `cc/`, `cfg/`, `doc/`,
 `ise/`, `jt89/`, `octave/`, `out/`, `quartus/`, `sgdk/`, `target/`, `ver/` -- those are jotego's
 own build/test/toolchain scaffolding for the jt12 repo as a standalone project, not needed here.
@@ -43,6 +44,49 @@ directly rather than assuming. `sngkace` has a `ymsnd:adpcma` region (0x100000, 
 only). `gunbird` has both `ymsnd:adpcma` (0x100000) and `ymsnd:adpcmb` (0x080000, "DELTA-T
 Samples") -- full ADPCM-A+B usage. So the ADPCM ROM interfaces on `jt10.v` are load-bearing for
 Phase 1, not a corner this project can cut.
+
+## Update 2026-09-01: refreshed to upstream `dc9be7c`
+
+Pulled to chase the scratchy ADPCM audio in Gun Bird and Samurai Aces, which is a
+known jt10 defect rather than an integration fault here (see
+`docs/ROADMAP.md`'s "Fix sound" item -- ADPCM starvation was measured directly
+and ruled out on this side). Eight upstream commits, of which the relevant one is
+**`dc9be7c` "jt10_adpcm_drvB: din is also gated by cen"**:
+
+```verilog
+// before: the ADPCM-B nibble was latched EVERY clock
+always @(posedge clk) din <= !nibble_sel ? data[7:4] : data[3:0];
+
+// after: latched on the chip's clock enable, with a reset
+end else if( cen ) begin
+    roe_n <= ~(adv & cen55);
+    din   <= !nibble_sel ? data[7:4] : data[3:0];
+end
+```
+
+Sampling the sample nibble at full clock rate rather than on `cen` lets it change
+between the ticks the decoder consumes, so the decoder can read a nibble that was
+never the intended one -- audibly, noise on ADPCM-B. `roe_n` is now reset-aware
+and cen-gated too. Gun Bird uses ADPCM-A + ADPCM-B, so it is in this core's path.
+
+**BREAKING INTERFACE CHANGE**, handled here: `4cf1c5b` split `jt10.v`'s single
+`fm_snd` output into `fm_left`/`fm_right` (the FM+ADPCM sum a real YM2610 feeds
+to its external YM3016 DAC). This core consumes the already-combined
+`snd_left`/`snd_right`, so both are left unconnected -- updated in
+`rtl/psikyo_top.sv` and in `sim/jt10_tb/tb_jt10_ssg.sv`.
+
+Also in the range, not affecting this core's configuration: YM2610B support
+(`jt10b.v`, `jt10b_mixer.v` -- new files, deliberately NOT added to either .qsf
+since we instantiate `jt10`, not `jt10b`), a `FULLFM` parameter on `jt10_acc`
+(default 0 = the YM2610 behaviour we had; the 7.25x ADPCM-A gain is unchanged),
+an ADPCM status-flag mask fix, and an mmr guard against data writes when the
+address port does not match. No files were removed upstream, so no .qsf entry
+was invalidated.
+
+Verified after the update: the whole jt10 + jt49 tree compiles clean, and
+`sim/jt10_tb/tb_jt10_ssg.sv` still measures exactly 16384 and 8192 clk cycles for
+its two tone periods (unchanged from before the update). NOT yet verified by ear
+on hardware -- that is the whole point of the change and remains open.
 
 ## Status
 

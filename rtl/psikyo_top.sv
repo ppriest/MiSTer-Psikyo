@@ -127,7 +127,6 @@ module psikyo_top #(
 	input  logic         dbg_autopause_frame_en,
 `endif
 	input  logic         snd_irq_en,
-	input  logic         dbg_sprite_vsync_swap,
 	input  logic [1:0]  dbg_src,
 	input  logic [3:0]  dbg_window,
 	input  logic         dbg_rearm,
@@ -273,7 +272,7 @@ module psikyo_top #(
 `ifdef DEBUG_ISSP
 		.dbg_autopause_wr_en(dbg_autopause_wr_en), .dbg_autopause_frame_en(dbg_autopause_frame_en),
 `endif
-		.dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+		.dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 		.dbg_pixel(dbg_pixel)
 	);
 
@@ -409,7 +408,10 @@ module psikyo_top #(
 		.adpcma_roe_n(adpcma_roe_n), .adpcma_data(adpcma_data_r),
 		.adpcmb_addr(adpcmb_addr), .adpcmb_roe_n(adpcmb_roe_n), .adpcmb_data(adpcmb_data_r),
 
-		.psg_A(), .psg_B(), .psg_C(), .fm_snd(), .psg_snd(),
+		// jt10's single fm_snd became fm_left/fm_right upstream (the FM+ADPCM
+		// sum that a real YM2610 sends to its YM3016 DAC). Both stay unconnected
+		// here: this core takes the already-combined snd_left/snd_right.
+		.psg_A(), .psg_B(), .psg_C(), .fm_left(), .fm_right(), .psg_snd(),
 		.snd_right  (jt_snd_r),
 		.snd_left   (jt_snd_l),
 		.snd_sample (),

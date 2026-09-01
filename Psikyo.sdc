@@ -93,19 +93,27 @@ if {[get_collection_size $t80] > 0} {
 #   1. Sources are pixel-cadence: tilemap_line_engine's pixel_index /
 #      pixel_color registers update ONLY under ce_pix (1-in-12; verified --
 #      reset aside, no other branch writes them; pixel_valid is NOT in the
-#      collection because blanking edges clear it at full rate), and the
-#      sprite frame buffer's read-bank output transitions only when its
-#      ce_pix-cadenced read address does.
+#      collection because blanking edges clear it at full rate).
 #   2. The only consumer of the palette output (rgb -> arcade_video /
 #      screen_rotate_two) samples at ce_pix cadence too, so an address that
 #      settles 2 clk after the pixel tick instead of 1 is invisible: the
 #      lookup result is stable 10 cycles before anything reads it.
 #
 # Deliberately -from restricted, never a blanket -to the palette BRAMs: the
-# sprite-palette snapshot copy FSM (rtl/psikyo_core.sv) drives the same
-# port-B address at FULL rate and assumes exactly 1-cycle read latency --
-# sweeping its paths into a multicycle would silently corrupt the snapshot.
-set vidsrc [get_registers {*|tilemap_line_engine:*|pixel_index[*] *|tilemap_line_engine:*|pixel_color[*] *|sprite_frame_buffer:u_sprite_fb|*}]
+# palette snapshot copy FSM (rtl/psikyo_core.sv) drives the same port-B
+# address at FULL rate and assumes exactly 1-cycle read latency -- sweeping
+# its paths into a multicycle would silently corrupt the copy.
+#
+# This collection used to include sprite_frame_buffer:u_sprite_fb as a
+# second source family. That module is retired from synthesis (replaced by
+# the per-scanline path, docs/sprite_buffering.md), so the glob matched
+# nothing and quietly contributed no exception -- removed rather than left
+# as a dead pattern implying coverage that does not exist. Its replacement,
+# sprite_line_buffer, is deliberately NOT substituted in: none of its paths
+# are failing, and granting slack a path does not need is how a multicycle
+# turns into permission for the Fitter to route it slowly. If one surfaces
+# in a later report, audit it and add it explicitly, the same way as above.
+set vidsrc [get_registers {*|tilemap_line_engine:*|pixel_index[*] *|tilemap_line_engine:*|pixel_color[*]}]
 set palbram [get_registers {*|dpram:u_palette|* *|dpram:u_palette_snap|*}]
 if {[get_collection_size $vidsrc] > 0 && [get_collection_size $palbram] > 0} {
     set_multicycle_path -setup -end 2 -from $vidsrc -to $palbram
@@ -230,4 +238,58 @@ if {[get_collection_size $accsrc] > 0 && [get_collection_size $accdst] > 0} {
 } else {
     post_message -type critical_warning \
         "Psikyo.sdc: OPL4 PCM accumulate multicycle NOT applied (empty collection)"
+}
+
+# ---------------------------------------------------------------------------
+# HQ2x scandoubler blender (sys/hq2x.sv) -- ce_x4 cadence
+# ---------------------------------------------------------------------------
+# With every core-RTL family above constrained, the only clk_sys paths still
+# failing are 12 inside the framework's HQ2x blender, all Blend-internal
+# (df_rule -> i30 and friends, ~-0.1 ns). sys/ is vendored and not ours to
+# edit, and hq2x cannot be compiled out: sys/scandoubler.v's disable_hq2x is
+# a RUNTIME input (~hq2x from the OSD), and there is no parameter or `ifdef`
+# anywhere in hq2x.sv / scandoubler.v / video_mixer.sv / arcade_video.v. So
+# the blender is synthesized regardless of the Scandoubler Fx setting, and
+# the only lever left on our side of the boundary is this constraint.
+#
+# Audit (sys/hq2x.sv module Blend), same discipline as the entries above:
+#   * EVERY clocked block in Blend is `always @(posedge clk) if (clk_en)` --
+#     all four of them (the a/b/d/e/h/f + bl_rule/df_rule latch, the i10/
+#     i20/i30 + op0 case, the i1/i2/i3 + op pipeline, and Result). There is
+#     no ungated branch and no falling-edge logic in the module at all, so
+#     there is nothing here of the kind that made the old TG68K multicycle
+#     dangerous.
+#   * clk_en is the scandoubler's ce_x4i. arcade_video is instantiated with
+#     .clk_video(clk_sys) (Psikyo.sv), and our ce_pix is clk_sys/12, so
+#     sys/scandoubler.v measures pixsz=12 and pulses ce_x4i at pc_in ==
+#     pixsz4(3), pixsz2(6), pixsz2+pixsz4(9) and pixsz(12): once every 3
+#     clk_sys cycles, i.e. ~34.9 ns of real settling time against the 11.64
+#     ns the analyzer is currently demanding.
+#
+# THE EXCEPTION, stated plainly rather than buried. That 3-cycle spacing is
+# not unconditional: scandoubler.v also forces an enable on hsync,
+#
+#     if((~hs & hs_in) || (pc_in >= pixsz)) begin ce_x4i <= 1; ...
+#
+# so an hsync rising edge landing one cycle after a regular pulse produces
+# two enables back to back, and for that ONE transition per scanline a
+# setup-2 exception is not backed by the hardware. It is accepted here
+# because the affected samples are hsync-time blanking pixels -- Blend is
+# four enable-stages deep, so the disturbance stays inside hsync and never
+# reaches a displayed pixel -- and because it can only ever affect the HQ2x
+# Fx setting, not the default or CRT scanline modes. If HQ2x output ever
+# shows an artifact at the left edge of the picture, THIS is the first thing
+# to suspect, and the fix is to drive clk_video from a slower dedicated PLL
+# output instead (the structurally correct fix, deferred as real work).
+#
+# Scoped Blend-internal only: the failing paths are all inside it, and the
+# rule/pattern logic feeding it from hq2x_in runs on the same enable but has
+# not been audited here, so it is deliberately left at full rate.
+set blend [get_registers {*|Hq2x:Hq2x|Blend:blender|*}]
+if {[get_collection_size $blend] > 0} {
+    set_multicycle_path -setup -end 2 -from $blend -to $blend
+    set_multicycle_path -hold  -end 1 -from $blend -to $blend
+} else {
+    post_message -type critical_warning \
+        "Psikyo.sdc: no HQ2x Blend registers matched -- blender multicycle NOT applied"
 }

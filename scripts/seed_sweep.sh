@@ -19,6 +19,10 @@ for s in $SEEDS; do
     if [ -f "build/output_files/$REV.rbf" ]; then
         cp -p "build/output_files/$REV.rbf" "build_keep/${REV}-seed${s}.rbf"
         cp -p build/q_staged.log "build_keep/${REV}-seed${s}.buildlog"
+        # Resource figures too: the stage rewrites .fit.summary on every
+        # seed, so without this the numbers for any build but the last one
+        # are gone by the time the sweep ends.
+        cp -p "build/output_files/$REV.fit.summary" "build_keep/${REV}-seed${s}.fit.summary" 2>/dev/null || true
     fi
 done
 echo "=== summary ===" | tee -a "$OUT"

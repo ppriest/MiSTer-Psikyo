@@ -259,8 +259,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_pos_transform.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_zoom_lut.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_subtile_step.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_zoom_src_index.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_render_engine.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_frame_buffer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_list.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_engine.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_buffer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/compositor.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/debug_tracer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/psikyo_core.sv

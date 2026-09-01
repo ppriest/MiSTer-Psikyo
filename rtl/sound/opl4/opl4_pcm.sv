@@ -174,6 +174,15 @@ module opl4_pcm (
 	logic signed [3:0] c_pan;
 	logic [2:0]  c_lfo_spd, c_vib, c_amd;
 	logic [3:0]  c_ar, c_dr, c_sl, c_sr, c_rc, c_rr;
+	// Loop/end points, cached like every other per-channel field. They are NOT
+	// register-file values -- they come from the sample header at key-on and
+	// are constant for the note -- but reading them as ch_end[ch]/ch_loop[ch]
+	// inside S_ENV put two 24:1 muxes, selected by the slot index, in series
+	// with the 32-bit wrap compare and its two 32-bit adds. Once the sprite
+	// path was retimed that became the entire failing-path population of the
+	// design (235 paths, ch -> ch_nextpos). Latched in S_RD8, two states
+	// before use, matching the other c_* fields.
+	logic [15:0] c_end, c_loop;
 
 	// slot working values
 	logic [31:0] w_step, w_curpos;
@@ -506,6 +515,8 @@ module opl4_pcm (
 				S_RD8: begin
 					c_rc       <= pcm_rdata[7:4];
 					c_rr       <= pcm_rdata[3:0];
+					c_end      <= ch_end[ch];
+					c_loop     <= ch_loop[ch];
 					pcm_raddr <= 8'hE0 + {3'd0, ch};
 					state      <= S_CALC;
 				end
@@ -575,8 +586,8 @@ module opl4_pcm (
 					ch_lfo[ch]      <= w_lfo;
 					// position advance + loop
 					es_np = w_curpos + w_step;
-					if (es_np >= {ch_end[ch], 16'd0})
-						es_np = es_np + {ch_loop[ch], 16'd0} - {ch_end[ch], 16'd0};
+					if (es_np >= {c_end, 16'd0})
+						es_np = es_np + {c_loop, 16'd0} - {c_end, 16'd0};
 					ch_nextpos[ch] <= es_np;
 					// total level interpolation (19 up / 38 down per sample)
 					if (c_lvl_direct) ch_tl[ch] <= {c_tl_reg, 10'd0};

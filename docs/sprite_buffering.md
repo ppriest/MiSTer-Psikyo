@@ -84,6 +84,99 @@ Sound is no longer silent (see `docs/ROADMAP.md`'s "Fix sound" item), but this s
 elsewhere. Verify against MAME source before acting on it.
 
 
+## OPEN: sprites sit one scanline below the tilemaps (found 2026-09-01)
+
+Reported on hardware: sprites and tilemaps disagree by one scanline. Present on
+build 848 as well as 849, so it dates from the per-scanline renderer itself
+(build 847) and was simply invisible under the wrong-tile corruption that build
+also had. Ruled out by inspection: the sub-tile ordinal retiming (`44adccc`)
+cannot move a sprite, because `sprite_subtile_step` derives sub_x/sub_y from
+ix/iy and uses `subtile_ordinal` ONLY for `sub_code`. Timing is ruled out too --
+849 has zero failing paths and still shows it.
+
+The two paths get their line number by different means:
+
+| path | how it gets its line | result |
+|---|---|---|
+| tilemap | `.vcnt(vcnt_next_active)` wired straight in (psikyo_core.sv), latched at `line_start` | row k displayed on line k |
+| sprite | line comes from the line buffer's BANK SWAP; the bank rendered in one window is displayed in the NEXT | row k displayed on line k+1 |
+
+`video_timing.sv` fires `line_start` at `hcnt == H_ACTIVE-1`, i.e. at the END of
+a visible line, and `sprite_line_buffer` swaps banks on it. So a bank filled
+during the window after line_start(j) is not displayed until the window after
+line_start(j+1) -- whose visible area is line j+2. With `le_start` sampling
+`render_line = vcnt_next_active` about 320 clk after line_start (still within
+line j, so vcnt = j), the bank ends up holding row j+1 but being displayed on
+line j+2.
+
+Proposed fix: `render_line` needs `vcnt + 2`, not `vcnt + 1`, with
+`next_line_visible` adjusted to match and the wrap at V_TOTAL handled. The
+whole-frame renderer could not drift this way because the compositor indexed it
+directly as `rd_y = vcnt_active`.
+
+CONFIRM THE DIRECTION BEFORE CHANGING IT. The defect was reported as sprites
+one line UP, which is the opposite of the analysis above; the screen was being
+viewed with 180-degree flip enabled, which inverts the vertical axis and would
+invert the apparent direction. Re-check with flip OFF first -- it costs no
+build, and getting the sign wrong doubles the error instead of fixing it.
+
+Worth adding to sim/sprite_line_tb when this is fixed: the differential bench
+compares which SPRITE line each pixel belongs to, not which SCREEN line it is
+displayed on, so it is structurally blind to this defect -- the same shape of
+gap as the tile-content aliasing that hid the ordinal truncation.
+
+## REINSTATED: the per-scanline path is now the only path (2026-08-30)
+
+The section below records the 2026-08-29 attempt and its parking. On
+2026-08-30 the line renderer was recovered from git history, root-caused,
+redesigned, and made the ONLY sprite path; `sprite_render_engine` +
+`sprite_frame_buffer` are retired from synthesis (kept in the tree as the
+golden reference for the differential testbench). Three distinct defects
+were found in the parked version:
+
+1. **Lost `line_start` pulses** (the parked diagnosis, confirmed by
+   inspection): the FSM consumed the pulse only in S_IDLE, so one overrun
+   ate the next start, finished the old line into the freshly swapped
+   bank, and idled a line -- compounding downward exactly as seen on
+   hardware. Fixed: `line_tick` hard-resyncs the engine every line;
+   rendering aborts (writes stop that cycle), in-flight SDRAM handshakes
+   drain during the buffer's 320-cycle clear, and at worst one line loses
+   its tail sprites (counted on overlay row 219).
+2. **Per-line cost scaled with list length**: every line re-walked the
+   display list and re-fetched every 4-word record (~10 cycles per sprite
+   per line; busy lists burned most of the 5,472-cycle budget before any
+   pixel). Fixed structurally: `sprite_line_list` walks/fetches/prunes
+   ONCE per frame in vblank into a compact table (18-bit y-test word +
+   64-bit raw record per entry, display-list order preserved); the
+   per-line scan is one cycle per candidate.
+3. **Sub-tile row overlap under zoom** (found by the differential test,
+   never diagnosed on hardware -- and the likely "broken with large
+   sprites"): with zoom, adjacent sub-tile rows can overlap by a line
+   (row step `zoom_y_t>>1` can be one less than `dst_size_y`), and the
+   whole-frame engine draws both with the HIGHER row overwriting.
+   The parked engine searched rows bottom-up and rendered the lower row
+   on overlap lines -- wrong tile row exactly on large zoomed sprites.
+   Fixed: FIND_ROW searches top-down.
+
+Sequencing is MAME-exact end to end: at frame_start the table rebuild
+reads the snapshot (get_sprites), then `copy_start` refreshes the snapshot
+(m_spriteram->copy) -- capture at vblank, table one buffer-generation old.
+Sprites are composed one LINE after rendering, so the sprite palette
+snapshot (defect 4) became a live write-through MIRROR of palette entries
+0x000-0x1FF -- live palette at scanout, like the tilemaps and the PCB.
+
+Verified by `sim/sprite_line_tb/tb_sprite_line_diff.sv`: the line path
+against the retired frame engine, per-pixel over all 224 lines, ten cases
+including an 8x8 large sprite, zoom+flip combinations, screen edges,
+transparency, 100 random overlapping sprites (depth-order check), an
+abort-mid-line resync regression, and off-screen pruning. ALL PASS, with
+deliberately different ROM-model latencies on the two sides.
+
+Defects 1/2 (tear, clear overlap) are structurally impossible in a line
+buffer; defect 6's latency accounting is preserved by construction. The
+frame buffer's ~1.7 Mbit of M10K (about 170 blocks) is freed; the table
+costs ~9 back.
+
 ## The alternative that was tried: per-scanline line buffers (removed 2026-08-29)
 
 A per-scanline alternative (`sprite_line_engine.sv` + `sprite_line_buffer.sv`, selectable at

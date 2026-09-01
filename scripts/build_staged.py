@@ -117,7 +117,10 @@ def main():
        not os.path.isfile(os.path.join(stage, ".git")):
         run(["git", "-C", here, "worktree", "add", "--detach", stage, head])
     else:
-        run(["git", "-C", stage, "checkout", "--detach", head])
+        # --force: a seed sweep patches SEED into the STAGED .qsf, and a
+        # leftover patch must never wedge the next build -- the stage is a
+        # disposable copy of HEAD, local changes in it are always discardable
+        run(["git", "-C", stage, "checkout", "--force", "--detach", head])
         run(["git", "-C", stage, "reset", "--hard", head])
 
     # Fitter seed override. Placement is the only thing it changes, so a

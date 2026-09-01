@@ -55,6 +55,15 @@ module video_timing (
 	// fetch line 0 as row 6.
 	output logic [7:0] vcnt_next_active,
 
+	// vcnt+2, wrapped the same way. The per-scanline SPRITE path needs one
+	// more line of lead than the tilemaps: the tilemap engines latch
+	// vcnt_next_active at line_start and display that row on the very next
+	// line, whereas sprite_line_buffer swaps banks on line_start, so a bank
+	// filled after one line_start is not displayed until after the NEXT one --
+	// one extra line of latency. Indexing the sprite render with vcnt+1 put
+	// its rows one scanline BELOW the tilemaps on hardware.
+	output logic [7:0] vcnt_next2_active,
+
 	output logic h_active,   // 1 while hcnt in [0,319]
 	output logic v_active,   // 1 while vcnt in [0,223]
 	output logic hblank,
@@ -86,6 +95,8 @@ module video_timing (
 	assign vcnt_active = vcnt[7:0];
 	wire [8:0] vcnt_next = (vcnt == V_TOTAL - 1) ? 9'd0 : (vcnt + 9'd1);
 	assign vcnt_next_active = vcnt_next[7:0];
+	wire [8:0] vcnt_next2 = (vcnt >= V_TOTAL - 2) ? (vcnt - (V_TOTAL - 2)) : (vcnt + 9'd2);
+	assign vcnt_next2_active = vcnt_next2[7:0];
 
 	logic v_active_prev;
 

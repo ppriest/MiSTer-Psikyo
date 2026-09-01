@@ -142,14 +142,20 @@ localparam CONF_STR = {
 	"H1P1O[40],Sprites,On,Off;",
 	"H1P1O[41],Tilemap 0,On,Off;",
 	"H1P1O[42],Tilemap 1,On,Off;",
-	"H1P1O[43],Sprite swap,FrameStart,EndOfRender;",
 	"H1P1O[51],Sound IRQ,On,Off;",
 	"H1P1O[53],C00008 bit0,Zero,VBlank;",
 	"H1P1O[50],VRAM write auto-pause,Off,On;",
 	"H1P1O[54],Frame-count auto-pause,Off,On;",
 	"-;",
 	"R[0],Reset;",
-	"J1,Button 1,Button 2,Button 3,Start,Coin;",
+	// This list must agree with the .mra <buttons> positions, since the .mra
+	// is what actually assigns the joystick bits (see pause_btn). It named
+	// only three buttons, which puts Start/Coin at bits 7/8 here while every
+	// .mra -- and so the input wiring itself -- has them at 10/11. Naming all
+	// six (plus Pause) makes the two descriptions of one mapping agree; games
+	// with fewer buttons suppress 4-6 with "-" in their own .mra, which is
+	// where per-game button counts actually belong.
+	"J1,Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause;",
 	"V,v",`BUILD_DATE
 };
 
@@ -364,8 +370,38 @@ wire reset = RESET | status[0] | buttons[1] | ~pll_locked;
 // into this port's low byte instead (psikyo.cpp INPUT_PORTS):
 //     bit0 COIN1, bit1 COIN2, bit4 SERVICE1, bit5 SERVICE(no toggle),
 //     bit6 TILT   -- all IP_ACTIVE_LOW -- and bit7 z80_nmi_r, ACTIVE HIGH.
+// Bits 15:8 are where Battle K-Road's buttons 4-6 live -- it is a 6-button
+// fighter sharing gunbird's board and memory map, and MAME's btlkroad
+// PORT_MODIFY("P1_P2") puts them in this port's HIGH byte (checked against
+// psikyo.cpp, not assumed):
+//     bit 15 P1 B4   bit 14 P1 B5   bit 13 P1 B6   bit 12 UNKNOWN
+//     bit 11 P2 B4   bit 10 P2 B5   bit  9 P2 B6   bit  8 UNKNOWN
+// all IP_ACTIVE_LOW. gunbird's own PORT_MODIFY covers the whole range with a
+// single `PORT_BIT( 0x0000ff00, IP_ACTIVE_LOW, IPT_UNKNOWN )`, so there these
+// bits simply read as ones.
+//
+// This byte was hardwired to 8'hFF, which is why Battle K-Road's buttons 4-6
+// did nothing despite its .mra declaring six of them.
+//
+// ONE wiring serves both boards, with no new board flag: a .mra button
+// position named "-" is never mapped to a physical control, so its joystick
+// bit stays 0 and inverts to exactly the 1 that gunbird's IPT_UNKNOWN
+// expects. Every non-btlkroad .mra in releases/ names positions 4-6 "-"
+// (audited across all 17), so their behaviour is unchanged by construction.
+// Do not collapse this back to a board test without re-checking those lists.
+//
+// Joystick bit numbering comes from the .mra <buttons> list -- see pause_btn
+// below for how that was established on hardware. Names map from bit 4, so
+// buttons 4/5/6 are joystick bits 7/8/9.
 wire [15:0] p1p2_low = board_gunbird
-	? {8'hFF,                                 // bits 15:8 unused
+	? {~joystick_0[7],                         // bit 15 P1 BUTTON4
+	   ~joystick_0[8],                         // bit 14 P1 BUTTON5
+	   ~joystick_0[9],                         // bit 13 P1 BUTTON6
+	   1'b1,                                   // bit 12 UNKNOWN
+	   ~joystick_1[7],                         // bit 11 P2 BUTTON4
+	   ~joystick_1[8],                         // bit 10 P2 BUTTON5
+	   ~joystick_1[9],                         // bit  9 P2 BUTTON6
+	   1'b1,                                   // bit  8 UNKNOWN
 	   nmi_pending,                            // bit 7  z80_nmi_r, active HIGH
 	   1'b1,                                   // bit 6  TILT
 	   1'b1,                                   // bit 5  SERVICE (no toggle)
@@ -493,7 +529,6 @@ wire        vblank_wait_en   = status[53];
 // selectable) shows a pass ~61% down the same frame it was drawn in, so the
 // fb contributes only a fraction of a frame and sprites lead the live-VRAM
 // tilemaps on screen. Inverted so a cleared .CFG gets the correct behaviour.
-wire        dbg_sprite_vsync_swap = ~status[43];
 wire [1:0] dbg_src     = status[58:57];
 wire [3:0] dbg_window  = status[62:59];
 wire        dbg_rearm   = status[63];
@@ -650,7 +685,7 @@ psikyo_top #(.BOARD_GUNBIRD(1'b0), .DEBUG_TRACER(DEBUG_TRACER_EN)) psikyo_top
 `ifdef DEBUG_ISSP
 	.dbg_autopause_wr_en(dbg_autopause_wr_en), .dbg_autopause_frame_en(dbg_autopause_frame_en),
 `endif
-	.snd_irq_en(snd_irq_en), .dbg_sprite_vsync_swap(dbg_sprite_vsync_swap), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
+	.snd_irq_en(snd_irq_en), .dbg_src(dbg_src), .dbg_window(dbg_window), .dbg_rearm(dbg_rearm),
 	.dbg_pixel(dbg_pixel)
 );
 

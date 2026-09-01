@@ -12,6 +12,18 @@ Supports the following games
 | Strikers 1945 |  1995 | SH403 / SH404 | SH403 (Unprotected) is similar to KA302C |
 | Sengoku Blade: Sengoku Ace Episode II (Japan) / Tengai (World) | 1996 | SH404 | | | SH404 has MCU, YMF278B for sound, and gfx banking. See `docs/phase2_sh404.md` |
 
+## History
+
+* Arcade-Psikyo_20260901.rbf
+  * **Intentionally broken HQ2X scaler to close timing**
+  * Fix 6 button controls for "Battle K-Road"
+  * Fix bad DIPs in MRAs for some of the alternate sets
+  * Remove Framebuffer for buffering in favour of buffering the spriteram to be more like the hardware presumably and save bram
+  * Update JT10 sound core to try and resolve sound issue in Gunbird/Samurai Aces, but doesn't
+
+* Arcade-Psikyo_20260830.rbf
+  * Initial release
+
 ## Screenshots
 
 ### Samurai Aces (World) / Sengoku Ace (Japan)
@@ -67,7 +79,9 @@ As per norm:
 
 ## Status
 
-Games are in good shape, with minor graphical issues, and some sound distortion. Both the result of timing not being met.
+Games are in good shape, with minor graphical issues around screen clear.
+The release revision closes timing with margin to spare (worst-case clk_sys
+setup slack +0.240 ns, zero failing paths).
 
 Details:
 
@@ -76,7 +90,15 @@ Details:
 * **SH404 audio: from-scratch YMF278B (OPL4) core** (`rtl/sound/opl4/`, 
   built against MAME's ymfm reference - see `docs/phase2_ymf278b.md`): full bus protocol, chip ID/status/busy, both timers with the IRQ the Z80 driver's sequencer runs on, and the 24-channel PCM wavetable engine. FM synthesis is deliberately not implemented as it's not used on this platform.
 * **PS2001B, PS3103, PS3204, PS3305 custom chips** - Both tilemap layers (with per-line and per-tile scroll), sprites, palette, buffering, compositor
-* Rotation and 180° flip over HDMI via the HPS framebuffer, H-Position and V-Offset from CRT Offset (but no H-Size/V-Size due to space concerns)
+* **Per-scanline sprite rendering** (`rtl/video/sprite_line_engine.sv`): sprites are
+  rendered a line ahead of scanout into a double-buffered 320-pixel line buffer,
+  the shape the original hardware and the rest of the MiSTer ecosystem use. This
+  replaced a 1.7 Mbit whole-frame buffer, which is where most of the block RAM
+  used to go. A per-frame pass builds a compact display-list table in vblank so
+  the per-line cost stays affordable. See `docs/sprite_buffering.md`.
+* Rotation and 180° flip over HDMI via the HPS framebuffer, H-Position and V-Offset
+  from CRT Offset. H-Size/V-Size are still not implemented, but the block RAM that
+  blocked them is now free -- see Resource usage.
 * CPU pause button suspends main CPU (only)
 * Fast ROM loading via DDR
 * Hiscore saving (with auto-saving)
@@ -84,25 +106,24 @@ Details:
 
 ### Todo
 
-- [ ] Finding a stable way to close the timing, hovering around 0 +/- 200ns and unstable with different seeds
 - [ ] Implement the Flipscreen DIP, for CRT owners
 - [ ] Screen Clear / background colour is still unclear. Currently taken from the highest priority visible tilemap, falling back to pen 0
 - [ ] Port to the Analogue Pocket (openFPGA) - looking unlikely
 
 ### Resource usage
 
-Instrumented (`Psikyo_stp`) revision on the DE10-nano's Cyclone V 5CSEBA6:
+On the DE10-nano's Cyclone V 5CSEBA6, both revisions:
 
-| resource | used | available | % |
+| resource | release (`Psikyo`) | instrumented (`Psikyo_stp`) | available |
 | --- | --- | --- | --- |
-| Logic (ALMs) | 26,800 | 41,910 | 64% |
-| Registers | 37,446 | -- | -- |
-| **M10K blocks** | **553** | **553** | **100%** |
-| Block memory bits | 4,321,952 | 5,662,720 | 76% |
-| DSP blocks | 58 | 112 | 52% |
-| Pins | 145 | 314 | 46% |
+| Logic (ALMs) | 25,583 (61%) | 26,831 (64%) | 41,910 |
+| Registers | 36,201 | 38,087 | -- |
+| M10K blocks | 355 (64%) | 362 (65%) | 553 |
+| Block memory bits | 2,646,267 (47%) | 2,689,531 (47%) | 5,662,720 |
+| DSP blocks | 63 (56%) | 63 (56%) | 112 |
+| Pins | 145 (46%) | 145 (46%) | 314 |
 
-The combination of the framebuffer, hiscore support and the limited CRT Offset fill the BRAM.
+**Block RAM is no full ** It was 553/553 blocks until the whole-frame sprite renderer was replaced by the per-scanline path (see `docs/sprite_buffering.md`).
 
 ## AI Attestation
 

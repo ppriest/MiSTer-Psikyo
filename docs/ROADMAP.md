@@ -349,6 +349,24 @@ during play, not just at boot — still not fully correct, see item 4.)
    (commit `fedadcf`: the channel reads that SDRAM region through arbiter client c0, freed
    by the sprite-gfxrom repartition; testbench regression passing) — NOT yet verified by
    ear on hardware.
+   **Update 2026-08-31:** the residual scratchiness in the YM2610 games (Gun Bird and
+   Samurai Aces specifically) is a **known issue in the jt10 core itself**, reported as
+   such rather than found here — it is not an integration defect on our side, and no
+   amount of work on this core's plumbing will fix it. Any real fix belongs upstream in
+   jt10 (or in replacing it).
+
+   That closes an investigation which had been chasing SDRAM bandwidth as the cause: both
+   ADPCM streams sit on the lowest-priority physical port with no FIFO anywhere, so a late
+   byte reaches the DAC as-is, and starvation was the obvious hypothesis. It was measured
+   directly and ruled out. Commit `d71da55` added per-stream stall counters (overlay rows
+   221/222 total stall cycles, row 223 worst single wait) and `0da6409` gave both ADPCM
+   clients priority over `sdram_arbiter6`'s round-robin. Measured on hardware during
+   Gunbird attract: worst single wait **149 clk (~1.7 us)** against a **54 us** sample
+   period, and ~74-128 stall cycles per frame — orders of magnitude away from starving.
+   The arbiter priority change stays (it is the right ordering regardless and costs
+   nothing) and the counters stay for future audio work, but neither is a fix for this,
+   because this was never the fault.
+
 5. **Fix the slowdown** — IN PROGRESS, first re-partition attempt measured WORSE, not
    better (2026-08-29). Step 1 (granule cache in `sdram_narrow_bridge.sv`, commit
    `153f772`) removed most CPU/lut Port 2 traffic — not independently re-measured but

@@ -15,14 +15,12 @@
     along with JT12.  If not, see <http://www.gnu.org/licenses/>.
 
     Author: Jose Tejada Gomez. Twitter: @topapate
-    Version: 1.0
-    Date: 21-03-2019
 */
 
-// YM2610 wrapper
+// YM2610B wrapper
 // Clock enabled at 7.5 - 8.5MHz
 
-module jt10(
+module jt10b(
     input           rst,        // rst should be at least 6 clk&cen cycles long
     input           clk,        // CPU clock
     input           cen,        // optional clock enable, if not needed leave as 1'b1
@@ -45,22 +43,46 @@ module jt10(
     output          [ 7:0] psg_A,
     output          [ 7:0] psg_B,
     output          [ 7:0] psg_C,
-    output  signed  [15:0] fm_left, fm_right,
+    output      signed [15:0] fm_left, fm_right,
     // combined output
     output          [ 9:0] psg_snd,
-    output  signed  [15:0] snd_right, snd_left,
+    output      signed [15:0] snd_right, snd_left,
     output          snd_sample,
     input           [ 5:0] ch_enable // ADPCM-A channels
 );
 
-// Uses 6 FM channels but only 4 are outputted
+wire signed [15:0] fm_only_l, fm_only_r;
+wire signed [15:0] adpcma_l, adpcma_r, adpcmb_l, adpcmb_r;
+
+jt10b_mixer u_left(
+    .clk       ( clk          ),
+    .cen       ( cen          ),
+    .fm_in     ( fm_only_l    ),
+    .adpcma_in ( adpcma_l     ),
+    .adpcmb_in ( adpcmb_l     ),
+    .psg_in    ( psg_snd      ),
+    .fm_out    ( fm_left      ),
+    .snd_out   ( snd_left     )
+);
+
+jt10b_mixer u_right(
+    .clk       ( clk          ),
+    .cen       ( cen          ),
+    .fm_in     ( fm_only_r    ),
+    .adpcma_in ( adpcma_r     ),
+    .adpcmb_in ( adpcmb_r     ),
+    .psg_in    ( psg_snd      ),
+    .fm_out    ( fm_right     ),
+    .snd_out   ( snd_right    )
+);
+
 jt12_top #(
-    .use_lfo(1),.use_ssg(1), .num_ch(6), .use_pcm(0), .use_adpcm(1),
-    .JT49_DIV(3) )
-u_jt12(
-    .rst            ( rst          ),        // rst should be at least 6 clk&cen cycles long
-    .clk            ( clk          ),        // CPU clock
-    .cen            ( cen          ),        // optional clock enable, it not needed leave as 1'b1
+    .use_lfo(1), .use_ssg(1), .num_ch(6), .use_pcm(0), .use_adpcm(1),
+    .FULLFM(1), .JT49_DIV(3)
+) u_jt12(
+    .rst            ( rst          ),
+    .clk            ( clk          ),
+    .cen            ( cen          ),
     .din            ( din          ),
     .addr           ( addr         ),
     .cs_n           ( cs_n         ),
@@ -69,40 +91,39 @@ u_jt12(
     .dout           ( dout         ),
     .irq_n          ( irq_n        ),
     // ADPCM pins
-    .adpcma_addr    ( adpcma_addr  ), // real hardware has 10 pins multiplexed through RMPX pin
+    .adpcma_addr    ( adpcma_addr  ),
     .adpcma_bank    ( adpcma_bank  ),
-    .adpcma_roe_n   ( adpcma_roe_n ), // ADPCM-A ROM output enable
-    .adpcma_data    ( adpcma_data  ), // Data from RAM
-    .adpcmb_addr    ( adpcmb_addr  ), // real hardware has 12 pins multiplexed through PMPX pin
-    .adpcmb_roe_n   ( adpcmb_roe_n ), // ADPCM-B ROM output enable
-    .adpcmb_data    ( adpcmb_data  ), // Data from RAM
+    .adpcma_roe_n   ( adpcma_roe_n ),
+    .adpcma_data    ( adpcma_data  ),
+    .adpcmb_addr    ( adpcmb_addr  ),
+    .adpcmb_roe_n   ( adpcmb_roe_n ),
+    .adpcmb_data    ( adpcmb_data  ),
     // Separated output
     .psg_A          ( psg_A        ),
     .psg_B          ( psg_B        ),
     .psg_C          ( psg_C        ),
     .psg_snd        ( psg_snd      ),
-    // fm_snd = FM + ADPCM channels = all that goes through the YM3016
-    .fm_snd_left    ( fm_left      ),
-    .fm_snd_right   ( fm_right     ),
-    .adpcmA_l       (              ),
-    .adpcmA_r       (              ),
-    .adpcmB_l       (              ),
-    .adpcmB_r       (              ),
+    .fm_snd_left    ( fm_only_l    ),
+    .fm_snd_right   ( fm_only_r    ),
+    .adpcmA_l       ( adpcma_l     ),
+    .adpcmA_r       ( adpcma_r     ),
+    .adpcmB_l       ( adpcmb_l     ),
+    .adpcmB_r       ( adpcmb_r     ),
     // Unused YM2203
-    .IOA_in         ( 8'b0          ),
-    .IOB_in         ( 8'b0          ),
-    .IOA_out        (               ),
-    .IOB_out        (               ),
-    .IOA_oe         (               ),
-    .IOB_oe         (               ),
-    .debug_bus      ( 8'd0          ),
+    .IOA_in         ( 8'b0         ),
+    .IOB_in         ( 8'b0         ),
+    .IOA_out        (              ),
+    .IOB_out        (              ),
+    .IOA_oe         (              ),
+    .IOB_oe         (              ),
+    .debug_bus      ( 8'd0         ),
     // Sound output
-    .snd_right      ( snd_right    ),
-    .snd_left       ( snd_left     ),
+    .snd_right      (              ),
+    .snd_left       (              ),
     .snd_sample     ( snd_sample   ),
     .ch_enable      ( ch_enable    ),
     // unused pins
-    .en_hifi_pcm    ( 1'b0         ), // used only on YM2612 mode
+    .en_hifi_pcm    ( 1'b0         ),
     .debug_view     (              )
 );
 

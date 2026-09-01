@@ -55,7 +55,8 @@ wire        adpcma_roe_n;
 wire [23:0] adpcmb_addr;
 wire        adpcmb_roe_n;
 wire [7:0]  psg_A, psg_B, psg_C;
-wire signed [15:0] fm_snd;
+// jt10's fm_snd split into fm_left/fm_right upstream (jotego/jt12 4cf1c5b)
+wire signed [15:0] fm_left, fm_right;
 wire [9:0]  psg_snd;
 wire signed [15:0] snd_right, snd_left;
 wire        snd_sample;
@@ -80,7 +81,8 @@ jt10 dut(
 	.psg_A          ( psg_A         ),
 	.psg_B          ( psg_B         ),
 	.psg_C          ( psg_C         ),
-	.fm_snd         ( fm_snd        ),
+	.fm_left        ( fm_left       ),
+	.fm_right       ( fm_right      ),
 	.psg_snd        ( psg_snd       ),
 	.snd_right      ( snd_right     ),
 	.snd_left       ( snd_left      ),

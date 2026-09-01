@@ -1,3 +1,8 @@
+// RETIRED FROM SYNTHESIS (2026-08-30): replaced by the per-scanline path
+// (sprite_line_list + sprite_line_engine + sprite_line_buffer) and removed
+// from both .qsf file lists. Kept in the tree as the verified GOLDEN
+// REFERENCE for the line path's differential testbench -- it renders the
+// same records through the same decode modules, whole-frame.
 // Double-buffered 320x224 sprite frame buffer: the memory behind
 // sprite_render_engine's write port, plus the ping-pong bank swap and the
 // per-frame clear that makes the swap safe (see docs/phase1_video_engine.md,

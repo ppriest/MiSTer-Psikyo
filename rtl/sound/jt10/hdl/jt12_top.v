@@ -76,6 +76,7 @@ module jt12_top (
 // defaults to YM2612
 parameter use_lfo=1, use_ssg=0, num_ch=6, use_pcm=1;
 parameter use_adpcm=0;
+parameter FULLFM=0;
 parameter JT49_DIV=2,
           YM2203_LUMPED=0;
 parameter mask_div=1;
@@ -169,7 +170,6 @@ wire [ 7:0] aeg_b;         // Envelope Generator Control
 wire [ 5:0] adpcma_flags;  // ADPMC-A read over flags
 wire        adpcmb_flag;
 wire [ 6:0] flag_ctl;
-wire [ 6:0] flag_mask;
 wire [ 1:0] div_setting;
 
 wire clk_en_2, clk_en_666, clk_en_111, clk_en_55;
@@ -177,7 +177,9 @@ reg cen_reg;
 
 assign debug_view = { 4'd0, flag_B, flag_A, div_setting };
 
-always @(posedge clk) cen_reg <= cen;
+always @(posedge clk) begin
+    cen_reg <= cen;
+end
 
 generate
 if( use_adpcm==1 ) begin: gen_adpcm
@@ -250,7 +252,7 @@ if( use_adpcm==1 ) begin: gen_adpcm
     );
 
     assign snd_sample   = zero;
-    jt10_acc u_acc(
+    jt10_acc #(.FULLFM(FULLFM)) u_acc(
         .clk        ( clk           ),
         .clk_en     ( clk_en        ),
         .op_result  ( op_result_hd  ),
@@ -292,8 +294,8 @@ jt12_dout #(.use_ssg(use_ssg),.use_adpcm(use_adpcm)) u_dout(
     .flag_A         ( flag_A        ),
     .flag_B         ( flag_B        ),
     .busy           ( busy          ),
-    .adpcma_flags   ( adpcma_flags & flag_mask[5:0] ),
-    .adpcmb_flag    ( adpcmb_flag & flag_mask[6]    ),
+    .adpcma_flags   ( adpcma_flags  ),
+    .adpcmb_flag    ( adpcmb_flag   ),
     .psg_dout       ( psg_dout      ),
     .addr           ( addr          ),
     .dout           ( dout          )
@@ -357,7 +359,6 @@ jt12_mmr #(.use_ssg(use_ssg),.num_ch(num_ch),.use_pcm(use_pcm), .use_adpcm(use_a
     .adeltan_b  ( adeltan_b     ),  // Delta-N
     .aeg_b      ( aeg_b         ),  // Envelope Generator Control
     .flag_ctl   ( flag_ctl      ),
-    .flag_mask  ( flag_mask     ),
     // Operator
     .xuse_prevprev1 ( xuse_prevprev1  ),
     .xuse_internal  ( xuse_internal   ),
@@ -625,8 +626,9 @@ generate
 
         `ifndef NOPCMLINEAR
         wire signed [10:0] pcm_full;
-        always @(*)
+        always @(*) begin
             pcm2 = en_hifi_pcm ? pcm_full[9:1] : pcm;
+        end
 
         jt12_pcm_interpol #(.DW(11), .stepw(5)) u_pcm (
             .rst_n ( rst_pcm_n      ),
