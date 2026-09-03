@@ -97,12 +97,33 @@ module adpcma_sample_cache #(
 	logic         pf_want;      // this access was a granule's last byte
 	logic [21:0] pf_tag;
 
+	// ---- pending-request capture ----
+	// Two clients share this port and they do NOT share a req convention.
+	// jt10's ADPCM-A glue HOLDS req until valid; the OPL4 wave reader
+	// (opl4.sv:181-208, which is the c4 client on SH403/SH404) clears
+	// mem_rd_req unconditionally every clock and raises it for exactly ONE
+	// cycle, then waits on busy_mem for a valid only this module can
+	// produce. So a req sampled only in S_IDLE is a dropped request for the
+	// OPL4 and a permanent stall: it wedged on its ninth wave-ROM byte --
+	// the first access after byte 7 sends us into S_PF for a whole SDRAM
+	// round trip (sim/adpcma_sample_cache_tb reproduces it exactly).
+	//
+	// So capture on the RISING EDGE of req, in every state, and let S_IDLE
+	// consume the capture. The edge is what lets one rule serve both
+	// clients: a held req presents exactly one edge per request, so it
+	// cannot re-trigger -- the same hazard S_DRAIN's wait protects against.
+	// Capturing the address here also restores, in the right place, the
+	// guarantee psikyo_top's deleted ADPCM-A address latch used to provide.
+	logic         req_d;
+	logic         pend;
+	logic [24:0] pend_addr;
+
 	// ---- fully-associative lookup ----
 	// One comparator array, time-shared: it answers "is the requested
 	// granule resident?" in S_IDLE and "is the prefetch target already
 	// resident?" in S_DRAIN. Two arrays would double the compare logic on a
 	// design where only one fitter seed in four closes timing.
-	wire [21:0] look_tag = (st == S_DRAIN) ? pf_tag : addr[24:3];
+	wire [21:0] look_tag = (st == S_DRAIN) ? pf_tag : pend_addr[24:3];
 	logic          hit;
 	logic [IW-1:0] hit_idx;
 	always_comb begin
@@ -141,22 +162,26 @@ module adpcma_sample_cache #(
 			st      <= S_IDLE;
 			rr      <= '0;
 			pf_want <= 1'b0;
+			req_d     <= 1'b0;
+			pend      <= 1'b0;
+			pend_addr <= 25'd0;
 			for (int i = 0; i < ENTRIES; i++) tval[i] <= 1'b0;
 		end else begin
 			if (inval) for (int i = 0; i < ENTRIES; i++) tval[i] <= 1'b0;
 
 			case (st)
-				S_IDLE: if (req) begin
-					byte_sel <= addr[2:0];
+				S_IDLE: if (pend) begin
+					pend     <= 1'b0;
+					byte_sel <= pend_addr[2:0];
 					// Last byte of the granule: the stream is about to cross
 					// into the next one, and will not need it for ~108 us.
-					pf_want  <= (addr[2:0] == 3'd7);
-					pf_tag   <= addr[24:3] + 22'd1;
+					pf_want  <= (pend_addr[2:0] == 3'd7);
+					pf_tag   <= pend_addr[24:3] + 22'd1;
 					if (hit && !inval) begin
 						sel_idx <= hit_idx;
 						st      <= S_LOOK;
 					end else begin
-						fill_tag <= addr[24:3];
+						fill_tag <= pend_addr[24:3];
 						sel_idx  <= rr;
 						rr       <= rr + 1'b1;
 						st       <= S_FILL;
@@ -181,7 +206,7 @@ module adpcma_sample_cache #(
 				// before anything waits on it. `hit` reads pf_tag here.
 				S_DRAIN: if (!req) begin
 					pf_want <= 1'b0;
-					if (pf_want && !hit) begin
+					if (pf_want && !hit && !pend) begin
 						fill_tag <= pf_tag;
 						sel_idx  <= rr;
 						rr       <= rr + 1'b1;
@@ -199,6 +224,14 @@ module adpcma_sample_cache #(
 
 				default: st <= S_IDLE;
 			endcase
+
+			// After the case, so a req edge arriving on the same cycle
+			// S_IDLE consumes the previous capture is kept, not lost.
+			req_d <= req;
+			if (req && !req_d) begin
+				pend      <= 1'b1;
+				pend_addr <= addr;
+			end
 		end
 	end
 

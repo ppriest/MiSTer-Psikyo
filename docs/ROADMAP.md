@@ -163,10 +163,28 @@ three games booting, correct
 sprite zoom/priority, correct tilemap size-switching and row-scroll, working `.mra` files for
 each region variant.
 
-**Phase 2 — SH403/SH404 hardware (Strikers 1945, Tengai): not started.** Adds the simulated-PIC
-protection FSM and the from-scratch YMF278B core (its own de-risking spike, gated separately from
-the rest of Phase 2). Final phase — closing it out (region/DIP sweep, remaining `.mra` variants,
-save states if desired, final timing/accuracy passes) completes the project.
+**Phase 2 — SH403/SH404 hardware (Strikers 1945, Tengai): built, and both games are in
+`releases/`.** The simulated-PIC protection FSM (`rtl/cpu/s1945_mcu.sv`) and the from-scratch
+YMF278B/OPL4 core (`rtl/sound/opl4/`) are done; one `.rbf` serves all five games. Remaining:
+region/DIP sweep and accuracy passes. **Regression found and fixed 2026-09-03: the OPL4 games lost sound
+entirely.** `adpcma_sample_cache` sampled `req` only in `S_IDLE`, but the OPL4 wave reader —
+which shares that SDRAM client on SH403/SH404 — pulses `req` for exactly one cycle, so every
+request arriving during the new prefetch state was dropped and the wave engine stalled for good.
+Reproduced and fixed against real SDRAM transport in `sim/adpcma_sample_cache_tb/`; see "Next
+steps" item 7.
+
+**Phase 3 — Savestates: investigated, not started.** Full feasibility study and staged plan in
+**[`docs/savestates.md`](savestates.md)**. Short version: the MiSTer savestate API reserves a DDR3
+slot and persists it, but serializes nothing — every byte of capture and restore logic is ours.
+The RAMs (~200 KB total, and SDRAM is read-only at runtime so none of it counts) are easy, with
+`rtl/hiscore.v` already proving the pause-and-borrow-a-BRAM-port pattern on hardware. The Z80 is
+free — vendored T80 already exposes `REG`/`DIR` for exactly this. The 68020 wants a self-dump
+stub driven from `maincpu.sv` rather than a fork of TG68K's 4139-line kernel. jt10 is the
+blocker: its FM state circulates in shift registers with no state port anywhere. Recommended
+scope is **Tier 1** — exact CPU/RAM/video, OPL4 audio restored exactly, YM2610 audio restored by
+replaying its register file (so a note held across the save point re-attacks on load). Gated on a
+TG68K `MOVEC`/`RTE` coverage spike in `sim/maincpu_tb/` that must run before anything else starts.
+MAME's own `save_item` lists (`psikyo.cpp:1071-1103`) are the checklist for what is meaningful.
 
 ## Verification strategy
 
@@ -221,6 +239,12 @@ by default — the build is exactly HEAD. Default revision is the instrumented `
 - **CRT offset** — standard MiSTer per-core screen positioning (H/V offset status bits, matches
   the framework's usual `CRT_OFFSET` convention) not yet wired up. Added to the list 2026-08-29,
   not yet scoped.
+- **Savestates** — investigated 2026-09-03, not started. See
+  **[`docs/savestates.md`](savestates.md)** for the full study: what the MiSTer API does and does
+  not do for us, the ~200 KB memory inventory, why the Z80 is free and the 68020 is not, and why
+  jt10 decides whether audio restore is exact or approximate. Two things to know before starting:
+  it is gated on a TG68K `MOVEC`/`RTE` spike, and it will add a wide mux to every BRAM port plus a
+  third DDRAM master on a design that already closes on about one fitter seed in eleven.
 - **hiscore.v** — MiSTer's standard high-score-save framework (EEPROM/RAM-backed, save/restore
   via the OSD) not yet integrated. Needs the per-game hiscore.dat memory maps (same shape as any
   other MiSTer-devel arcade core's hiscore support) — not yet scoped. Added 2026-08-29.
@@ -459,3 +483,28 @@ during play, not just at boot — still not fully correct, see item 4.)
    the render-time regression measured above, which remains open.
 6. **Only then: add the remaining games** — Strikers 1945 and Tengai (Phase 2 boards:
    PIC protection FSM + the from-scratch YMF278B core, see the phase plan above).
+7. ~~**Fix the OPL4 sound regression**~~ — **ROOT-CAUSED AND FIXED IN SIM 2026-09-03**,
+   hardware verification pending. Strikers 1945 and Tengai lost sound entirely after the
+   2026-09-03 release. Cause: `4193dff` replaced `sdram_narrow_bridge` with
+   `rtl/sound/adpcma_sample_cache.sv` on arbiter client c4, and on SH403/SH404 boards that
+   client is driven by the **OPL4 wave reader**, not by ADPCM-A (`psikyo_top.sv`'s
+   `board_sh404 ? opl4_mem_addr : ...` mux). The two clients do not share a req convention:
+   jt10's glue HOLDS req until valid, while `opl4.sv:181-208` clears `mem_rd_req`
+   unconditionally every clock and raises it for exactly ONE cycle. The cache sampled `req`
+   only in `S_IDLE`, and the new next-granule prefetch (`S_PF`) parks it off `S_IDLE` for a
+   whole SDRAM round trip after every access to byte 7 — so the OPL4's pulse was dropped,
+   `busy_mem` never cleared, and the wave engine stopped permanently on its ninth wave-ROM
+   byte. The old bridge survived the same client only because it returned to `B_IDLE` the
+   cycle after `g_valid`, a shorter window than the client's turnaround — i.e. it was never
+   correct either, just faster than the bug.
+   Fix: capture requests on the RISING EDGE of `req` in every state and consume the capture in
+   `S_IDLE`; do not start a prefetch while a request is pending. The edge is what lets one rule
+   serve both clients (a held req presents exactly one edge, so it cannot re-trigger).
+   `sim/adpcma_sample_cache_tb/` drives a behavioural copy of `opl4.sv`'s arbiter against the
+   real SDRAM stack: it wedges at byte offset 8 before the fix and passes 24/24 after, with a
+   held-req case alongside it so the jt10 path cannot regress unnoticed.
+   Lesson for LESSONS_LEARNED: the design comment asserted "S_DRAIN handles both" client
+   conventions. It did not, and no test covered the pulsed one. Two clients on one port need
+   two cases in the testbench, not a sentence in a header.
+8. **Savestates** — see Phase 3 above and `docs/savestates.md`. Do not start before the TG68K
+   `MOVEC`/`RTE` spike (3.0) answers, and not while item 7 is open.

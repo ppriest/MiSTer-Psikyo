@@ -14,6 +14,10 @@ Supports the following games
 
 ## History
 
+* Arcade-Psikyo_20260904.rbf
+  * Fix total loss of sound in Strikers 1945 and Tengai, a regression in 20260903
+  * **Intentionally broken HQ2X scaler to close timing still**
+
 * Arcade-Psikyo_20260903.rbf
   * I think the scratchy/distorted sound in Gunbird, Samurai Aces and Battle K-Road (YM2610) is now fixed
   * **Intentionally broken HQ2X scaler to close timing still**
