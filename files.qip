@@ -34,6 +34,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_pcm.sv
 # Sound CPU wrappers (T80 + this board's own memory map/bank/latch/NMI
 # handling).
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sound_cpu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/adpcma_sample_cache.sv
 
 # Memory glue: CPU<->video-engine shared RAM.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/dpram.sv

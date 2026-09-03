@@ -14,12 +14,15 @@ Supports the following games
 
 ## History
 
+* Arcade-Psikyo_20260903.rbf
+  * I think the scratchy/distorted sound in Gunbird, Samurai Aces and Battle K-Road (YM2610) is now fixed
+  * **Intentionally broken HQ2X scaler to close timing still**
+
 * Arcade-Psikyo_20260901.rbf
   * **Intentionally broken HQ2X scaler to close timing**
   * Fix 6 button controls for "Battle K-Road"
   * Fix bad DIPs in MRAs for some of the alternate sets
   * Remove Framebuffer for buffering in favour of buffering the spriteram to be more like the hardware presumably and save bram
-  * Update JT10 sound core to try and resolve sound issue in Gunbird/Samurai Aces, but doesn't
 
 * Arcade-Psikyo_20260830.rbf
   * Initial release
@@ -80,8 +83,8 @@ As per norm:
 ## Status
 
 Games are in good shape, with minor graphical issues around screen clear.
-The release revision closes timing with margin to spare (worst-case clk_sys
-setup slack +0.240 ns, zero failing paths).
+The release revision closes timing (worst-case clk_sys setup slack
++0.220 ns, zero failing paths on any clock).
 
 Details:
 
@@ -116,14 +119,14 @@ On the DE10-nano's Cyclone V 5CSEBA6, both revisions:
 
 | resource | release (`Psikyo`) | instrumented (`Psikyo_stp`) | available |
 | --- | --- | --- | --- |
-| Logic (ALMs) | 25,583 (61%) | 26,831 (64%) | 41,910 |
-| Registers | 36,201 | 38,087 | -- |
-| M10K blocks | 355 (64%) | 362 (65%) | 553 |
-| Block memory bits | 2,646,267 (47%) | 2,689,531 (47%) | 5,662,720 |
+| Logic (ALMs) | 26,034 (62%) | 27,481 (66%) | 41,910 |
+| Registers | 36,528 | 38,679 | -- |
+| M10K blocks | 358 (65%) | 429 (78%) | 553 |
+| Block memory bits | 2,647,383 (47%) | 3,214,935 (57%) | 5,662,720 |
 | DSP blocks | 63 (56%) | 63 (56%) | 112 |
 | Pins | 145 (46%) | 145 (46%) | 314 |
 
-**Block RAM is no full ** It was 553/553 blocks until the whole-frame sprite renderer was replaced by the per-scanline path (see `docs/sprite_buffering.md`).
+**Block RAM is no longer full ** It was 553/553 blocks until the whole-frame sprite renderer was replaced by the per-scanline path (see `docs/sprite_buffering.md`).
 
 ## AI Attestation
 

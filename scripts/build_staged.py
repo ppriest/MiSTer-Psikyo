@@ -130,7 +130,16 @@ def main():
     # whatever seed the tree records, so a build stays reproducible from its
     # commit plus this flag.
     if args.seed is not None:
-        qsf = os.path.join(stage, "Psikyo.qsf")
+        # The SEED lives in the qsf of the revision being BUILT. Patching
+        # Psikyo.qsf while building Psikyo_stp silently changes nothing, and
+        # the sweep then reports N identical slacks -- which reads as
+        # placement insensitivity rather than as a no-op. That cost an hour
+        # of build time on 2026-09-02; hence the revision-derived path and
+        # the explicit existence check.
+        qsf = os.path.join(stage, "%s.qsf" % args.rev)
+        if not os.path.isfile(qsf):
+            sys.exit("no %s to patch a SEED into -- does revision %s exist?"
+                     % (qsf, args.rev))
         text = open(qsf, encoding="utf-8", errors="replace").read()
         new, n = re.subn(r"(?m)^set_global_assignment -name SEED .*$",
                          "set_global_assignment -name SEED %d" % args.seed, text)

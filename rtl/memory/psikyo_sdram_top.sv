@@ -359,7 +359,14 @@ module psikyo_sdram_top (
 	// HPS ROM download -- ioctl_addr is already an absolute byte address
 	// across the whole flat map (docs/phase1_sdram_map.md), no per-region
 	// base to add here.
-	sdram_narrow_bridge #(.WORD_BYTES(1)) u_adpcma_bridge (
+	// c4: YM2610 ADPCM-A samples (and, on SH403/SH404, the OPL4 wave reads
+	// muxed onto the same client by psikyo_top). NOT sdram_narrow_bridge: this
+	// client feeds a FIXED-LATENCY consumer that cannot be made to wait, and
+	// the bridge's single granule entry is thrashed by six interleaved ADPCM
+	// channels so every fetch missed. See adpcma_sample_cache.sv's header for
+	// the deadline arithmetic and the 241-misses-in-four-minutes measurement
+	// that motivated it.
+	adpcma_sample_cache #(.ENTRIES(16)) u_adpcma_cache (
 		.clk(clk), .reset(reset), .inval(ioctl_download),
 		.req(adpcma_rom_req), .addr(ADPCMA_BASE + {3'd0, adpcma_rom_addr}),
 		.valid(adpcma_rom_valid), .data(adpcma_rom_data),

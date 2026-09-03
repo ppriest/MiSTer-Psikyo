@@ -88,6 +88,41 @@ Verified after the update: the whole jt10 + jt49 tree compiles clean, and
 its two tone periods (unchanged from before the update). NOT yet verified by ear
 on hardware -- that is the whole point of the change and remains open.
 
+## Reverted local modification: ADPCM-A saturation (2026-09-01)
+
+This directory is a PRISTINE copy of upstream again. A local change was made
+here and has been backed out; recording it because the reasoning is still
+useful and someone may be tempted to re-apply it.
+
+The ADPCM-A contribution is amplified by 7.25x, and `adpcmA_l`/`adpcmA_r` are
+signed 16-bit, so that product needs 19 bits. Every operand in
+
+```verilog
+acc_input_l = (adpcmA_l <<< 2) + (adpcmA_l <<< 1) + adpcmA_l + (adpcmA_l >>> 2);
+```
+
+is 16 bits, so the sum is evaluated at 16 bits and WRAPS -- verified
+exhaustively: the safe input range is only +/-4519 (32767/7.25), so 56,497 of
+the 65,536 possible values overflow. That is a real defect, and jotego's own
+comment beside it anticipates it ("I suppose ADPCM-A would saturate if taken up
+a factor of 8 instead of 4").
+
+It was NOT the cause of this core's scratchy audio, and the change was reverted
+for three reasons: hardware testing showed no improvement; a JTAG capture of the
+core's own audio measured a peak of 19.5% of full scale during normal play and
+73.5% during a noise burst, so the signal never reaches the range where the
+wrap occurs; and the widen-and-saturate logic cost about 0.2 ns of clk_sys
+slack, which on this design took a build from +0.166 to +0.008 and produced a
+video mode the monitor could not sync to.
+
+The actual cause was in this project's own glue, not in jt10: the ADPCM sample
+ADDRESS was passed to `sdram_narrow_bridge` live rather than latched with the
+request, violating that bridge's stated contract. See `rtl/psikyo_top.sv`.
+
+If the saturation is ever wanted on its own merits, it belongs upstream in
+jotego/jt12 rather than as a local patch here -- it is a genuine fix to a
+genuine overflow, just not to this symptom.
+
 ## Status
 
 - [x] Source vendored (with the `jt49` gap above found and fixed)

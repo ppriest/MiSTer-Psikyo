@@ -367,6 +367,54 @@ during play, not just at boot — still not fully correct, see item 4.)
    nothing) and the counters stay for future audio work, but neither is a fix for this,
    because this was never the fault.
 
+   **Update 2026-09-02: the YM2610 noise is measured, and four hypotheses are
+   dead.** The audio is now OBSERVABLE rather than argued about: psikyo_core
+   carries a 16384-sample capture ring (~295 ms) that auto-freezes around the
+   artefact, read out over JTAG with `scripts/read_audio.tcl` and analysed by
+   `scripts/decode_audio.py`. Use it before proposing any further theory.
+
+   What a captured burst actually looks like (confirmed by the user as noise,
+   not an explosion):
+
+   | region | peak | rms | d1/rms | d2/d1 |
+   |---|---|---|---|---|
+   | before | 24075 | 5342 | 0.227 | 0.685 |
+   | during | 23316 | 9498 | 0.368 | 0.928 |
+
+   Peak is UNCHANGED while RMS nearly doubles and high-frequency content rises
+   50%. That is noise added ON TOP of the music, not the music distorting --
+   which rules out clipping and overflow as a class. Nothing reaches the rails
+   (73.5% peak), and there are no full-scale sign flips. It is present in the
+   core's own digital output, before the framework's resampler, so it is ours.
+
+   Ruled out, each with evidence rather than reasoning:
+   * **SDRAM starvation.** Measured directly with per-stream stall counters:
+     worst wait 149 clk (~1.7 us) against a 54 us sample period.
+   * **jt10's ADPCM-B nibble gating** (upstream `dc9be7c`). Vendored and tested;
+     no change. It could never have applied anyway -- Samurai Aces is affected
+     and has no ADPCM-B at all.
+   * **ADPCM-A accumulator overflow.** Real (56,497 of 65,536 input values wrap)
+     and fixed, but the capture shows peaks of 19.5%/73.5%, so the signal never
+     reaches the range where it wraps. Reverted; see jt10's PROVENANCE.md.
+   * **ADPCM address instability.** `sdram_narrow_bridge` requires addr held
+     until valid and jt10 rotates channels continuously, so the address is now
+     latched with the request (`rtl/psikyo_top.sv`). Correct by the bridge's own
+     contract, and worth keeping, but it did NOT fix the noise.
+
+   Next, cheapest first:
+   1. **Arm the capture on an OPL4 game (Strikers/Tengai).** Costs nothing --
+      no rebuild, the tap is after the jt10/OPL4 mux. If OPL4 shows the same
+      burst signature the fault is in the shared SDRAM/bridge path, not the
+      YM2610; if it is clean, it is ADPCM-specific. This single test halves the
+      search space and should be done first.
+   2. **Bypass the granule cache for the ADPCM client** (force every read to
+      miss in `sdram_narrow_bridge`). One line, and decisive: the cache is the
+      one component between the ROM and the decoder that can return a
+      *plausible but wrong* byte, which is exactly what noise-on-top looks like.
+      ADPCM correctness has never been verified, only its timing.
+   3. If both come back clean, suspect the ADPCM-A decoder in jt10 itself and
+      compare against MAME's ymfm for the same sample data.
+
 5. **Fix the slowdown** — IN PROGRESS, first re-partition attempt measured WORSE, not
    better (2026-08-29). Step 1 (granule cache in `sdram_narrow_bridge.sv`, commit
    `153f772`) removed most CPU/lut Port 2 traffic — not independently re-measured but

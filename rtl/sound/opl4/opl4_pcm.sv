@@ -208,6 +208,7 @@ module opl4_pcm (
 	logic        p_frac_zero;
 	logic [12:0] p_lvol, p_rvol; // att2vol results, registered
 	logic [9:0]  p_am;           // AM attenuation, registered in S_ENV
+	logic signed [7:0] p_pm_val;  // PM triangle, registered in S_ENV
 	logic [9:0]  p_env_next;     // next envelope level, registered in S_ENV2
 	logic [2:0]  p_st_next;      // next EG state, likewise
 	logic [9:0]  es_env_next, es_dec;
@@ -323,7 +324,10 @@ module opl4_pcm (
 	wire [17:0] lfo_sh = w_lfo + 18'h10000;
 	wire [6:0] pm_tri = lfo_sh[17] ? ~lfo_sh[16:10] : lfo_sh[16:10];
 	wire signed [7:0] pm_val = {1'b0, pm_tri} - 8'sd64;
-	wire signed [13:0] pm_add = (pm_val * $signed({1'b0, pm_depth_f(c_vib)})) >>> 7;
+	// Consumes the REGISTERED pm_val (p_pm_val, latched in S_ENV), so the
+	// multiply no longer sits behind the quarter-cycle add, the triangle
+	// inversion and the bias subtract. See S_ENV/S_ENV2.
+	wire signed [13:0] pm_add = (p_pm_val * $signed({1'b0, pm_depth_f(c_vib)})) >>> 7;
 
 	function automatic [9:0] pan_att_l(input signed [3:0] pan);
 		if (pan >= 0)         pan_att_l = (pan == 4'sd7) ? 10'h3FF : 10'(pan) << 5;
@@ -542,16 +546,20 @@ module opl4_pcm (
 					p_rate      <= cur_rate;
 					p_eg_inc    <= eg_inc;
 					p_frac_zero <= frac_zero;
-					// Pitch step lands here rather than in S_CALC. In S_CALC it
-					// ran ch -> ch_lfo[ch] mux -> add -> shift -> invert -> sub
-					// -> multiply -> 32-bit add in one clock, which was the
-					// design's worst path by a wide margin (-4.958ns, and every
-					// one of the top 15 failing paths). Here the mux is already
-					// resolved into w_lfo, and this runs parallel to the rate
-					// chain above rather than behind it, so it costs no cycle.
-					// c_fnum/c_oct/c_vib are registered well before S_CALC and
-					// w_lfo is stable until S_ENV2, so the value is unchanged.
-					w_step      <= step_exact + 32'($signed(pm_add));
+					// PM front half only: w_lfo -> quarter-cycle add -> triangle
+					// invert -> bias subtract. The multiply and the 32-bit add that
+					// used to follow it in this same state now live in S_ENV2.
+					//
+					// History: this chain started in S_CALC as ch -> ch_lfo[ch] mux
+					// -> add -> shift -> invert -> sub -> multiply -> 32-bit add
+					// (-4.958ns, every one of the top 15 failing paths). Moving it
+					// here dropped the 24-entry mux and fixed that, but the rest
+					// stayed in one clock and became the worst path again at
+					// -0.188ns, with all eight failures starting at w_lfo[17] and
+					// ending at w_step. Splitting at pm_val puts roughly half the
+					// logic on each side and costs no cycle, since S_ENV2 already
+					// runs for every channel.
+					p_pm_val    <= pm_val;
 					// Likewise the AM term, for S_OUT. It depends only on
 					// w_lfo and c_amd, both registered in S_CALC and unchanged
 					// through S_OUT, so the value is the same one S_OUT would
@@ -584,11 +592,15 @@ module opl4_pcm (
 					p_env_next      <= es_env_next;
 					p_st_next       <= es_st_next;
 					ch_lfo[ch]      <= w_lfo;
-					// position advance + loop
-					es_np = w_curpos + w_step;
-					if (es_np >= {c_end, 16'd0})
-						es_np = es_np + {c_loop, 16'd0} - {c_end, 16'd0};
-					ch_nextpos[ch] <= es_np;
+					// PM back half: multiply the registered triangle by the vibrato
+					// depth and add the pitch step. c_fnum/c_oct/c_vib are all
+					// registered back in the RD states and p_pm_val was latched in
+					// S_ENV, so this is the same value S_ENV used to produce -- just
+					// with a register in the middle of the chain. The position
+					// advance that used to consume w_step here has moved to S_ENV3;
+					// keeping it would have handed this state the same one-clock
+					// chain it was meant to relieve.
+					w_step          <= step_exact + 32'($signed(pm_add));
 					// total level interpolation (19 up / 38 down per sample)
 					if (c_lvl_direct) ch_tl[ch] <= {c_tl_reg, 10'd0};
 					else if (ch_tl[ch] < {c_tl_reg, 10'd0})
@@ -628,6 +640,16 @@ module opl4_pcm (
 				S_ENV3: begin
 					ch_env[ch]      <= p_env_next;
 					ch_eg_state[ch] <= p_st_next;
+					// Position advance + loop wrap, moved down from S_ENV2 so that
+					// w_step can be computed there. w_curpos is registered in S_CALC
+					// and c_end/c_loop in S_RD8, so all three inputs are stable, and
+					// ch_nextpos[ch] is not read until this channel's next S_CALC --
+					// several states away. Unconditional, so a channel that goes
+					// quiet below still advances its position exactly as before.
+					es_np = w_curpos + w_step;
+					if (es_np >= {c_end, 16'd0})
+						es_np = es_np + {c_loop, 16'd0} - {c_end, 16'd0};
+					ch_nextpos[ch] <= es_np;
 					// silent? skip the ROM fetch entirely
 					if (p_env_next > EG_QUIET) state <= S_NEXT;
 					else begin

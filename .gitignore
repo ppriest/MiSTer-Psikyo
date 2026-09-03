@@ -117,3 +117,6 @@ sim/**/*dump*.txt
 # user-local rom sync helper, not part of the release set
 releases/sync-mame-roms.sh
 build_keep/
+
+# stray capture written when read_audio.tcl is run with the literal usage example
+outfile.bin

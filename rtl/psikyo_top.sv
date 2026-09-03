@@ -168,6 +168,7 @@ module psikyo_top #(
 	logic [7:0] opl4_mem_data;
 	logic signed [15:0] opl4_l, opl4_r;
 	logic signed [15:0] jt_snd_l, jt_snd_r;
+	logic               jt_snd_sample;   // one pulse per YM2610 output sample
 	logic [7:0] jt_dout;
 	assign ym_din = board_sh404 ? opl4_dout : jt_dout;
 	assign snd_left  = board_sh404 ? opl4_l : jt_snd_l;
@@ -244,6 +245,16 @@ module psikyo_top #(
 	// zero -- exactly how the FM-usage probe failed on 2026-08-30.
 	logic        adpcma_rom_req, adpcma_rom_valid, adpcma_roe_n_d;
 	logic        adpcmb_rom_req, adpcmb_rom_valid, adpcmb_roe_n_d;
+	// ADPCM-A deadline monitor outputs. Driven by the block further down,
+	// declared HERE for the same implicit-net reason as the signals above.
+	// Power-up initialisers rather than a core_reset branch: these are pure
+	// instrumentation, and core_reset feeds jt12_rst, which is NEGEDGE
+	// clocked -- that path gets only half a clk_sys period (5.82 ns) and is
+	// the design's worst. Twenty-five more loads on it are not free. The
+	// neighbouring debug counters in psikyo_core are built the same way, and
+	// a count that survives a game reset is more useful here anyway.
+	logic        adpcma_late     = 1'b0;
+	logic [19:0] adpcma_late_cnt = 20'd0;
 
 	psikyo_core #(.BOARD_GUNBIRD(BOARD_GUNBIRD), .DEBUG_TRACER(DEBUG_TRACER)) u_core (
 		.clk(clk), .ce_pix(ce_pix), .reset(core_reset), .video_reset(reset),
@@ -267,6 +278,9 @@ module psikyo_top #(
 		.dbg_overlay(dbg_overlay), .dbg_render_dis(dbg_render_dis), .pause(pause),
 		.adpcma_req_i(adpcma_rom_req), .adpcma_valid_i(adpcma_rom_valid),
 		.adpcmb_req_i(adpcmb_rom_req), .adpcmb_valid_i(adpcmb_rom_valid),
+		.adpcma_late_i(adpcma_late), .adpcma_late_cnt_i(adpcma_late_cnt),
+		// post-mux audio, so the anomaly counters cover jt10 and OPL4 alike
+		.snd_l_i(snd_left), .snd_r_i(snd_right), .snd_tick_i(jt_snd_sample),
 		.hs_address(hs_address), .hs_data_in(hs_data_in),
 		.hs_data_out(hs_data_out), .hs_read(hs_read), .hs_write(hs_write),
 `ifdef DEBUG_ISSP
@@ -348,6 +362,21 @@ module psikyo_top #(
 
 	logic [7:0]  adpcma_rom_data, adpcma_data_r;
 
+	// No address latch on this path any more. It existed because
+	// sdram_narrow_bridge drives g_addr COMBINATIONALLY from the live client
+	// address while tagging the result with what it latched at accept, so an
+	// address that moved mid-fetch stored one granule's data under another
+	// granule's tag -- and jt10's rotates every 1.5 us regardless of us.
+	// adpcma_sample_cache issues from a REGISTERED tag captured when the
+	// transaction starts, and latches the byte select alongside it, so the
+	// hazard is gone by construction rather than by compensation.
+	//
+	// The one case the latch would still have covered is a request arriving
+	// while the cache is busy prefetching, since a held req would then sample
+	// adpcma_addr after it had rotated. That cannot happen on the numbers: a
+	// prefetch is issued right after a demand fetch completes and finishes
+	// within 3.4 us worst case, while the next demand fetch is ~9 us away.
+	// ADPCM-B below still rides sdram_narrow_bridge, so it KEEPS its latch.
 	always_ff @(posedge clk) begin
 		if (core_reset) begin
 			adpcma_rom_req <= 1'b0;
@@ -355,10 +384,46 @@ module psikyo_top #(
 			adpcma_roe_n_d <= 1'b1;
 		end else begin
 			adpcma_roe_n_d <= adpcma_roe_n;
-			if (adpcma_roe_n_d & ~adpcma_roe_n) adpcma_rom_req <= 1'b1;
-			else if (adpcma_rom_valid) begin
+			if (adpcma_roe_n_d & ~adpcma_roe_n) begin
+				adpcma_rom_req <= 1'b1;
+			end else if (adpcma_rom_valid) begin
 				adpcma_rom_req <= 1'b0;
 				adpcma_data_r  <= adpcma_rom_data;
+			end
+		end
+	end
+
+	// ---- ADPCM-A deadline monitor (instrumentation, NOT a fix) ----
+	// jt10's sample bus is fixed-latency, not req/valid -- there is no
+	// handshake anywhere in it. jt10_adpcm_drvA reloads its `data` register
+	// from adpcma_data on EVERY cen, and jt10_adpcm consumes it one cen6
+	// later (jt10_adpcm.v, stage I). A byte that has not arrived by the last
+	// reload before that edge is therefore not waited for: it is silently
+	// replaced by whatever the previous fetch left on the bus.
+	//
+	// The deadline is 11 ym_cen ticks after roe_n falls -- 1.375 us, ~118 clk
+	// at 85.909 MHz -- NOT the 9 us until the next fetch. Measuring against
+	// that wrong budget is why the 149-clk worst-case wait on row 223 was
+	// read as harmless; it is in fact 28% over.
+	//
+	// A late byte does not click. ADPCM-A is predictive with an adaptive
+	// step, so one wrong nibble perturbs the accumulator AND the step index,
+	// and the error decays over tens of samples -- noise added on top of the
+	// music, which is exactly what the JTAG capture measured (peak unchanged,
+	// RMS doubled, HF content up).
+	logic [3:0] adpcma_slot = 4'd15;   // ym_cen ticks since roe_n fell; 15 = parked
+	always_ff @(posedge clk) begin
+		adpcma_late <= 1'b0;
+		if (adpcma_roe_n_d & ~adpcma_roe_n) begin
+			adpcma_slot <= 4'd0;
+		end else if (ym_cen && adpcma_slot != 4'd15) begin
+			adpcma_slot <= adpcma_slot + 4'd1;
+			// slot==10 makes THIS the 11th tick: the last one whose datain jt10
+			// still latches before its decoder reads the nibble. A fetch still
+			// outstanding here feeds the decoder a stale byte.
+			if (adpcma_slot == 4'd10 && adpcma_rom_req) begin
+				adpcma_late     <= 1'b1;
+				adpcma_late_cnt <= adpcma_late_cnt + 20'd1;
 			end
 		end
 	end
@@ -375,26 +440,48 @@ module psikyo_top #(
 	assign opl4_mem_data  = adpcma_rom_data;
 
 	logic [7:0]  adpcmb_rom_data, adpcmb_data_r;
+	logic [19:0] adpcmb_addr_l;   // latched with the request, same reason as A
 	logic [20:0] adpcmb_sdram_addr;
-	assign adpcmb_sdram_addr = {board_gunbird, adpcmb_addr[19:0]};
+	assign adpcmb_sdram_addr = {board_gunbird, adpcmb_addr_l};
 
 	always_ff @(posedge clk) begin
 		if (core_reset) begin
 			adpcmb_rom_req <= 1'b0;
 			adpcmb_data_r  <= 8'd0;
 			adpcmb_roe_n_d <= 1'b1;
+			adpcmb_addr_l  <= 20'd0;
 		end else begin
 			adpcmb_roe_n_d <= adpcmb_roe_n;
-			if (adpcmb_roe_n_d & ~adpcmb_roe_n) adpcmb_rom_req <= 1'b1;
-			else if (adpcmb_rom_valid) begin
+			if (adpcmb_roe_n_d & ~adpcmb_roe_n) begin
+				adpcmb_rom_req <= 1'b1;
+				adpcmb_addr_l  <= adpcmb_addr[19:0];
+			end else if (adpcmb_rom_valid) begin
 				adpcmb_rom_req <= 1'b0;
 				adpcmb_data_r  <= adpcmb_rom_data;
 			end
 		end
 	end
 
+	// jt10's reset gets its own pipeline stage. jt12_rst latches rst on the
+	// NEGEDGE (rtl/sound/jt10/hdl/jt12_rst.v), so the path into it has half a
+	// clk_sys period -- 5.82 ns -- to get from whatever drives core_reset all
+	// the way across the die, and core_reset is a wide OR of ioctl_download,
+	// the rom_loader state and an OSD status bit, placed nowhere near the
+	// sound chip. Once the OPL4 PM chain was split, three of the design's top
+	// four failing paths were exactly this, at -0.491ns.
+	//
+	// Registering it here splits that into a full-cycle path (core_reset logic
+	// -> ym_rst) and a short half-cycle one (ym_rst -> jt12_rst). jt10 then
+	// leaves reset one clk_sys cycle later, which is 11.6 ns on a reset held
+	// for the whole ROM download, and the pulse WIDTH is unchanged so jt10.v's
+	// "at least 6 clk&cen cycles" requirement still holds. Preferred over a
+	// set_false_path: the path is real, it is just not urgent, and an
+	// exception would hide it from the release gate for good.
+	logic ym_rst = 1'b1;
+	always_ff @(posedge clk) ym_rst <= core_reset;
+
 	jt10 u_ym2610 (
-		.rst        (core_reset),
+		.rst        (ym_rst),
 		.clk        (clk),
 		.cen        (ym_cen),
 		.din        (ym_dout),
@@ -414,7 +501,7 @@ module psikyo_top #(
 		.psg_A(), .psg_B(), .psg_C(), .fm_left(), .fm_right(), .psg_snd(),
 		.snd_right  (jt_snd_r),
 		.snd_left   (jt_snd_l),
-		.snd_sample (),
+		.snd_sample (jt_snd_sample),
 		.ch_enable  (6'b111111)
 	);
 

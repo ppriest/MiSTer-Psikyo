@@ -133,6 +133,18 @@ module psikyo_core #(
 	// They live in psikyo_top; only the counters and the overlay are here.
 	input  logic         adpcma_req_i, adpcma_valid_i,
 	input  logic         adpcmb_req_i, adpcmb_valid_i,
+	// One pulse per ADPCM-A fetch that missed jt10's FIXED-LATENCY deadline,
+	// plus a running count of them. Computed in psikyo_top, where ym_cen
+	// lives -- see the deadline monitor there for why 1.375 us and not 9 us.
+	// This is the defect itself, not a proxy: when it pulses, the decoder has
+	// already been handed the wrong nibble.
+	input  logic         adpcma_late_i,
+	input  logic [19:0] adpcma_late_cnt_i,
+	// Final mixed audio, for the anomaly counters below. Taken AFTER the
+	// jt10/OPL4 mux so one set of counters covers both sound chips.
+	input  logic signed [15:0] snd_l_i, snd_r_i,
+	input  logic         snd_tick_i,   // one pulse per generated audio sample
+
 	input  logic [3:0]  dbg_window,   // skip dbg_window*256 events first
 	input  logic         dbg_rearm,    // any change restarts capture
 	output logic [23:0] dbg_pixel     // one captured entry per scanline
@@ -523,6 +535,138 @@ module psikyo_core #(
 	//   quartus_stp -t scripts/read_spriteram.tcl <addr_hex>
 	wire [11:0] dbg_spr_rd_addr;
 	wire [11:0] spr_a_addr_muxed = effective_pause ? dbg_spr_rd_addr : spr_cpu_addr;
+
+	// ---- audio capture buffer, read out over JTAG (instance "A") ----
+	// Captures the DIGITAL audio stream inside the core, one entry per
+	// generated sample, so the crackle can be looked at directly instead of
+	// inferred. This distinguishes the two possibilities a recording off the
+	// analogue or HDMI output cannot: bad samples coming out of the sound
+	// chip, versus good samples mangled downstream by the framework's
+	// resampler or the analogue path.
+	//
+	// 16384 entries at the YM2610's ~55 kHz sample rate is about 295 ms --
+	// long enough to contain a sporadic crackle, not just a continuous one.
+	// Costs ~52 M10K, affordable only because the per-scanline sprite path
+	// freed 198 of them. Free-running ring until
+	// frozen from JTAG, so the buffer holds the moments just BEFORE the
+	// freeze, exactly like the CPU tracer.
+	//
+	// Timed off snd_tick_i (jt10's snd_sample) rather than detecting value
+	// changes, so a repeated or dropped sample is still one entry and stays
+	// visible -- change-detection would silently compress exactly the
+	// artefacts being hunted. That tick is the YM2610's; the OPL4 boards are
+	// not what is being debugged here.
+	// source = {arm, freeze, rd_addr[13:0]}
+	//
+	// AUTO-TRIGGER, because manual triggering cannot work here: the ring holds
+	// 295 ms, the freeze happens when the dump STARTS, and starting a dump
+	// takes ~10 s -- the event is long gone by then. So the core watches for
+	// the artefact itself and freezes around it.
+	//
+	// The trigger condition comes from measurement, not guesswork: a capture
+	// of the HDMI output showed the distortion is a burst of large
+	// sample-to-sample steps (|delta| >= 8000) that occurs ONLY in the loudest
+	// window -- 96 of them in the one second containing an explosion, and
+	// exactly ZERO in every other window of the same recording.
+	//
+	// On trigger it keeps capturing for half a buffer before freezing, so the
+	// event lands in the MIDDLE of the dump with its lead-in intact -- the
+	// samples before the artefact are what say whether it grew out of the
+	// waveform or arrived from nowhere.
+	logic [15:0] dbg_aud_src;
+	wire         aud_arm    = dbg_aud_src[15];
+	wire         aud_freeze = dbg_aud_src[14];
+	logic [13:0] aud_wr_ptr = '0;
+	logic         aud_frozen = 1'b0;
+	logic [31:0] aud_mem [0:16383];
+	logic [31:0] aud_rd_data;
+
+	// EDGE, not level. jt10's snd_sample is `zero`, a REGISTER updated under
+	// the chip's clock enable -- so it stays high for a whole cen period, not
+	// one clk. Capturing on the level oversampled every audio sample about 64
+	// times: the first capture came back with 255 unique values spread over
+	// 16384 entries, i.e. 4.6 ms of audio in a buffer sized for 295 ms.
+	logic snd_tick_d = 1'b0;
+	wire  snd_tick_edge = snd_tick_i & ~snd_tick_d;
+
+	// TRIGGER: a BURST OF LATE ADPCM-A FETCHES, not a big sample delta. The
+	// delta trigger did its job -- it caught a burst and proved the noise is
+	// added on top of the music rather than the music clipping -- but it can
+	// only ever show the symptom. This one arms on the suspected CAUSE, so
+	// the dump either contains the artefact (mechanism proven end to end) or
+	// does not (hypothesis dead). No inference left in between.
+	//
+	// aud_late_acc rises one per late fetch and decays one per audio sample
+	// (55.5 kHz), so it tracks the RATE, not the total: isolated late bytes
+	// drain away and only a genuine burst crosses the threshold. The
+	// threshold is latched from the source word at ARM time (read_audio.tcl
+	// `arm [n]`), so it can be retuned over JTAG without a rebuild -- at ten
+	// minutes a build, a knob is cheaper than a guess.
+	logic [13:0] aud_post = '0;      // samples still to capture after a trigger
+	logic         aud_trigd = 1'b0;
+	logic [7:0]  aud_late_acc = '0;  // late-fetch rate estimate
+	logic [7:0]  aud_trig_n   = 8'd1;// bursts this big freeze the ring
+	logic         aud_arm_d    = 1'b0;
+
+	wire aud_hit = aud_arm && !aud_trigd && (aud_late_acc >= aud_trig_n);
+
+	always_ff @(posedge clk) begin
+		snd_tick_d <= snd_tick_i;
+		aud_arm_d  <= aud_arm;
+
+		if (!aud_arm) begin
+			// disarmed: free-run the ring and clear any previous capture, so
+			// re-arming always starts from a known state
+			aud_frozen   <= 1'b0;
+			aud_trigd    <= 1'b0;
+			aud_post     <= '0;
+			aud_late_acc <= '0;
+		end else begin
+			// latch the burst threshold on the arm edge. 0 means "the first
+			// late fetch triggers", so a bare `arm` still does something.
+			if (!aud_arm_d)
+				aud_trig_n <= (dbg_aud_src[7:0] == 8'd0) ? 8'd1 : dbg_aud_src[7:0];
+
+			if (adpcma_late_i) begin
+				if (aud_late_acc != 8'hFF) aud_late_acc <= aud_late_acc + 8'd1;
+			end else if (snd_tick_edge && aud_late_acc != 8'd0) begin
+				aud_late_acc <= aud_late_acc - 8'd1;
+			end
+
+			if (aud_freeze) begin
+				aud_frozen <= 1'b1;      // manual override still available
+			end else if (aud_trigd && snd_tick_edge) begin
+				if (aud_post == 14'd0) aud_frozen <= 1'b1;
+				else                    aud_post   <= aud_post - 14'd1;
+			end else if (aud_hit) begin
+				aud_trigd <= 1'b1;
+				aud_post  <= 14'd8192;   // half the buffer, to centre the event
+			end
+		end
+
+		if (snd_tick_edge && !aud_frozen) begin
+			aud_mem[aud_wr_ptr] <= {snd_l_i, snd_r_i};
+			aud_wr_ptr           <= aud_wr_ptr + 14'd1;
+		end
+		aud_rd_data <= aud_mem[dbg_aud_src[13:0]];
+	end
+
+	altsource_probe #(
+		.sld_auto_instance_index("YES"),
+		.instance_id("A"),
+		.probe_width(64),
+		.source_width(16),
+		.source_initial_value("0"),
+		.enable_metastability("NO"),
+		.lpm_type("altsource_probe")
+	) u_issp_audio (
+		// bits 48-63 carry the late-fetch count so `peek` answers the whole
+		// question in one JTAG read -- no overlay, no six-minute dump.
+		.probe({adpcma_late_cnt_i[15:0], aud_trigd, aud_frozen, aud_wr_ptr, aud_rd_data}),
+		.source(dbg_aud_src),
+		.source_clk(clk),
+		.source_ena(1'b1)
+	);
 
 	altsource_probe #(
 		.sld_auto_instance_index("YES"),
@@ -938,6 +1082,51 @@ module psikyo_core #(
 			adpcmb_lat <= 12'd0;
 		end
 	end
+	// ---- audio anomaly counters ----
+	// Chasing the scratchy YM2610 audio. The suspect is jt10_acc's ADPCM-A
+	// path: adpcmA is signed 16-bit, gets multiplied by 7.25, and the result
+	// is assigned back into a 16-bit reg -- which needs ~19 bits, so loud
+	// samples WRAP instead of saturating. (jotego's own comment there says
+	// "I suppose ADPCM-A would saturate if taken up a factor of 8".)
+	//
+	// A wrap has a signature ordinary audio does not: one sample near
+	// +full-scale followed by one near -full-scale. Real waveforms cross zero
+	// on the way between those, however loud they are, so counting sign flips
+	// where BOTH magnitudes are large is far more specific than a plain
+	// delta threshold and will not fire on percussive content.
+	//
+	// Sampled on VALUE CHANGE rather than on a sample-tick input: the output
+	// holds between samples, and doing it this way needs no per-chip tick and
+	// works for jt10 and OPL4 alike.
+	localparam signed [15:0] AUD_BIG  =  16'sh6000;   // +/-24576, "large"
+	localparam signed [15:0] AUD_NEAR =  16'sh7F00;   // near full scale
+	logic signed [15:0] aud_prev_l = '0, aud_prev_r = '0;
+	logic [19:0] aud_wrap_cnt = '0, aud_clip_cnt = '0, aud_samples = '0;
+	logic [15:0] aud_peak = '0;
+
+	wire aud_l_new = (snd_l_i != aud_prev_l);
+	wire aud_r_new = (snd_r_i != aud_prev_r);
+	wire aud_l_wrap = aud_l_new &&
+		(((aud_prev_l >= AUD_BIG) && (snd_l_i <= -AUD_BIG)) ||
+		 ((aud_prev_l <= -AUD_BIG) && (snd_l_i >= AUD_BIG)));
+	wire aud_r_wrap = aud_r_new &&
+		(((aud_prev_r >= AUD_BIG) && (snd_r_i <= -AUD_BIG)) ||
+		 ((aud_prev_r <= -AUD_BIG) && (snd_r_i >= AUD_BIG)));
+	wire [15:0] aud_abs_l = snd_l_i[15] ? (~snd_l_i + 16'd1) : snd_l_i;
+	wire [15:0] aud_abs_r = snd_r_i[15] ? (~snd_r_i + 16'd1) : snd_r_i;
+	wire aud_l_clip = aud_l_new && (aud_abs_l >= AUD_NEAR);
+	wire aud_r_clip = aud_r_new && (aud_abs_r >= AUD_NEAR);
+
+	always_ff @(posedge clk) begin
+		aud_prev_l <= snd_l_i;
+		aud_prev_r <= snd_r_i;
+		if (aud_l_wrap || aud_r_wrap) aud_wrap_cnt <= aud_wrap_cnt + 1'b1;
+		if (aud_l_clip || aud_r_clip) aud_clip_cnt <= aud_clip_cnt + 1'b1;
+		if (aud_l_new)                aud_samples  <= aud_samples + 1'b1;
+		if (aud_l_new && (aud_abs_l > aud_peak)) aud_peak <= aud_abs_l;
+		if (aud_r_new && (aud_abs_r > aud_peak)) aud_peak <= aud_abs_r;
+	end
+
 	always_ff @(posedge clk) begin
 		if (l0_overrun_ev) l0_ovr_cnt <= l0_ovr_cnt + 1'b1;
 		if (l1_overrun_ev) l1_ovr_cnt <= l1_ovr_cnt + 1'b1;
@@ -1093,9 +1282,23 @@ module psikyo_core #(
 		//              (two captures a known time apart give a per-frame rate)
 		//   row  221 : ADPCM-A stall cycles   row 222 : ADPCM-B stall cycles
 		//   row  223 : {ADPCM-A worst wait[11:0], ADPCM-B worst wait[11:0]}
+		//   row  214 : ADPCM-A fetches that MISSED jt10's fixed deadline.
+		//              Row 223 says how bad the worst wait was; this says how
+		//              often the wait was long enough to feed the decoder a
+		//              stale byte. ~1853 ADPCM-A fetches per frame, so read it
+		//              against ovr_frames (row 220) for a rate.
+		//   row  210 : audio WRAP events (full-scale sign flips -- overflow)
+		//   row  211 : audio near-full-scale samples
+		//   row  212 : peak |sample| seen   row 213 : audio samples counted
+		//              (210/211 against 213 give a per-sample rate)
 		// row 215 carries the worst-case sprite render length, in clk cycles
 		//   rows  48- 63 : palette RAM, all 4096 xRGB_555 entries
-		assign dbg_pixel = (vcnt == 9'd215) ? {4'd0, sp_render_max}
+		assign dbg_pixel = (vcnt == 9'd210) ? {4'd0, aud_wrap_cnt}
+						 : (vcnt == 9'd211) ? {4'd0, aud_clip_cnt}
+						 : (vcnt == 9'd212) ? {8'd0, aud_peak}
+						 : (vcnt == 9'd213) ? {4'd0, aud_samples}
+						 : (vcnt == 9'd214) ? {4'd0, adpcma_late_cnt_i}
+						 : (vcnt == 9'd215) ? {4'd0, sp_render_max}
 						 : (vcnt == 9'd217) ? {4'd0, l0_ovr_cnt}
 						 : (vcnt == 9'd218) ? {4'd0, l1_ovr_cnt}
 						 : (vcnt == 9'd219) ? {4'd0, sp_ovr_cnt}
