@@ -94,6 +94,9 @@ Supports the following games
 ![tengai 20260830_141220-screen](docs/screenshots/tengai/20260830_141220-screen.png)
 
 ## Installation
+
+A 32MB SDRAM module is required.
+
 As per norm:
 
 * Take the latest *.rbf from the releases/ folder and put it in _Arcade/cores
