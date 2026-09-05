@@ -2,6 +2,27 @@
 
 MiSTer FPGA core for the original 68k Psikyo (pronounced "SIGH-kyoh" from the Japanese word Saikyō (最強), which means "strongest.") arcade platform(s) that preceded the Hitachi SH-2 era, built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
+## Contents
+
+- [History](#history)
+- [Screenshots](#screenshots)
+  - [Samurai Aces (World) / Sengoku Ace (Japan)](#samurai-aces-world--sengoku-ace-japan)
+  - [Gunbird](#gunbird)
+  - [Battle K-Road](#battle-k-road)
+  - [Strikers 1945](#strikers-1945)
+  - [Sengoku Blade: Sengoku Ace Episode II (Japan) / Tengai (World)](#sengoku-blade-sengoku-ace-episode-ii-japan--tengai-world)
+- [Installation](#installation)
+- [Status](#status)
+  - [Todo](#todo)
+  - [Resource usage](#resource-usage)
+- [AI Attestation](#ai-attestation)
+- [Verification](#verification)
+- [Acknowledgements](#acknowledgements)
+- [Layout](#layout)
+- [License](#license)
+
+## Games
+
 Supports the following games
 
 | Name | Year | Board | Notes |
@@ -165,7 +186,7 @@ Development was heavily AI-assisted, combined with experience of the platform fr
 
 * **The `sim/` suite** — a per-module ModelSim testbench for every project-authored block (bus wrapper, security-device simulation, the full SDRAM backend and its arbiters/bridges, every stage of the sprite and tilemap pipelines, compositor, video registers, sound CPU decode), plus integration benches that run the whole video pipeline against the real SDRAM controller and chip model. 
 * Behavior is checked against MAME's `psikyo.cpp`/`psikyo_v.cpp` as the reference, including regression tests written for every hardware-found bug.
-* **Manual testing on a real DE10-nano** — every supported game is played and A/B-compared against MAME on real hardware before release; the debugging instrumentation below (overlay, ISSP probes, API screenshots, video capture) exists to make those hardware observations precise.
+* **Manual testing on a real DE10-nano** — every supported game is played and A/B-compared against MAME on real hardware before release; the debugging instrumentation in [docs/DEBUGGING_ON_HARDWARE.md](docs/DEBUGGING_ON_HARDWARE.md) (overlay, ISSP probes, API screenshots, video capture) exists to make those hardware observations precise.
 
 ## Acknowledgements
 
@@ -206,30 +227,8 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 | `releases` | `.mra` files, and `.rbf` builds once any are published |
 | `docs` | design notes and hard-won debugging lessons |
 | `sim` | ModelSim testbenches |
-| `scripts` | build/deploy/verification tooling (see below) |
+| `scripts` | build/deploy/verification tooling (see [scripts/TOOLING.md](scripts/TOOLING.md)) |
 | `debug` | reference traces and captures used as ground truth |
-
-## Tooling
-
-Hardware iteration is automated; see `docs/LESSONS_LEARNED.md` for why each of these exists.
-
-| script | purpose |
-| - | - |
-| `build_staged.py` | build a git-worktree snapshot of HEAD in `build/` (gitignored), so the main tree stays editable mid-build; the log, `output_files/` and a `BUILT_COMMIT` stamp land under `build/`. Default revision is the instrumented `Psikyo_stp` (fitter SEED pinned at 7 - the default-seed fit did not boot); `-rev Psikyo` for release. Release builds are gated on timing -- see [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) |
-| `mister_hw_test.py` | deploy a `.rbf`, launch a `.mra`, pull a screenshot |
-| `deploy_rbf.py` | deploy only if the build actually succeeded |
-| `deploy_mra.py` | validate an `.mra`, then copy it |
-| `validate_mra.py` | check `.mra` well-formedness and structure |
-| `verify_rom_trace.py` | solve a ROM interleave against a hardware trace |
-| `decode_trace.py` | decode a debug-overlay capture, saved per settings |
-| `decode_vram.py` | extract tilemap VRAM and video registers from a capture |
-| `png_census.py` | colour census of a screenshot |
-
-Credentials are read from `mister.env` (gitignored).
-
-For the debug overlay, the JTAG probes and when to reach for video capture
-instead of a screenshot, see
-[docs/DEBUGGING_ON_HARDWARE.md](docs/DEBUGGING_ON_HARDWARE.md).
 
 ## License
 
