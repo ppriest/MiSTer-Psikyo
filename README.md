@@ -6,11 +6,6 @@ MiSTer FPGA core for the original 68k Psikyo (pronounced "SIGH-kyoh" from the Ja
 
 - [History](#history)
 - [Screenshots](#screenshots)
-  - [Samurai Aces (World) / Sengoku Ace (Japan)](#samurai-aces-world--sengoku-ace-japan)
-  - [Gunbird](#gunbird)
-  - [Battle K-Road](#battle-k-road)
-  - [Strikers 1945](#strikers-1945)
-  - [Sengoku Blade: Sengoku Ace Episode II (Japan) / Tengai (World)](#sengoku-blade-sengoku-ace-episode-ii-japan--tengai-world)
 - [Installation](#installation)
 - [Status](#status)
   - [Todo](#todo)
